@@ -1,0 +1,33 @@
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 2
+        submodules: true
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    - uses: Swatinem/rust-cache@v2
+
+    - name: run clippy
+      run: cargo clippy --workspace -- -Dwarnings
+    - name: run test
+      run: cargo test --workspace
+    
+    - name: Test with snippets
+      run: |
+        cargo build --release
+        cd snippets && AHEUI=../target/release/aheui ./test.sh --disable logo pi

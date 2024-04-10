@@ -1,0 +1,6 @@
+[submodule "rpaheui/rpaheui"]
+	path = rpaheui/rpaheui
+	url = git@github.com:aheui/rpaheui.git
+[submodule "snippets"]
+	path = snippets
+	url = https://github.com/aheui/snippets.git

@@ -1,0 +1,22 @@
+[package]
+name = "rpaheui"
+description = "rpaheui wrapper for Rust"
+edition = { workspace = true }
+version = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = []
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, optional=true }
+malachite-bigint = { workspace = true }
+once_cell = { workspace = true }
+rustpython = { workspace = true }
+rustpython-derive = { workspace = true }
