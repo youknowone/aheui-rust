@@ -19,9 +19,9 @@ fn main() -> anyhow::Result<()> {
     .unwrap();
 
     let Some(target) = args.target else {
-        let exitcode = aheui.run(&object).unwrap();
-        let exitcode = exitcode.to_i32().unwrap_or(std::i32::MAX);
-        std::process::exit(exitcode);
+        let exit_code = aheui.run(&object).unwrap();
+        let exit_code = exit_code.to_i32().unwrap_or(std::i32::MAX);
+        std::process::exit(exit_code);
     };
     let output = match target {
         Target::Asm => {

@@ -90,9 +90,9 @@ impl Aheui {
         Ok(self.python.enter_and_expect(
             |vm| {
                 let run_with_compiler = self.aheui_module.get_attr("run_with_compiler", vm)?;
-                let exitcode = run_with_compiler.call((object.inner.clone(),), vm)?;
-                let exitcode = exitcode.downcast::<PyInt>().unwrap();
-                Ok(exitcode.as_bigint().clone())
+                let exit_code = run_with_compiler.call((object.inner.clone(),), vm)?;
+                let exit_code = exit_code.downcast::<PyInt>().unwrap();
+                Ok(exit_code.as_bigint().clone())
             },
             "run failed",
         ))
@@ -133,8 +133,8 @@ fn test_asm() {
     let object2 = aheui.compile_asm(&asm).expect("recompilation failed");
     let asm2 = aheui.make_asm(&object2, false).unwrap();
     assert_eq!(asm, asm2);
-    let exitcode = aheui.run(&object);
-    assert_eq!(exitcode.unwrap(), BigInt::from(2));
+    let exit_code = aheui.run(&object);
+    assert_eq!(exit_code.unwrap(), BigInt::from(2));
 }
 
 #[test]
@@ -146,6 +146,6 @@ fn test_bytecode() {
     let object2 = aheui.load_bytecode(&bytecode).unwrap();
     let bytecode2 = aheui.make_bytecode(&object2).unwrap();
     assert_eq!(bytecode, bytecode2);
-    let exitcode = aheui.run(&object2);
-    assert_eq!(exitcode.unwrap(), BigInt::from(0));
+    let exit_code = aheui.run(&object2);
+    assert_eq!(exit_code.unwrap(), BigInt::from(0));
 }
