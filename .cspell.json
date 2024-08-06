@@ -26,7 +26,8 @@
     "rpaheui",
     "repr",
     "POPNUM",
-    "deque"
+    "deque",
+    "pylib"
   ],
   // flagWords - list of words to be always considered incorrect
   "flagWords": [

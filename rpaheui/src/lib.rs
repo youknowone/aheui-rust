@@ -2,13 +2,13 @@
 pub mod clap;
 
 use malachite_bigint::BigInt;
-use rustpython::vm::{
+use rustpython_vm::{
     builtins::{PyBytes, PyInt, PyStr},
     Interpreter, PyObjectRef, PyResult,
 };
 
-pub const FROZEN: &rustpython::vm::frozen::FrozenLib =
-    rustpython_derive::py_freeze!(dir = "./rpaheui", crate_name = "rustpython::vm");
+pub const FROZEN: &rustpython_vm::frozen::FrozenLib =
+    rustpython_derive::py_freeze!(dir = "./rpaheui", crate_name = "rustpython_vm");
 
 pub struct Aheui {
     python: Interpreter,
@@ -29,12 +29,10 @@ impl Default for Aheui {
 
 impl Aheui {
     pub fn new() -> Self {
-        let python = rustpython::InterpreterConfig::new()
-            .init_stdlib()
-            .init_hook(Box::new(|vm| {
-                vm.add_frozen(FROZEN);
-            }))
-            .interpreter();
+        let python = Interpreter::with_init(Default::default(), |vm| {
+            vm.add_frozen(rustpython_pylib::FROZEN_STDLIB);
+            vm.add_frozen(FROZEN);
+        });
 
         let (aheui_module, prepare_compiler) = python.enter_and_expect(
             |vm| {
