@@ -20,4 +20,4 @@ malachite-bigint = { workspace = true }
 once_cell = { workspace = true }
 rustpython-derive = { workspace = true }
 rustpython-pylib = { workspace = true, features = ["freeze-stdlib"] }
-rustpython-vm = { workspace = true, no-default-features = true, features = ["freeze-stdlib"] }
+rustpython-vm = { workspace = true, default-features = false, features = ["freeze-stdlib"] }
