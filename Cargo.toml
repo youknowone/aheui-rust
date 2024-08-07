@@ -23,6 +23,6 @@ clap = { version = "4.5.4", features = ["derive"] }
 malachite-bigint = "0.2.0"
 num-traits = "0.2.18"
 once_cell = { version = "1.19.0", features = ["parking_lot"] }
-rustpython-vm = "0.3.1"
-rustpython-pylib = "0.3.1"
-rustpython-derive = "0.3.1"
+rustpython-vm = { version = "0.4.0", default-features = false }
+rustpython-pylib = { version = "0.4.0", default-features = false }
+rustpython-derive = { version = "0.4.0", default-features = false }
