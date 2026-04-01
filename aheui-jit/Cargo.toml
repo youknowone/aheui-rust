@@ -1,0 +1,23 @@
+[package]
+name = "aheui-jit"
+version = "0.0.1"
+edition = "2024"
+
+[features]
+default = ["malachite-bigint"]
+num-bigint = ["aheui-runtime/num-bigint"]
+malachite-bigint = ["aheui-runtime/malachite-bigint"]
+
+[dependencies]
+aheui-runtime = { path = "../aheui-runtime" }
+ahsembler = { path = "../ahsembler" }
+majit-ir = { path = "../../majit/majit-ir" }
+majit-macros = { path = "../../majit/majit-macros" }
+majit-gc = { path = "../../majit/majit-gc" }
+majit-metainterp = { path = "../../majit/majit-metainterp" }
+majit-backend = { path = "../../majit/majit-backend" }
+
+[build-dependencies]
+majit-codewriter = { path = "../../majit/majit-codewriter" }
+serde_json = "1"
+syn = { version = "2", features = ["full", "visit"] }

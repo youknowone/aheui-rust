@@ -1,0 +1,135 @@
+/// Build script for aheui-jit: analyzes the Aheui interpreter via the
+/// majit-codewriter graph pipeline and emits the generated trace code.
+///
+/// This uses the same graph-based analysis path as pyre-jit.
+
+#[path = "src/jit/call_spec.rs"]
+mod call_spec;
+#[path = "src/jit/virtualizable_spec.rs"]
+mod virtualizable_spec;
+
+fn main() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let base = format!("{manifest_dir}/..");
+
+    let source_dirs = [
+        format!("{base}/aheui-interp/src"),
+        format!("{base}/aheui-runtime/src"),
+    ];
+
+    let mut sources = Vec::new();
+    let mut source_paths = Vec::new();
+    for dir in &source_dirs {
+        collect_rs_files(dir, &mut sources, &mut source_paths);
+    }
+
+    eprintln!(
+        "[aheui-jit build.rs] reading {} source files from {} dirs",
+        sources.len(),
+        source_dirs.len(),
+    );
+
+    let source_refs: Vec<&str> = sources.iter().map(|s| s.as_str()).collect();
+    let pipeline = majit_codewriter::analyze_multiple_pipeline_with_config(
+        &source_refs,
+        &majit_codewriter::AnalyzeConfig {
+            pipeline: majit_codewriter::PipelineConfig {
+                transform: majit_codewriter::GraphTransformConfig {
+                    vable_fields: virtualizable_spec::AHEUI_VABLE_FIELDS
+                        .iter()
+                        .map(|(name, idx)| {
+                            majit_codewriter::VirtualizableFieldDescriptor::new(
+                                *name,
+                                Some(virtualizable_spec::AHEUI_VABLE_OWNER_ROOT.to_string()),
+                                *idx,
+                            )
+                        })
+                        .collect(),
+                    vable_arrays: virtualizable_spec::AHEUI_VABLE_ARRAYS
+                        .iter()
+                        .map(|(name, idx)| {
+                            majit_codewriter::VirtualizableFieldDescriptor::new(
+                                *name,
+                                Some(virtualizable_spec::AHEUI_VABLE_OWNER_ROOT.to_string()),
+                                *idx,
+                            )
+                        })
+                        .collect(),
+                    call_effects: build_call_effect_overrides(),
+                    ..Default::default()
+                },
+                classify: Default::default(),
+            },
+        },
+    );
+
+    let code = majit_codewriter::generate_trace_code_from_pipeline(&pipeline);
+
+    let out_dir = std::env::var("OUT_DIR").unwrap();
+    std::fs::write(format!("{out_dir}/jit_trace_gen.rs"), &code).unwrap();
+
+    let json = serde_json::to_string_pretty(&pipeline).unwrap();
+    std::fs::write(format!("{out_dir}/jit_metadata.json"), &json).unwrap();
+
+    eprintln!(
+        "[aheui-jit build.rs] canonical analysis: {} opcode arms, {} functions, {} blocks, {} flat ops, generated {} bytes",
+        pipeline.opcode_dispatch.len(),
+        pipeline.functions.len(),
+        pipeline.total_blocks,
+        pipeline.total_ops,
+        code.len(),
+    );
+
+    for path in &source_paths {
+        println!("cargo::rerun-if-changed={path}");
+    }
+    println!("cargo::rerun-if-changed=src/jit/virtualizable_spec.rs");
+    println!("cargo::rerun-if-changed=src/jit/call_spec.rs");
+}
+
+fn build_call_effect_overrides() -> Vec<majit_codewriter::CallEffectOverride> {
+    call_spec::AHEUI_CALL_EFFECTS
+        .iter()
+        .map(|spec| {
+            let target = match spec.target {
+                call_spec::CallTargetSpec::Method {
+                    name,
+                    receiver_root,
+                } => majit_codewriter::CallTarget::method(name, Some(receiver_root.to_string())),
+                call_spec::CallTargetSpec::FunctionPath(segments) => {
+                    majit_codewriter::CallTarget::function_path(segments.iter().copied())
+                }
+            };
+            let effect = match spec.effect {
+                call_spec::CallEffectKind::Elidable => majit_codewriter::CallEffectKind::Elidable,
+                call_spec::CallEffectKind::Residual => majit_codewriter::CallEffectKind::Residual,
+            };
+            majit_codewriter::CallEffectOverride::new(target, effect)
+        })
+        .collect()
+}
+
+fn collect_rs_files(dir: &str, sources: &mut Vec<String>, paths: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        eprintln!("[aheui-jit build.rs] warning: cannot read {dir}");
+        return;
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(&path.to_string_lossy(), sources, paths);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            let path_str = path.to_string_lossy().to_string();
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    paths.push(path_str);
+                    sources.push(content);
+                }
+                Err(e) => {
+                    eprintln!("[aheui-jit build.rs] warning: cannot read {path_str}: {e}");
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,11 @@
+[package]
+name = "ahsembler"
+version = "0.0.1"
+edition = "2024"
+description = "앟셈블러. 아희 컴파일러 및 최적화기 - Aheui compiler and CFG optimizer"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/youknowone/aheui-rust"
+keywords = ["aheui", "assembler", "esoteric", "hangul"]
+categories = ["compilers"]
+
+[dependencies]
