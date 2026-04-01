@@ -1,0 +1,24 @@
+[package]
+name = "aheui"
+version = "0.0.1"
+edition = "2024"
+
+[workspace]
+members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler"]
+
+[features]
+default = ["jit", "malachite-bigint"]
+naive = ["dep:aheuinterpreter"]
+jit = ["dep:aheui-jit"]
+num-bigint = ["aheuinterpreter?/num-bigint", "aheui-jit?/num-bigint"]
+malachite-bigint = ["aheuinterpreter?/malachite-bigint", "aheui-jit?/malachite-bigint"]
+
+[dependencies]
+aheuinterpreter = { path = "aheuinterpreter", optional = true }
+aheui-jit = { path = "aheui-jit", optional = true }
+ahsembler = { path = "ahsembler" }
+clap = { version = "4.5.32", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"

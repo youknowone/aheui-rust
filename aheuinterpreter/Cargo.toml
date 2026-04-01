@@ -1,0 +1,12 @@
+[package]
+name = "aheuinterpreter"
+version = "0.0.1"
+edition = "2024"
+
+[features]
+default = ["malachite-bigint"]
+num-bigint = ["aheui-runtime/num-bigint"]
+malachite-bigint = ["aheui-runtime/malachite-bigint"]
+
+[dependencies]
+aheui-runtime = { path = "../aheui-runtime" }
