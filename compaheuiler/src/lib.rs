@@ -1,4 +1,5 @@
 pub mod c_gen;
+pub mod cli;
 pub mod cranelift_backend;
 pub mod rust_gen;
 pub mod wat_gen;

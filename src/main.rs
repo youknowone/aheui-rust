@@ -105,6 +105,8 @@ impl AsmArgs {
 enum Command {
     /// Compile Aheui source into commented ahsembly
     Asm(AsmArgs),
+    /// Compile Aheui source into a native binary or other target
+    Build(compaheuiler::cli::BuildArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -199,6 +201,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Asm(args)) => run_asm(args),
+        Some(Command::Build(args)) => {
+            compaheuiler::cli::run_build(&args);
+            Ok(())
+        }
         None => run_program(cli.run),
     }
 }
