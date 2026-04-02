@@ -1,4 +1,4 @@
-//! Generate C99 code from an Aheui CFG using the same optimization pipeline as rgen.
+//! Generate C99 code from an Aheui CFG using the same optimization pipeline as rust_gen.
 //!
 //! Compile with: cc -O2 -o program output.c
 
