@@ -17,6 +17,7 @@ malachite-bigint = ["aheuinterpreter?/malachite-bigint", "aheui-jit?/malachite-b
 aheuinterpreter = { path = "aheuinterpreter", optional = true }
 aheui-jit = { path = "aheui-jit", optional = true }
 ahsembler = { path = "ahsembler" }
+compaheuiler = { path = "compaheuiler" }
 clap = { version = "4.5.32", features = ["derive"] }
 
 [profile.release]
