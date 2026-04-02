@@ -19,6 +19,8 @@ enum Codegen {
     C,
     /// Cranelift으로 AOT컴파흴 후 실행
     Cranelift,
+    /// WAT 코드 생성 후 wat2wasm으로 컴파흴
+    Wat,
 }
 
 fn parse_opt_level(s: &str) -> Result<ahsembler::OptimizationLevel, String> {
@@ -84,6 +86,12 @@ fn main() {
                 eprintln!("error: cranelift feature not enabled");
                 std::process::exit(1);
             }
+        }
+        (Codegen::Wat, Emit::Asm) => {
+            print!("{}", compaheuiler::compile_to_wat(&source));
+        }
+        (Codegen::Wat, Emit::Link) => {
+            compile_wat(&compaheuiler::compile_to_wat(&source), &output_path(&cli));
         }
     }
 }
@@ -172,6 +180,25 @@ lto = "fat"
         }
         let _ = std::fs::remove_file(&rs_path);
     }
+}
+
+fn compile_wat(code: &str, bin_path: &PathBuf) {
+    let wat_path = format!("/tmp/compaheuiler_{}.wat", std::process::id());
+    std::fs::write(&wat_path, code).unwrap();
+
+    let wasm_path = bin_path.with_extension("wasm");
+    let output = Command::new("wat2wasm")
+        .args([&wat_path, "-o", wasm_path.to_str().unwrap()])
+        .output()
+        .unwrap_or_else(|e| {
+            eprintln!("error: wat2wasm: {e}");
+            std::process::exit(1);
+        });
+    if !output.status.success() {
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        std::process::exit(1);
+    }
+    let _ = std::fs::remove_file(&wat_path);
 }
 
 fn compile_c(code: &str, bin_path: &PathBuf) {
