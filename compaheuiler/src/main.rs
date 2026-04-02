@@ -49,6 +49,10 @@ struct Cli {
     /// 코드 생성 백엔드
     #[arg(long, value_enum, default_value_t = Codegen::Rust)]
     codegen: Codegen,
+
+    /// WAT codegen: WASI 모드로 생성 (기본: env import)
+    #[arg(long)]
+    wasi: bool,
 }
 
 fn main() {
@@ -88,10 +92,15 @@ fn main() {
             }
         }
         (Codegen::Wat, Emit::Asm) => {
-            print!("{}", compaheuiler::compile_to_wat(&source));
+            let wat = if cli.wasi {
+                compaheuiler::compile_to_wat_wasi(&source)
+            } else {
+                compaheuiler::compile_to_wat(&source)
+            };
+            print!("{wat}");
         }
         (Codegen::Wat, Emit::Link) => {
-            compile_wat(&compaheuiler::compile_to_wat(&source), &output_path(&cli));
+            compile_wat(&compaheuiler::compile_to_wat_wasi(&source), &output_path(&cli));
         }
     }
 }

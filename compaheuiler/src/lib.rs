@@ -9,6 +9,7 @@ pub use rust_gen::compile_to_rs_bigint;
 pub use rust_gen::compile_to_rs_opt;
 pub use rust_gen::compile_to_rs_bigint_opt;
 pub use wat_gen::compile_to_wat;
+pub use wat_gen::compile_to_wat_wasi;
 
 #[cfg(feature = "cranelift")]
 pub use cranelift_backend::jit;

@@ -33,9 +33,20 @@ fn storage_base(s: usize) -> i32 {
     STORAGE_BASE + (s as i32) * STORAGE_SIZE
 }
 
+/// Generate WAT with env.write_byte/read_byte imports (pure module, no WASI).
 pub fn compile_to_wat(source: &str) -> String {
+    let cfg = optimize_cfg(source);
+    generate_wat_dispatch(&cfg, false)
+}
+
+/// Generate WAT with WASI glue: self-contained _start entry using fd_write/fd_read.
+pub fn compile_to_wat_wasi(source: &str) -> String {
+    let cfg = optimize_cfg(source);
+    generate_wat_dispatch(&cfg, true)
+}
+
+fn optimize_cfg(source: &str) -> Cfg {
     let mut cfg = ahsembler::compile_to_cfg_aot(source);
-    // Same optimization pipeline as cgen.rs
     for _ in 0..10 {
         let before = cfg.num_blocks();
         let states = ahsembler::cfg_optimize::analyze_stack_depths(&cfg);
@@ -78,10 +89,10 @@ pub fn compile_to_wat(source: &str) -> String {
             }
         }
     }
-    generate_wat_dispatch(&cfg)
+    cfg
 }
 
-fn generate_wat_dispatch(cfg: &Cfg) -> String {
+fn generate_wat_dispatch(cfg: &Cfg, wasi: bool) -> String {
     let mut out = String::with_capacity(65536);
 
     let states = ahsembler::cfg_optimize::analyze_stack_depths(cfg);
@@ -139,26 +150,35 @@ fn generate_wat_dispatch(cfg: &Cfg) -> String {
     out.push_str(WAT_HEADER);
     out.push_str("(module\n");
 
-    // WASI imports (must come before memory/func definitions)
-    out.push_str("  (import \"wasi_snapshot_preview1\" \"fd_write\"\n");
-    out.push_str("    (func $fd_write (param i32 i32 i32 i32) (result i32)))\n");
-    out.push_str("  (import \"wasi_snapshot_preview1\" \"fd_read\"\n");
-    out.push_str("    (func $fd_read (param i32 i32 i32 i32) (result i32)))\n");
-    out.push_str("  (import \"wasi_snapshot_preview1\" \"proc_exit\"\n");
-    out.push_str("    (func $proc_exit (param i32)))\n\n");
+    // Imports (must come before memory/func definitions)
+    if wasi {
+        out.push_str("  (import \"wasi_snapshot_preview1\" \"fd_write\"\n");
+        out.push_str("    (func $fd_write (param i32 i32 i32 i32) (result i32)))\n");
+        out.push_str("  (import \"wasi_snapshot_preview1\" \"fd_read\"\n");
+        out.push_str("    (func $fd_read (param i32 i32 i32 i32) (result i32)))\n");
+        out.push_str("  (import \"wasi_snapshot_preview1\" \"proc_exit\"\n");
+        out.push_str("    (func $proc_exit (param i32)))\n\n");
+    } else {
+        out.push_str("  (import \"env\" \"write_byte\" (func $write_byte_import (param i32)))\n");
+        out.push_str("  (import \"env\" \"read_byte\" (func $read_byte_import (result i32)))\n\n");
+    }
 
     // Memory: 224 pages = ~14.6MB
     out.push_str("  (memory (export \"memory\") 224)\n\n");
 
     // Helper functions
-    emit_helpers(&mut out, has_queue, has_port, has_io);
+    emit_helpers(&mut out, has_queue, has_port, has_io, wasi);
 
     // Main function
-    out.push_str("  (func $main (export \"_start\")\n");
+    if wasi {
+        out.push_str("  (func $main (export \"_start\")\n");
+    } else {
+        out.push_str("  (func $main (export \"run\") (result i32)\n");
+    }
     out.push_str("    (local $pc i32)\n");
     out.push_str("    (local $sel i32)\n");
     out.push_str("    (local $v0 i64) (local $v1 i64) (local $v2 i64)\n");
-    out.push_str("    (local $addr i32) (local $tmp i32)\n\n");
+    out.push_str("    (local $addr i32) (local $tmp i32) (local $exit_code i32)\n\n");
 
     // Initialize tops array: each storage top = base address of that storage
     out.push_str("    ;; Initialize tops\n");
@@ -242,12 +262,18 @@ fn generate_wat_dispatch(cfg: &Cfg) -> String {
             has_queue || has_port,
             &used,
             &block_order,
+            wasi,
         );
     }
 
     // Close loop and exit block
     out.push_str("      ) ;; loop $dispatch\n");
     out.push_str("    ) ;; block $exit\n");
+    if wasi {
+        out.push_str("    (call $proc_exit (local.get $exit_code))\n");
+    } else {
+        out.push_str("    (local.get $exit_code)\n");
+    }
     out.push_str("  ) ;; func $main\n\n");
 
     out.push_str(")\n");
@@ -555,6 +581,7 @@ fn emit_terminator(
     has_special: bool,
     _used: &BTreeSet<usize>,
     block_order: &HashMap<BlockId, usize>,
+    wasi: bool,
 ) {
     let ind = "        ";
     let is_special = |s: usize| s == QUEUE || s == PORT;
@@ -656,10 +683,10 @@ fn emit_terminator(
                     "{ind}(if (i32.gt_s (call $sp_depth (i32.const {s})) (i32.const 0))\n"
                 ));
                 out.push_str(&format!(
-                    "{ind}  (then (call $proc_exit (i32.wrap_i64 (call $sp_pop (i32.const {s})))))\n"
+                    "{ind}  (then (local.set $exit_code (i32.wrap_i64 (call $sp_pop (i32.const {s})))))\n"
                 ));
                 out.push_str(&format!(
-                    "{ind}  (else (call $proc_exit (i32.const 0)))\n"
+                    "{ind}  (else (local.set $exit_code (i32.const 0)))\n"
                 ));
                 out.push_str(&format!("{ind})\n"));
             } else if sel.is_none() {
@@ -669,15 +696,15 @@ fn emit_terminator(
                 ));
                 out.push_str(&format!("{ind}  (then\n"));
                 out.push_str(&format!("{ind}    (if (i32.or (i32.eq (local.get $sel) (i32.const {QUEUE})) (i32.eq (local.get $sel) (i32.const {PORT})))\n"));
-                out.push_str(&format!("{ind}      (then (call $proc_exit (i32.wrap_i64 (call $sp_pop (local.get $sel)))))\n"));
+                out.push_str(&format!("{ind}      (then (local.set $exit_code (i32.wrap_i64 (call $sp_pop (local.get $sel)))))\n"));
                 out.push_str(&format!("{ind}      (else\n"));
                 // peek top of regular storage
-                out.push_str(&format!("{ind}        (call $proc_exit (i32.wrap_i64 (i64.load (i32.sub (call $tops_get_dyn (local.get $sel)) (i32.const 8)))))\n"));
+                out.push_str(&format!("{ind}        (local.set $exit_code (i32.wrap_i64 (i64.load (i32.sub (call $tops_get_dyn (local.get $sel)) (i32.const 8)))))\n"));
                 out.push_str(&format!("{ind}      )\n"));
                 out.push_str(&format!("{ind}    )\n"));
                 out.push_str(&format!("{ind}  )\n"));
                 out.push_str(&format!(
-                    "{ind}  (else (call $proc_exit (i32.const 0)))\n"
+                    "{ind}  (else (local.set $exit_code (i32.const 0)))\n"
                 ));
                 out.push_str(&format!("{ind})\n"));
             } else {
@@ -688,10 +715,10 @@ fn emit_terminator(
                     "{ind}(if (i32.gt_s (i32.load (i32.const {toff})) (i32.const {base}))\n"
                 ));
                 out.push_str(&format!(
-                    "{ind}  (then (call $proc_exit (i32.wrap_i64 (i64.load (i32.sub (i32.load (i32.const {toff})) (i32.const 8))))))\n"
+                    "{ind}  (then (local.set $exit_code (i32.wrap_i64 (i64.load (i32.sub (i32.load (i32.const {toff})) (i32.const 8))))))\n"
                 ));
                 out.push_str(&format!(
-                    "{ind}  (else (call $proc_exit (i32.const 0)))\n"
+                    "{ind}  (else (local.set $exit_code (i32.const 0)))\n"
                 ));
                 out.push_str(&format!("{ind})\n"));
             }
@@ -897,7 +924,7 @@ fn binop_expr(kind: &BinOpKind, a: &str, b: &str) -> String {
 }
 
 /// Emit all helper functions.
-fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool) {
+fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool, wasi: bool) {
     // --- Wrapping arithmetic ---
     out.push_str(
         r#"  ;; Wrapping arithmetic (i64 add/sub/mul just wrap naturally in WASM)
@@ -1125,12 +1152,11 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
         ));
     }
 
-    // --- I/O: buffered output ---
-    // Use a global for output buffer position
-    out.push_str(&format!(
-        r#"  (global $out_pos (mut i32) (i32.const 0))
+    // --- I/O: output ---
+    if wasi {
+        out.push_str(&format!(
+            r#"  (global $out_pos (mut i32) (i32.const 0))
 
-  ;; Flush output buffer to stdout
   (func $flush_out
     (if (i32.gt_s (global.get $out_pos) (i32.const 0))
       (then
@@ -1142,7 +1168,6 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
     )
   )
 
-  ;; Emit one byte to output buffer
   (func $emit_byte (param $b i32)
     (i32.store8 (i32.add (i32.const {IO_BUF}) (global.get $out_pos)) (local.get $b))
     (global.set $out_pos (i32.add (global.get $out_pos) (i32.const 1)))
@@ -1152,8 +1177,16 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
   )
 
 "#,
-        IOVEC_LEN = IOVEC + 4,
-    ));
+            IOVEC_LEN = IOVEC + 4,
+        ));
+    } else {
+        out.push_str(
+            r#"  (func $flush_out)
+  (func $emit_byte (param $b i32) (call $write_byte_import (local.get $b)))
+
+"#,
+        );
+    }
 
     // --- write_num: convert i64 to decimal, emit bytes ---
     out.push_str(&format!(
@@ -1235,118 +1268,114 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
 "#,
     );
 
-    // --- read_num: read line from stdin, parse decimal ---
-    out.push_str(&format!(
-        r#"  ;; Read decimal number from stdin
-  (func $read_num (result i64)
+    // --- read_num / read_char ---
+    if wasi {
+        out.push_str(&format!(
+            r#"  (func $read_num (result i64)
     (local $nread i32) (local $pos i32) (local $b i32)
-    (local $result i64) (local $neg i32) (local $started i32)
-    ;; Read up to 64 bytes into IO_BUF
+    (local $result i64) (local $neg i32)
     (i32.store (i32.const {IOVEC}) (i32.const {IO_BUF}))
     (i32.store (i32.const {IOVEC_LEN}) (i32.const 64))
     (drop (call $fd_read (i32.const 0) (i32.const {IOVEC}) (i32.const 1) (i32.const {NWRITTEN})))
     (local.set $nread (i32.load (i32.const {NWRITTEN})))
     (if (i32.eqz (local.get $nread)) (then (return (i64.const 0))))
-    (local.set $pos (i32.const 0))
-    (local.set $result (i64.const 0))
-    (local.set $neg (i32.const 0))
-    (local.set $started (i32.const 0))
-    ;; Skip whitespace
-    (block $ws_done
-      (loop $ws_loop
-        (br_if $ws_done (i32.ge_u (local.get $pos) (local.get $nread)))
-        (local.set $b (i32.load8_u (i32.add (i32.const {IO_BUF}) (local.get $pos))))
-        (br_if $ws_done (i32.and (i32.ne (local.get $b) (i32.const 32)) (i32.ne (local.get $b) (i32.const 10))))
-        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
-        (br $ws_loop)
-      )
-    )
-    ;; Check minus sign
+    (block $ws_done (loop $ws_loop
+      (br_if $ws_done (i32.ge_u (local.get $pos) (local.get $nread)))
+      (local.set $b (i32.load8_u (i32.add (i32.const {IO_BUF}) (local.get $pos))))
+      (br_if $ws_done (i32.and (i32.ne (local.get $b) (i32.const 32)) (i32.ne (local.get $b) (i32.const 10))))
+      (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+      (br $ws_loop)))
     (if (i32.lt_u (local.get $pos) (local.get $nread))
-      (then
-        (if (i32.eq (i32.load8_u (i32.add (i32.const {IO_BUF}) (local.get $pos))) (i32.const 45))
-          (then
-            (local.set $neg (i32.const 1))
-            (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
-          )
-        )
-      )
-    )
-    ;; Parse digits
-    (block $parse_done
-      (loop $parse_loop
-        (br_if $parse_done (i32.ge_u (local.get $pos) (local.get $nread)))
-        (local.set $b (i32.load8_u (i32.add (i32.const {IO_BUF}) (local.get $pos))))
-        (br_if $parse_done (i32.or (i32.lt_u (local.get $b) (i32.const 48)) (i32.gt_u (local.get $b) (i32.const 57))))
-        (local.set $result
-          (i64.add (i64.mul (local.get $result) (i64.const 10))
-            (i64.extend_i32_u (i32.sub (local.get $b) (i32.const 48))))
-        )
-        (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
-        (br $parse_loop)
-      )
-    )
-    (if (result i64) (local.get $neg)
-      (then (i64.sub (i64.const 0) (local.get $result)))
-      (else (local.get $result))
-    )
+      (then (if (i32.eq (i32.load8_u (i32.add (i32.const {IO_BUF}) (local.get $pos))) (i32.const 45))
+        (then (local.set $neg (i32.const 1)) (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))))
+    (block $pd (loop $pl
+      (br_if $pd (i32.ge_u (local.get $pos) (local.get $nread)))
+      (local.set $b (i32.load8_u (i32.add (i32.const {IO_BUF}) (local.get $pos))))
+      (br_if $pd (i32.or (i32.lt_u (local.get $b) (i32.const 48)) (i32.gt_u (local.get $b) (i32.const 57))))
+      (local.set $result (i64.add (i64.mul (local.get $result) (i64.const 10)) (i64.extend_i32_u (i32.sub (local.get $b) (i32.const 48)))))
+      (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+      (br $pl)))
+    (if (result i64) (local.get $neg) (then (i64.sub (i64.const 0) (local.get $result))) (else (local.get $result)))
   )
 
-"#,
-        IOVEC_LEN = IOVEC + 4,
-    ));
-
-    // --- read_char: read UTF-8 char from stdin ---
-    out.push_str(&format!(
-        r#"  ;; Read one UTF-8 character from stdin
   (func $read_char (result i64)
-    (local $nread i32) (local $b i32) (local $n i32) (local $val i32) (local $i i32)
-    ;; Read 1 byte
+    (local $b i32) (local $n i32) (local $val i32) (local $i i32)
     (i32.store (i32.const {IOVEC}) (i32.const {IO_BUF}))
     (i32.store (i32.const {IOVEC_LEN}) (i32.const 1))
     (drop (call $fd_read (i32.const 0) (i32.const {IOVEC}) (i32.const 1) (i32.const {NWRITTEN})))
     (if (i32.eqz (i32.load (i32.const {NWRITTEN}))) (then (return (i64.const -1))))
     (local.set $b (i32.load8_u (i32.const {IO_BUF})))
-    ;; ASCII
-    (if (i32.lt_u (local.get $b) (i32.const 0x80))
-      (then (return (i64.extend_i32_u (local.get $b))))
-    )
-    ;; Multi-byte
+    (if (i32.lt_u (local.get $b) (i32.const 0x80)) (then (return (i64.extend_i32_u (local.get $b)))))
     (if (i32.eq (i32.shr_u (local.get $b) (i32.const 5)) (i32.const 6))
       (then (local.set $n (i32.const 1)) (local.set $val (i32.and (local.get $b) (i32.const 0x1F))))
       (else (if (i32.eq (i32.shr_u (local.get $b) (i32.const 4)) (i32.const 14))
         (then (local.set $n (i32.const 2)) (local.set $val (i32.and (local.get $b) (i32.const 0x0F))))
         (else (if (i32.eq (i32.shr_u (local.get $b) (i32.const 3)) (i32.const 30))
           (then (local.set $n (i32.const 3)) (local.set $val (i32.and (local.get $b) (i32.const 0x07))))
-          (else (return (i64.const -1)))
-        ))
-      ))
-    )
-    ;; Read continuation bytes
-    (local.set $i (i32.const 0))
-    (block $cont_done
-      (loop $cont_loop
-        (br_if $cont_done (i32.ge_u (local.get $i) (local.get $n)))
-        (i32.store (i32.const {IOVEC}) (i32.const {IO_BUF}))
-        (i32.store (i32.const {IOVEC_LEN}) (i32.const 1))
-        (drop (call $fd_read (i32.const 0) (i32.const {IOVEC}) (i32.const 1) (i32.const {NWRITTEN})))
-        (if (i32.eqz (i32.load (i32.const {NWRITTEN}))) (then (return (i64.const -1))))
-        (local.set $val
-          (i32.or
-            (i32.shl (local.get $val) (i32.const 6))
-            (i32.and (i32.load8_u (i32.const {IO_BUF})) (i32.const 0x3F))
-          )
-        )
-        (local.set $i (i32.add (local.get $i) (i32.const 1)))
-        (br $cont_loop)
-      )
-    )
+          (else (return (i64.const -1))))))))
+    (block $cd (loop $cl
+      (br_if $cd (i32.ge_u (local.get $i) (local.get $n)))
+      (i32.store (i32.const {IOVEC}) (i32.const {IO_BUF}))
+      (i32.store (i32.const {IOVEC_LEN}) (i32.const 1))
+      (drop (call $fd_read (i32.const 0) (i32.const {IOVEC}) (i32.const 1) (i32.const {NWRITTEN})))
+      (if (i32.eqz (i32.load (i32.const {NWRITTEN}))) (then (return (i64.const -1))))
+      (local.set $val (i32.or (i32.shl (local.get $val) (i32.const 6)) (i32.and (i32.load8_u (i32.const {IO_BUF})) (i32.const 0x3F))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $cl)))
     (i64.extend_i32_u (local.get $val))
   )
 
 "#,
-        IOVEC_LEN = IOVEC + 4,
-    ));
+            IOVEC_LEN = IOVEC + 4,
+        ));
+    } else {
+        // env mode: read_byte returns one byte (-1 for EOF)
+        out.push_str(
+            r#"  (func $read_num (result i64)
+    (local $b i32) (local $result i64) (local $neg i32) (local $started i32)
+    ;; Skip whitespace
+    (block $ws_done (loop $ws_loop
+      (local.set $b (call $read_byte_import))
+      (br_if $ws_done (i32.lt_s (local.get $b) (i32.const 0)))
+      (br_if $ws_done (i32.and (i32.ne (local.get $b) (i32.const 32)) (i32.ne (local.get $b) (i32.const 10)) ))
+      (br $ws_loop)))
+    (if (i32.lt_s (local.get $b) (i32.const 0)) (then (return (i64.const 0))))
+    (if (i32.eq (local.get $b) (i32.const 45))
+      (then (local.set $neg (i32.const 1)) (local.set $b (call $read_byte_import))))
+    ;; Parse digits
+    (block $pd (loop $pl
+      (br_if $pd (i32.or (i32.lt_u (local.get $b) (i32.const 48)) (i32.gt_u (local.get $b) (i32.const 57))))
+      (local.set $result (i64.add (i64.mul (local.get $result) (i64.const 10)) (i64.extend_i32_u (i32.sub (local.get $b) (i32.const 48)))))
+      (local.set $b (call $read_byte_import))
+      (br $pl)))
+    (if (result i64) (local.get $neg) (then (i64.sub (i64.const 0) (local.get $result))) (else (local.get $result)))
+  )
+
+  (func $read_char (result i64)
+    (local $b i32) (local $n i32) (local $val i32) (local $i i32)
+    (local.set $b (call $read_byte_import))
+    (if (i32.lt_s (local.get $b) (i32.const 0)) (then (return (i64.const -1))))
+    (if (i32.lt_u (local.get $b) (i32.const 0x80)) (then (return (i64.extend_i32_u (local.get $b)))))
+    (if (i32.eq (i32.shr_u (local.get $b) (i32.const 5)) (i32.const 6))
+      (then (local.set $n (i32.const 1)) (local.set $val (i32.and (local.get $b) (i32.const 0x1F))))
+      (else (if (i32.eq (i32.shr_u (local.get $b) (i32.const 4)) (i32.const 14))
+        (then (local.set $n (i32.const 2)) (local.set $val (i32.and (local.get $b) (i32.const 0x0F))))
+        (else (if (i32.eq (i32.shr_u (local.get $b) (i32.const 3)) (i32.const 30))
+          (then (local.set $n (i32.const 3)) (local.set $val (i32.and (local.get $b) (i32.const 0x07))))
+          (else (return (i64.const -1))))))))
+    (block $cd (loop $cl
+      (br_if $cd (i32.ge_u (local.get $i) (local.get $n)))
+      (local.set $b (call $read_byte_import))
+      (if (i32.lt_s (local.get $b) (i32.const 0)) (then (return (i64.const -1))))
+      (local.set $val (i32.or (i32.shl (local.get $val) (i32.const 6)) (i32.and (local.get $b) (i32.const 0x3F))))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $cl)))
+    (i64.extend_i32_u (local.get $val))
+  )
+
+"#,
+        );
+    }
 }
 
 const WAT_HEADER: &str = "\
