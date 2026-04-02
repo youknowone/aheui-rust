@@ -19,8 +19,12 @@ enum Codegen {
     C,
     /// Cranelift으로 AOT컴파흴 후 실행
     Cranelift,
-    /// WAT 코드 생성 후 wat2wasm으로 컴파흴
-    Wat,
+    /// WASM (WASI): WAT 생성, fd_write/fd_read 사용
+    #[value(name = "wasm32-wasi")]
+    Wasm32Wasi,
+    /// WASM (Web): WAT 생성, env.write_byte/read_byte import
+    #[value(name = "wasm32-web")]
+    Wasm32Web,
 }
 
 fn parse_opt_level(s: &str) -> Result<ahsembler::OptimizationLevel, String> {
@@ -49,10 +53,6 @@ struct Cli {
     /// 코드 생성 백엔드
     #[arg(long, value_enum, default_value_t = Codegen::Rust)]
     codegen: Codegen,
-
-    /// WAT codegen: WASI 모드로 생성 (기본: env import)
-    #[arg(long)]
-    wasi: bool,
 }
 
 fn main() {
@@ -91,16 +91,17 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        (Codegen::Wat, Emit::Asm) => {
-            let wat = if cli.wasi {
-                compaheuiler::compile_to_wat_wasi(&source)
-            } else {
-                compaheuiler::compile_to_wat(&source)
-            };
-            print!("{wat}");
+        (Codegen::Wasm32Wasi, Emit::Asm) => {
+            print!("{}", compaheuiler::compile_to_wat_wasi(&source));
         }
-        (Codegen::Wat, Emit::Link) => {
+        (Codegen::Wasm32Web, Emit::Asm) => {
+            print!("{}", compaheuiler::compile_to_wat(&source));
+        }
+        (Codegen::Wasm32Wasi, Emit::Link) => {
             compile_wat(&compaheuiler::compile_to_wat_wasi(&source), &output_path(&cli));
+        }
+        (Codegen::Wasm32Web, Emit::Link) => {
+            compile_wat(&compaheuiler::compile_to_wat(&source), &output_path(&cli));
         }
     }
 }
