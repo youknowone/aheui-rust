@@ -1,12 +1,62 @@
 /// Buffered I/O for Aheui interpreter.
 ///
 /// Ported from rpaheui/aheui/option.py and target/aheui IO routines.
-use std::io::{self, Read, Write};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::io::{self, Read};
+use std::io::Write;
 
 use crate::value::*;
 
-// ── Output helpers ──────────────────────────────────────────────────
+// ── wasm32-unknown-unknown: thread-local buffered I/O ──────────────
+//
+// `wasm32-unknown-unknown` 타겟에는 실제 stdin/stdout 이 없으므로
+// thread-local 버퍼로 I/O 를 대신한다. 호스트 코드 (예: aheui-wasm)
+// 에서 `set_input` 으로 입력을 주입하고 `take_output` 으로 출력을
+// 회수한다. 다른 타겟에서는 평소대로 std::io 경로를 사용한다.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod wasm_buf {
+    use std::cell::RefCell;
 
+    thread_local! {
+        static INPUT: RefCell<(Vec<u8>, usize)> = RefCell::new((Vec::new(), 0));
+        static OUTPUT: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    }
+
+    pub fn set_input(bytes: &[u8]) {
+        INPUT.with(|cell| {
+            let mut inner = cell.borrow_mut();
+            inner.0.clear();
+            inner.0.extend_from_slice(bytes);
+            inner.1 = 0;
+        });
+    }
+
+    pub fn take_output() -> Vec<u8> {
+        OUTPUT.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
+    }
+
+    pub(super) fn write_all(bytes: &[u8]) {
+        OUTPUT.with(|cell| cell.borrow_mut().extend_from_slice(bytes));
+    }
+
+    pub(super) fn drain_input_into(dst: &mut Vec<u8>) {
+        INPUT.with(|cell| {
+            let mut inner = cell.borrow_mut();
+            let end = inner.0.len();
+            if inner.1 < end {
+                dst.extend_from_slice(&inner.0[inner.1..end]);
+                inner.1 = end;
+            }
+        });
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn output_write_all(bytes: &[u8]) {
+    wasm_buf::write_all(bytes);
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn output_write_all(bytes: &[u8]) {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
@@ -68,6 +118,13 @@ fn output_write_utf8_i64(code: i64) {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub fn output_flush() {
+    // wasm32-unknown-unknown: 출력은 thread-local 버퍼에 모이고
+    // 호스트 코드에서 `wasm_buf::take_output` 으로 회수한다.
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn output_flush() {
     let stdout = io::stdout();
     let _ = stdout.lock().flush();
@@ -118,6 +175,14 @@ impl InputBuffer {
         }
     }
 
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn fill_line(&mut self) {
+        self.buffer.clear();
+        self.pos = 0;
+        wasm_buf::drain_input_into(&mut self.buffer);
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     fn fill_line(&mut self) {
         self.buffer.clear();
         self.pos = 0;

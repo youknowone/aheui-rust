@@ -1,0 +1,33 @@
+[package]
+name = "aheui-wasm"
+version = "0.0.1"
+edition = "2024"
+description = "아희 컴파일러와 인터프리터의 wasm-bindgen 라이브러리"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/youknowone/aheui-rust"
+keywords = ["aheui", "compiler", "wasm", "hangul"]
+categories = ["compilers", "wasm"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["malachite-bigint"]
+num-bigint = [
+    "aheuinterpreter/num-bigint",
+    "compaheuiler/num-bigint",
+    "aheui-runtime/num-bigint",
+]
+malachite-bigint = [
+    "aheuinterpreter/malachite-bigint",
+    "compaheuiler/malachite-bigint",
+    "aheui-runtime/malachite-bigint",
+]
+
+[dependencies]
+ahsembler = { path = "../ahsembler" }
+aheui-runtime = { path = "../aheui-runtime", default-features = false }
+aheuinterpreter = { path = "../aheuinterpreter", default-features = false }
+compaheuiler = { path = "../compaheuiler", default-features = false }
+wasm-bindgen = "0.2"
+wat = "1.227"
