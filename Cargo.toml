@@ -4,7 +4,7 @@ version = "0.0.1"
 edition = "2024"
 
 [workspace]
-members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler"]
+members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler", "aheui-wasm"]
 
 [features]
 default = ["jit", "malachite-bigint"]
