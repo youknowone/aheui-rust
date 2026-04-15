@@ -83,6 +83,14 @@ impl majit_gc::GcAllocator for NurseryGcAllocator {
         self.alloc_varsize(base_size, item_size, length)
     }
     fn write_barrier(&mut self, _obj: majit_ir::GcRef) {}
+    fn jit_remember_young_pointer_from_array(&mut self, _obj: majit_ir::GcRef) {}
+    fn remember_young_pointer_from_array2(
+        &mut self,
+        _obj: majit_ir::GcRef,
+        _index: usize,
+        _card_page_shift: u32,
+    ) {
+    }
     fn collect_nursery(&mut self) {}
     fn collect_full(&mut self) {}
     fn nursery_free(&self) -> *mut u8 {

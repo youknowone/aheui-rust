@@ -4,9 +4,11 @@ version = "0.0.1"
 edition = "2024"
 
 [features]
-default = ["malachite-bigint"]
+default = ["malachite-bigint", "dynasm"]
 num-bigint = ["aheui-runtime/num-bigint"]
 malachite-bigint = ["aheui-runtime/malachite-bigint"]
+cranelift = ["dep:majit-backend-cranelift", "majit-metainterp/cranelift"]
+dynasm = ["dep:majit-backend-dynasm", "majit-metainterp/dynasm"]
 
 [dependencies]
 aheui-runtime = { path = "../aheui-runtime" }
@@ -16,6 +18,8 @@ majit-macros = { path = "../../majit/majit-macros" }
 majit-gc = { path = "../../majit/majit-gc" }
 majit-metainterp = { path = "../../majit/majit-metainterp" }
 majit-backend = { path = "../../majit/majit-backend" }
+majit-backend-cranelift = { path = "../../majit/majit-backend-cranelift", optional = true }
+majit-backend-dynasm = { path = "../../majit/majit-backend-dynasm", optional = true }
 
 [build-dependencies]
 majit-codewriter = { path = "../../majit/majit-codewriter" }
