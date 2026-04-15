@@ -1,4 +1,13 @@
-/// Pure Aheui interpreter (no JIT).
+//! Pure Aheui interpreter (no JIT).
+//!
+//! Mirrors `rpaheui/aheui/aheui.py::mainloop`. Variables are named after
+//! the rpaheui locals so the structure stays line-comparable:
+//!   * greens — `pc`, `stackok`, `is_queue`, `program`
+//!   * reds   — `stacksize`, `storage`, `selected`
+//!
+//! `selected` here is an index into `storage` (not an object reference
+//! as in rpaheui) — Rust's borrow rules make object aliasing awkward,
+//! and the JIT (`aheui-jit`) keeps the same index-based shape.
 use crate::aheui::Program;
 
 use crate::aheui::*;
@@ -6,14 +15,21 @@ use crate::io as aheui_io;
 use crate::storage::StoragePool;
 use crate::value::*;
 
+// `is_queue` is kept for structural parity with the rpaheui mainloop:
+// the JIT mirror in `aheui-jit` promotes it as a green, and the naive
+// path here just maintains it. Suppress unused-write warnings.
+#[allow(unused_assignments, unused_variables)]
 pub fn mainloop(program: &Program) -> Val {
+    // rpaheui/aheui/aheui.py:228-234
     let mut pc: usize = 0;
     let mut stacksize: i32 = 0;
+    let mut is_queue: bool = false;
     let mut storage = StoragePool::new();
     let mut selected: usize = 0;
 
     let mut input = aheui_io::InputBuffer::new();
     while pc < program.size {
+        // rpaheui/aheui/aheui.py:252
         let stackok = program.get_req_size(pc) as i32 <= stacksize;
         let op = program.get_op(pc);
         stacksize += -OP_STACKDEL[op as usize] + OP_STACKADD[op as usize];
@@ -34,9 +50,11 @@ pub fn mainloop(program: &Program) -> Val {
             OP_DUP => storage.get_mut(selected).dup(),
             OP_SWAP => storage.get_mut(selected).swap(),
             OP_SEL => {
+                // rpaheui/aheui/aheui.py:280-284
                 let value = program.get_operand(pc) as usize;
                 selected = value;
                 stacksize = storage.get(selected).len() as i32;
+                is_queue = value == VAL_QUEUE;
             }
             OP_MOV => {
                 let r = storage.get_mut(selected).pop();

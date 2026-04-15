@@ -13,7 +13,7 @@ fn main() {
     let base = format!("{manifest_dir}/..");
 
     let source_dirs = [
-        format!("{base}/aheui-interp/src"),
+        format!("{base}/aheuinterpreter/src"),
         format!("{base}/aheui-runtime/src"),
     ];
 
@@ -58,12 +58,36 @@ fn main() {
                     call_effects: build_call_effect_overrides(),
                     ..Default::default()
                 },
-                classify: Default::default(),
+                // rpaheui/aheui/aheui.py:28-31
+                //   driver = jit.JitDriver(
+                //       greens=['pc','stackok','is_queue','program'],
+                //       reds=['stacksize','storage','selected'])
+                jitdrivers: vec![majit_codewriter::JitDriverSpec {
+                    portal: vec!["mainloop".to_string()],
+                    greens: vec![
+                        "pc".to_string(),
+                        "stackok".to_string(),
+                        "is_queue".to_string(),
+                        "program".to_string(),
+                    ],
+                    reds: vec![
+                        "stacksize".to_string(),
+                        "storage".to_string(),
+                        "selected".to_string(),
+                    ],
+                }],
             },
         },
     );
 
-    let code = majit_codewriter::generate_trace_code_from_pipeline(&pipeline);
+    // aheui drives the JIT from the `#[jit_interp]` proc macro, not from
+    // the pyre-oriented trace helpers baked into the Full flavor. Emit
+    // only the generic metadata tables so the included file compiles
+    // without `pyre_object` / `pyre_interpreter` in scope.
+    let code = majit_codewriter::generate_trace_code_from_pipeline_with_flavor(
+        &pipeline,
+        majit_codewriter::CodegenFlavor::Minimal,
+    );
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     std::fs::write(format!("{out_dir}/jit_trace_gen.rs"), &code).unwrap();
