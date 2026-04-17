@@ -5,14 +5,18 @@
 //!   * greens — `pc`, `stackok`, `is_queue`, `program`
 //!   * reds   — `stacksize`, `storage`, `selected`
 //!
-//! `selected` here is an index into `storage` (not an object reference
-//! as in rpaheui) — Rust's borrow rules make object aliasing awkward,
-//! and the JIT (`aheui-jit`) keeps the same index-based shape.
+//! In RPython `selected = storage[value]` captures a direct reference to
+//! the polymorphic `Stack` / `Queue` / `Port` object (aheui.py:233,282).
+//! Rust cannot hold a mutable borrow into `storage` across subsequent
+//! storage mutations, so `selected` is kept as an `usize` index and the
+//! polymorphic object is re-fetched via [`Storage::dispatch_mut`] on
+//! every use. This is the minimum adaptation needed for the borrow
+//! checker; the semantic result is identical.
 use crate::aheui::Program;
 
 use crate::aheui::*;
 use crate::io as aheui_io;
-use crate::storage::StoragePool;
+use crate::storage::Storage;
 use crate::value::*;
 
 // `is_queue` is kept for structural parity with the rpaheui mainloop:
@@ -24,7 +28,7 @@ pub fn mainloop(program: &Program) -> Val {
     let mut pc: usize = 0;
     let mut stacksize: i32 = 0;
     let mut is_queue: bool = false;
-    let mut storage = StoragePool::new();
+    let mut storage = Storage::new();
     let mut selected: usize = 0;
 
     let mut input = aheui_io::InputBuffer::new();
@@ -35,42 +39,42 @@ pub fn mainloop(program: &Program) -> Val {
         stacksize += -OP_STACKDEL[op as usize] + OP_STACKADD[op as usize];
 
         match op {
-            OP_ADD => storage.get_mut(selected).add(),
-            OP_SUB => storage.get_mut(selected).sub(),
-            OP_MUL => storage.get_mut(selected).mul(),
-            OP_DIV => storage.get_mut(selected).div(),
-            OP_MOD => storage.get_mut(selected).modulo(),
+            OP_ADD => storage.dispatch_mut(selected).add(),
+            OP_SUB => storage.dispatch_mut(selected).sub(),
+            OP_MUL => storage.dispatch_mut(selected).mul(),
+            OP_DIV => storage.dispatch_mut(selected).div(),
+            OP_MOD => storage.dispatch_mut(selected).modulo(),
             OP_POP => {
-                storage.get_mut(selected).pop();
+                storage.dispatch_mut(selected).pop();
             }
             OP_PUSH => {
-                let value = program.get_operand(pc) as i64;
-                storage.get_mut(selected).push(value);
+                let value = program.get_operand(pc) as i32;
+                storage.dispatch_mut(selected).push(val_from_i32(value));
             }
-            OP_DUP => storage.get_mut(selected).dup(),
-            OP_SWAP => storage.get_mut(selected).swap(),
+            OP_DUP => storage.dispatch_mut(selected).dup(),
+            OP_SWAP => storage.dispatch_mut(selected).swap(),
             OP_SEL => {
                 // rpaheui/aheui/aheui.py:280-284
                 let value = program.get_operand(pc) as usize;
                 selected = value;
-                stacksize = storage.get(selected).len() as i32;
+                stacksize = storage.len_at(selected) as i32;
                 is_queue = value == VAL_QUEUE;
             }
             OP_MOV => {
-                let r = storage.get_mut(selected).pop();
+                let r = storage.dispatch_mut(selected).pop();
                 let target = program.get_operand(pc) as usize;
-                storage.get_mut(target).push(r);
+                storage.dispatch_mut(target).push(r);
                 if selected == target {
                     stacksize += 1;
                 }
             }
-            OP_CMP => storage.get_mut(selected).cmp(),
+            OP_CMP => storage.dispatch_mut(selected).cmp(),
             OP_BRPOP1 | OP_BRPOP2 | OP_JMP | OP_BRZ => {
                 let jump = match op {
                     OP_BRPOP1 | OP_BRPOP2 => !stackok,
                     OP_JMP => true,
                     OP_BRZ => {
-                        let top = storage.get_mut(selected).pop();
+                        let top = storage.dispatch_mut(selected).pop();
                         val_is_zero(&top)
                     }
                     _ => unreachable!(),
@@ -81,22 +85,22 @@ pub fn mainloop(program: &Program) -> Val {
                 }
             }
             OP_POPNUM => {
-                let r = storage.get_mut(selected).pop();
+                let r = storage.dispatch_mut(selected).pop();
                 aheui_io::output_write_number(&r);
             }
             OP_POPCHAR => {
-                let r = storage.get_mut(selected).pop();
+                let r = storage.dispatch_mut(selected).pop();
                 aheui_io::output_write_utf8(&r);
             }
             OP_PUSHNUM => {
                 aheui_io::output_flush();
                 let num = input.read_number();
-                storage.get_mut(selected).push(num);
+                storage.dispatch_mut(selected).push(num.into());
             }
             OP_PUSHCHAR => {
                 aheui_io::output_flush();
                 let ch = input.read_utf8();
-                storage.get_mut(selected).push(ch);
+                storage.dispatch_mut(selected).push(ch.into());
             }
             OP_NONE => {}
             OP_HALT => break,
@@ -107,8 +111,9 @@ pub fn mainloop(program: &Program) -> Val {
 
     aheui_io::output_flush();
 
-    if !storage.get(selected).is_empty() {
-        storage.get_mut(selected).pop()
+    // rpaheui/aheui/aheui.py:363-366
+    if storage.len_at(selected) > 0 {
+        storage.dispatch_mut(selected).pop()
     } else {
         val_from_i32(0)
     }
