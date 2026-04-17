@@ -2,7 +2,10 @@
 //!
 //! Data-only module shared by runtime code and `build.rs`.
 
-pub const AHEUI_CALL_OWNER_ROOT: &str = "StorageKind";
+// Receiver root used by the codewriter to group polymorphic
+// Stack/Queue/Port method effects. Matches the `LinkedList` trait
+// defined in `aheui_runtime::storage::linkedlist`.
+pub const AHEUI_CALL_OWNER_ROOT: &str = "LinkedList";
 
 #[derive(Clone, Copy)]
 pub enum CallEffectKind {
