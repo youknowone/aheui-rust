@@ -25,7 +25,8 @@ include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));
 
 use aheui_runtime::aheui::*;
 use aheui_runtime::io as aheui_io;
-use aheui_runtime::storage::StoragePool;
+use aheui_runtime::storage::Storage;
+use aheui_runtime::storage::LinkedList;
 use ahsembler::compiler::Program;
 
 use aheui_runtime::value::*;
@@ -54,7 +55,7 @@ impl majit_gc::GcAllocator for NurseryGcAllocator {
             // will hit a guard and fall back to the interpreter.
             return majit_ir::GcRef::NULL;
         }
-        if size <= aheui_runtime::storage::STACKNODE_SIZE {
+        if size <= aheui_runtime::storage::NODE_SIZE {
             let node = aheui_runtime::storage::alloc_node_raw();
             majit_ir::GcRef(node as usize)
         } else {
@@ -104,8 +105,34 @@ impl majit_gc::GcAllocator for NurseryGcAllocator {
     }
 }
 
+/// Trace-time state for the Aheui JIT.
+///
+/// rpaheui/aheui/aheui.py:228-234 stores the reds as:
+///   stacksize = 0
+///   storage   = Storage()
+///   selected  = storage[0]         # object reference
+///
+/// Rust adaptations — kept narrow and co-located here so reviewers can
+/// see exactly which deviations are required by the borrow checker /
+/// JIT raw-pointer ABI:
+///
+/// * `selected: usize` — RPython captures the polymorphic storage object
+///   directly. Rust cannot hold a mutable borrow into `self.storage`
+///   across subsequent `self.storage` mutations, so the index is kept
+///   and the object is re-fetched via [`Storage::dispatch_mut`] on every
+///   use. This is semantically identical to rpaheui's reference form.
+///
+/// * `selected_ref: GcRef` — The JIT backend reads `head` / `size` at
+///   fixed byte offsets through a raw pointer. This mirrors rpaheui's
+///   `selected` object reference at the machine level: `GcRef` is
+///   literally the raw pointer to the selected `Stack` (Queue/Port
+///   share the `head`/`size` prefix via `#[repr(C)]`). We keep it next
+///   to `selected: usize` because `refresh_selected_ref` has to run any
+///   time `selected` changes; treating them as a single logical field
+///   avoided plumbing a dedicated getter through the `#[jit_interp]`
+///   macro.
 struct AheuiState {
-    storage: StoragePool,
+    storage: Storage,
     selected: usize,
     stacksize: i32,
     pool_ptr: majit_ir::GcRef,
@@ -115,28 +142,19 @@ struct AheuiState {
 impl AheuiState {
     #[inline(always)]
     fn refresh_selected_ref(&mut self) {
-        // RPython: selected = storage[idx] → Stack object.
-        // Point directly at AheuiStack in the flat stacks array.
-        // JIT reads head at offset 0, size at offset 8.
+        // rpaheui/aheui/aheui.py:233,282: selected = storage[idx].
+        // Point directly at `Stack` in the flat stacks array so the JIT
+        // can read head (offset 0) and size (offset 8) without going
+        // through the indirection helper.
         self.selected_ref = majit_ir::GcRef(self.storage.get_stack_ptr(self.selected) as usize);
     }
 
-    #[inline(always)]
-    fn selected_stack(&self) -> &storage::AheuiStack {
-        self.storage.get_stack(self.selected)
-    }
-
-    #[inline(always)]
-    fn selected_stack_mut(&mut self) -> &mut storage::AheuiStack {
-        self.storage.get_stack_mut(self.selected)
-    }
-
-    /// RPython: selected.push/pop/add — polymorphic dispatch (Stack/Queue/Port).
-    fn selected_dispatch_mut(&mut self) -> &mut dyn storage::StorageOps {
+    /// rpaheui: selected.push/pop/add — polymorphic dispatch (Stack/Queue/Port).
+    fn selected_dispatch_mut(&mut self) -> &mut dyn LinkedList {
         self.storage.dispatch_mut(self.selected)
     }
 
-    fn selected_dispatch(&self) -> &dyn storage::StorageOps {
+    fn selected_dispatch(&self) -> &dyn LinkedList {
         self.storage.dispatch(self.selected)
     }
 }
@@ -184,62 +202,9 @@ fn jit_output_flush() {
 
 /// Convert raw i64 to tagged Val. extern "C" for JIT ABI compatibility.
 /// Val is #[repr(transparent)] i64, so returning Val is ABI-safe.
-/// Registered as elidable_int — pure function, result feeds into push_i.
+/// Registered as elidable_int — pure function, result feeds into push.
 extern "C" fn jit_tag_val(raw: i64) -> Val {
     val_from_i32(raw as i32)
-}
-
-// ── Binop wrappers for JIT ──
-//
-// RPython parity: rpaheui uses BigInt objects. Binops are function calls
-// (not IR IntAdd/IntSub). With malachite-bigint tagged values, plain
-// IntAdd on tags produces wrong results. These extern "C" wrappers
-// call the correct val_* functions and are registered as elidable_int.
-
-extern "C" fn jit_val_add(a: i64, b: i64) -> i64 {
-    let r = val_add(unsafe { std::mem::transmute(a) }, unsafe {
-        std::mem::transmute(b)
-    });
-    unsafe { std::mem::transmute(r) }
-}
-
-extern "C" fn jit_val_sub(a: i64, b: i64) -> i64 {
-    let r = val_sub(unsafe { std::mem::transmute(a) }, unsafe {
-        std::mem::transmute(b)
-    });
-    unsafe { std::mem::transmute(r) }
-}
-
-extern "C" fn jit_val_mul(a: i64, b: i64) -> i64 {
-    let r = val_mul(unsafe { std::mem::transmute(a) }, unsafe {
-        std::mem::transmute(b)
-    });
-    unsafe { std::mem::transmute(r) }
-}
-
-extern "C" fn jit_val_div(a: i64, b: i64) -> i64 {
-    let r = val_div(unsafe { std::mem::transmute(a) }, unsafe {
-        std::mem::transmute(b)
-    });
-    unsafe { std::mem::transmute(r) }
-}
-
-extern "C" fn jit_val_mod(a: i64, b: i64) -> i64 {
-    let r = val_mod(unsafe { std::mem::transmute(a) }, unsafe {
-        std::mem::transmute(b)
-    });
-    unsafe { std::mem::transmute(r) }
-}
-
-extern "C" fn jit_val_ge(a: i64, b: i64) -> i64 {
-    let r = if val_ge(&unsafe { std::mem::transmute(a) }, &unsafe {
-        std::mem::transmute(b)
-    }) {
-        val_from_i32(1)
-    } else {
-        val_from_i32(0)
-    };
-    unsafe { std::mem::transmute(r) }
 }
 
 // Guard failure resume: handled by the RPython-standard JIT framework.
@@ -258,7 +223,7 @@ extern "C" fn jit_val_ge(a: i64, b: i64) -> i64 {
     env = Program,
     storage = {
         pool: state.storage,
-        pool_type: StoragePool,
+        pool_type: Storage,
         pool_ref: state.pool_ptr,
         selector: state.selected,
         selected_ref: state.selected_ref,
@@ -266,13 +231,13 @@ extern "C" fn jit_val_ge(a: i64, b: i64) -> i64 {
         untraceable: [VAL_PORT],
         scan: find_used_storages,
         can_trace_guard: all_values_small,
-        linked_list_node_size: aheui_runtime::storage::STACKNODE_SIZE,
-        linked_list_value_offset: aheui_runtime::storage::STACKNODE_VALUE_OFFSET,
-        linked_list_next_offset: aheui_runtime::storage::STACKNODE_NEXT_OFFSET,
-        linked_list_storage_offset: aheui_runtime::storage::STORAGEPOOL_STACKS_OFFSET,
-        linked_list_stack_head_offset: aheui_runtime::storage::AHEUI_STACK_HEAD_OFFSET,
-        linked_list_stack_size_offset: aheui_runtime::storage::AHEUI_STACK_SIZE_OFFSET,
-        linked_list_queue_tail_offset: aheui_runtime::storage::AHEUI_QUEUE_TAIL_OFFSET,
+        linked_list_node_size: aheui_runtime::storage::NODE_SIZE,
+        linked_list_value_offset: aheui_runtime::storage::NODE_VALUE_OFFSET,
+        linked_list_next_offset: aheui_runtime::storage::NODE_NEXT_OFFSET,
+        linked_list_storage_offset: aheui_runtime::storage::STORAGE_POOLS_OFFSET,
+        linked_list_stack_head_offset: aheui_runtime::storage::STACK_HEAD_OFFSET,
+        linked_list_stack_size_offset: aheui_runtime::storage::STACK_SIZE_OFFSET,
+        linked_list_queue_tail_offset: aheui_runtime::storage::QUEUE_TAIL_OFFSET,
         linked_list_queue_indices: [VAL_QUEUE],
     },
     io_shims = {
@@ -284,12 +249,6 @@ extern "C" fn jit_val_ge(a: i64, b: i64) -> i64 {
         jit_read_number => residual_int,
         jit_output_flush => residual_void,
         jit_tag_val => elidable_int,
-        jit_val_add => elidable_int,
-        jit_val_sub => elidable_int,
-        jit_val_mul => elidable_int,
-        jit_val_div => elidable_int,
-        jit_val_mod => elidable_int,
-        jit_val_ge => elidable_int,
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program']
     greens = [stackok, is_queue],
@@ -298,7 +257,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let mut driver: majit_meta::JitDriver<AheuiState> = majit_meta::JitDriver::new(threshold);
 
     // Register a simple malloc-based GC allocator for JIT-compiled New() ops.
-    // Linked list nodes (StackNode) are allocated here during compiled code execution.
+    // Linked list nodes (Node) are allocated here during compiled code execution.
     let gc = Box::new(NurseryGcAllocator::new());
     driver.meta_interp_mut().backend_mut().set_gc_allocator(gc);
 
@@ -318,15 +277,15 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let mut pc: usize = 0;
     // rpaheui/aheui/aheui.py:30: reds=['stacksize','storage','selected']
     let mut state = AheuiState {
-        storage: StoragePool::new(),
+        storage: Storage::new(),
         selected: 0,
         stacksize: 0,
         pool_ptr: majit_ir::GcRef::NULL,
         selected_ref: majit_ir::GcRef::NULL,
     };
-    // StoragePool was moved into state — refresh self-referencing pointers.
-    state.storage.refresh_stack_ptrs();
-    state.pool_ptr = majit_ir::GcRef(&mut state.storage as *mut StoragePool as usize);
+    // Storage was moved into state — refresh self-referencing pointers.
+    state.storage.refresh_pools();
+    state.pool_ptr = majit_ir::GcRef(&mut state.storage as *mut Storage as usize);
     state.refresh_selected_ref();
     // rpaheui/aheui/aheui.py:29: is_queue is a green variable
     let mut is_queue: bool = false;
@@ -341,70 +300,44 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         state.stacksize += -OP_STACKDEL[op as usize] + OP_STACKADD[op as usize];
 
         match op {
-            // RPython parity: binops are function calls (elidable_int),
-            // not IR IntAdd/IntSub. With tagged Val, plain IntAdd produces
-            // wrong results. pop_raw/push_raw give the lowerer i64 values
-            // that jit_val_* can operate on correctly.
-            OP_ADD => {
-                let r1 = state.selected_dispatch_mut().pop_raw();
-                let r2 = state.selected_dispatch_mut().pop_raw();
-                state.selected_dispatch_mut().push_raw(jit_val_add(r2, r1));
-            }
-            OP_SUB => {
-                let r1 = state.selected_dispatch_mut().pop_raw();
-                let r2 = state.selected_dispatch_mut().pop_raw();
-                state.selected_dispatch_mut().push_raw(jit_val_sub(r2, r1));
-            }
-            OP_MUL => {
-                let r1 = state.selected_dispatch_mut().pop_raw();
-                let r2 = state.selected_dispatch_mut().pop_raw();
-                state.selected_dispatch_mut().push_raw(jit_val_mul(r2, r1));
-            }
-            OP_DIV => {
-                let r1 = state.selected_dispatch_mut().pop_raw();
-                let r2 = state.selected_dispatch_mut().pop_raw();
-                state.selected_dispatch_mut().push_raw(jit_val_div(r2, r1));
-            }
-            OP_MOD => {
-                let r1 = state.selected_dispatch_mut().pop_raw();
-                let r2 = state.selected_dispatch_mut().pop_raw();
-                state.selected_dispatch_mut().push_raw(jit_val_mod(r2, r1));
-            }
+            // rpaheui/aheui/aheui.py:260-269: selected.<binop>().
+            // Polymorphic dispatch through the `LinkedList` trait matches
+            // Python method dispatch on the Stack/Queue/Port subclass.
+            OP_ADD => state.selected_dispatch_mut().add(),
+            OP_SUB => state.selected_dispatch_mut().sub(),
+            OP_MUL => state.selected_dispatch_mut().mul(),
+            OP_DIV => state.selected_dispatch_mut().div(),
+            OP_MOD => state.selected_dispatch_mut().modulo(),
             OP_POP => {
                 state.selected_dispatch_mut().pop();
             }
             OP_PUSH => {
-                let value = program.get_operand(pc) as i64;
-                state
-                    .selected_dispatch_mut()
-                    .push(val_from_i32(value as i32));
+                // rpaheui/aheui/aheui.py:272-275
+                let value = program.get_operand(pc) as i32;
+                state.selected_dispatch_mut().push(val_from_i32(value));
             }
             OP_DUP => state.selected_dispatch_mut().dup(),
             OP_SWAP => state.selected_dispatch_mut().swap(),
             OP_SEL => {
+                // rpaheui/aheui/aheui.py:280-284
                 let value = program.get_operand(pc) as usize;
                 state.selected = value;
                 state.refresh_selected_ref();
                 state.stacksize = state.storage.len_at(state.selected) as i32;
-                // rpaheui/aheui/aheui.py:284
                 is_queue = value == VAL_QUEUE;
             }
             OP_MOV => {
+                // rpaheui/aheui/aheui.py:285-291
                 let r = state.selected_dispatch_mut().pop();
                 let target = program.get_operand(pc) as usize;
+                state.storage.dispatch_mut(target).push(r);
                 if state.selected == target {
-                    state.selected_dispatch_mut().push(r);
                     state.stacksize += 1;
-                } else {
-                    state.storage.dispatch_mut(target).push(r);
                 }
             }
-            OP_CMP => {
-                let r1 = state.selected_dispatch_mut().pop_raw();
-                let r2 = state.selected_dispatch_mut().pop_raw();
-                state.selected_dispatch_mut().push_raw(jit_val_ge(r2, r1));
-            }
+            OP_CMP => state.selected_dispatch_mut().cmp(),
             OP_BRPOP1 | OP_BRPOP2 | OP_JMP | OP_BRZ => {
+                // rpaheui/aheui/aheui.py:294-311
                 let jump = match op {
                     OP_BRPOP1 | OP_BRPOP2 => !stackok,
                     OP_JMP => true,
@@ -440,19 +373,23 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 }
             }
             OP_POPNUM => {
+                // rpaheui/aheui/aheui.py:312-314
                 let r = state.selected_dispatch_mut().pop();
                 aheui_io::output_write_number(&r);
             }
             OP_POPCHAR => {
+                // rpaheui/aheui/aheui.py:315-317
                 let r = state.selected_dispatch_mut().pop();
                 aheui_io::output_write_utf8(&r);
             }
             OP_PUSHNUM => {
+                // rpaheui/aheui/aheui.py:318-321
                 jit_output_flush();
                 let num = jit_read_number();
                 state.selected_dispatch_mut().push(jit_tag_val(num));
             }
             OP_PUSHCHAR => {
+                // rpaheui/aheui/aheui.py:322-325
                 jit_output_flush();
                 let ch = jit_read_utf8();
                 state.selected_dispatch_mut().push(jit_tag_val(ch));
@@ -466,7 +403,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
 
     aheui_io::output_flush();
 
-    if !state.selected_dispatch().is_empty() {
+    // rpaheui/aheui/aheui.py:363-366
+    if state.selected_dispatch().__len__() > 0 {
         state.selected_dispatch_mut().pop()
     } else {
         val_from_i32(0)
