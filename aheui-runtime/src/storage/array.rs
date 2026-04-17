@@ -6,6 +6,6 @@
 //! can eliminate.
 //!
 //! Our port follows the RPython path — the JIT tracer expects
-//! linked-list `StackNode` allocations it can virtualize. The module
+//! linked-list `Node` allocations it can virtualize. The module
 //! exists so the directory layout mirrors rpaheui; no types are
 //! exported yet.
