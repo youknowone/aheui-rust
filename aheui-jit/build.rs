@@ -62,8 +62,8 @@ fn main() {
                 //   driver = jit.JitDriver(
                 //       greens=['pc','stackok','is_queue','program'],
                 //       reds=['stacksize','storage','selected'])
-                jitdrivers: vec![majit_codewriter::JitDriverSpec {
-                    portal: vec!["mainloop".to_string()],
+                portal: Some(majit_codewriter::PortalSpec {
+                    name: "mainloop".to_string(),
                     greens: vec![
                         "pc".to_string(),
                         "stackok".to_string(),
@@ -75,15 +75,15 @@ fn main() {
                         "storage".to_string(),
                         "selected".to_string(),
                     ],
-                }],
+                }),
             },
         },
     );
 
     // aheui drives the JIT from the `#[jit_interp]` proc macro, not from
-    // the pyre-oriented trace helpers baked into the Full flavor. Emit
-    // only the generic metadata tables so the included file compiles
-    // without `pyre_object` / `pyre_interpreter` in scope.
+    // the pyre-oriented trace helpers. The `Minimal` flavor emits only
+    // the generic metadata tables so the included file compiles without
+    // `pyre_object` / `pyre_interpreter` in scope.
     let code = majit_codewriter::generate_trace_code_from_pipeline_with_flavor(
         &pipeline,
         majit_codewriter::CodegenFlavor::Minimal,
