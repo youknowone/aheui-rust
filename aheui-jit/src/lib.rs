@@ -100,6 +100,18 @@ impl majit_gc::GcAllocator for NurseryGcAllocator {
     fn nursery_top(&self) -> *const u8 {
         std::ptr::null()
     }
+    /// nursery_free_addr / nursery_top_addr expose the bump-pointer
+    /// limits to the JIT-emitted inline allocator. aheui-jit allocates
+    /// only `Node`-sized objects via the global node pool and never goes
+    /// through the inline bump path; both addresses report 0 so any
+    /// inline alloc-fast-path in compiled code immediately spills to
+    /// alloc_nursery (which routes to alloc_node_raw).
+    fn nursery_free_addr(&self) -> usize {
+        0
+    }
+    fn nursery_top_addr(&self) -> usize {
+        0
+    }
     fn max_nursery_object_size(&self) -> usize {
         usize::MAX
     }
@@ -221,24 +233,26 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
 #[majit_macros::jit_interp(
     state = AheuiState,
     env = Program,
-    storage = {
-        pool: state.storage,
-        pool_type: Storage,
-        pool_ref: state.pool_ptr,
-        selector: state.selected,
-        selected_ref: state.selected_ref,
-        stacksize: state.stacksize,
-        untraceable: [VAL_PORT],
-        scan: find_used_storages,
-        can_trace_guard: all_values_small,
-        linked_list_node_size: aheui_runtime::storage::NODE_SIZE,
-        linked_list_value_offset: aheui_runtime::storage::NODE_VALUE_OFFSET,
-        linked_list_next_offset: aheui_runtime::storage::NODE_NEXT_OFFSET,
-        linked_list_storage_offset: aheui_runtime::storage::STORAGE_POOLS_OFFSET,
-        linked_list_stack_head_offset: aheui_runtime::storage::STACK_HEAD_OFFSET,
-        linked_list_stack_size_offset: aheui_runtime::storage::STACK_SIZE_OFFSET,
-        linked_list_queue_tail_offset: aheui_runtime::storage::QUEUE_TAIL_OFFSET,
-        linked_list_queue_indices: [VAL_QUEUE],
+    // RPython parity: rpaheui/aheui/aheui.py:30 reds=['stacksize','storage','selected'].
+    // Storage is the polymorphic 28-slot pool that cannot be flattened
+    // as ints — declared `opaque(Storage)` so the macro carries it on
+    // the state struct without enumerating any inputarg/fail_arg/Sym slot
+    // for it. Pool/selected raw-pointer handles are also opaque (single
+    // GcRef word each); polymorphic dispatch into Stack/Queue/Port goes
+    // through `selected_dispatch_mut()` and is handled at the codewriter
+    // layer by Step 4b's handle_regular_indirect_call (-live- +
+    // ref_guard_value + residual call).
+    state_fields = {
+        storage: opaque(aheui_runtime::storage::Storage),
+        // RPython parity: AheuiState.selected is `usize` (slot index into
+        // 28-slot pool); stacksize is `i32` (signed pop/push delta). The
+        // macro carries them as Int in IR; `int(<Type>)` keeps the user's
+        // natural Rust storage type and inserts `as i64` / `as <Type>`
+        // casts at the JIT boundary.
+        selected: int(usize),
+        stacksize: int(i32),
+        pool_ptr: opaque(majit_ir::GcRef),
+        selected_ref: opaque(majit_ir::GcRef),
     },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
