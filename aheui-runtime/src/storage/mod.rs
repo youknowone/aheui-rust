@@ -17,6 +17,7 @@
 
 pub mod array;
 pub mod linkedlist;
+pub mod linkedlist_jit;
 
 pub use linkedlist::{
     LinkedList, NODE_NEXT_OFFSET, NODE_SIZE, NODE_VALUE_OFFSET, Node, Port, Queue, Stack,
