@@ -29,9 +29,31 @@ impl Program {
         OP_REQSIZE[self.opcodes[pc] as usize]
     }
 
+    /// rpaheui/aheui/aheui.py:175-189 `Program.get_label` resolves a label
+    /// id through the `labels` dict on every jump.  After
+    /// `resolve_jump_targets` rewrites `values[pc]` for jump ops to point
+    /// at the target PC directly the lookup collapses to a single array
+    /// load — RPython's `@jit.elidable` plus immutable `labels[**]`
+    /// achieves the same effect at JIT time, but the naive interpreter
+    /// path needs the rewrite to avoid the per-jump `HashMap` probe.
     #[inline(always)]
     pub fn get_label(&self, pc: usize) -> usize {
-        self.labels[&self.values[pc]]
+        self.values[pc] as usize
+    }
+
+    /// Rewrite `values[pc]` for every jump op so it carries the target PC
+    /// instead of a label id.  Idempotent — once resolved, target PCs are
+    /// already valid PCs (in `0..size`) and re-running the pass keeps
+    /// them unchanged.
+    pub fn resolve_jump_targets(&mut self) {
+        for pc in 0..self.size {
+            if is_jump_op(self.opcodes[pc]) {
+                let label_id = self.values[pc];
+                if let Some(&target_pc) = self.labels.get(&label_id) {
+                    self.values[pc] = target_pc as i32;
+                }
+            }
+        }
     }
 }
 
@@ -769,16 +791,20 @@ impl Compiler {
 }
 
 pub fn dump_asm(program: &Program, writer: &mut impl Write) -> io::Result<()> {
-    let mut label_at: HashMap<usize, Vec<i32>> = HashMap::new();
-    for (&label_id, &target_pc) in &program.labels {
-        label_at.entry(target_pc).or_default().push(label_id);
+    // After `resolve_jump_targets`, `values[pc]` for jump ops carries the
+    // target PC directly.  Derive label markers from the unique set of
+    // jump targets so `JMP L<val>` matches an `L<pc>:` line at the same
+    // PC.
+    let mut targets: HashSet<usize> = HashSet::new();
+    for pc in 0..program.size {
+        if is_jump_op(program.opcodes[pc]) {
+            targets.insert(program.values[pc] as usize);
+        }
     }
 
     for pc in 0..program.size {
-        if let Some(labels) = label_at.get(&pc) {
-            for label_id in labels {
-                writeln!(writer, "L{label_id}:")?;
-            }
+        if targets.contains(&pc) {
+            writeln!(writer, "L{pc}:")?;
         }
         let op = program.opcodes[pc];
         let val = program.values[pc];
