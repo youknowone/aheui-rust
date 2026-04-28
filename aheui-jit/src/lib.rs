@@ -474,9 +474,19 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 }
             }
             OP_PUSH => {
-                // rpaheui/aheui/aheui.py:272-275
-                let value = program.get_operand(pc - 1) as i32;
-                let v = val_from_i32(value);
+                // rpaheui/aheui/aheui.py:272-275.
+                //
+                // Use `jit_tag_val` (registered `elidable_int`) instead of
+                // bare `val_from_i32` so the macro lowerer recognises the
+                // value-conversion call and emits BC_CALL_PURE_INT into
+                // jitcode. Without registration the lowerer's
+                // `expr_references_unknown_local` rejects the let-binding,
+                // silent-skipping the rest of the body and dropping the
+                // push from the trace IR — which leaves OP_PUSH as
+                // state-field guards only and breaks any compiled-trace
+                // path that depends on the push reaching storage.
+                let value = program.get_operand(pc - 1) as i64;
+                let v = jit_tag_val(value);
                 if state.selected == 27usize {
                     state.selected_dispatch_mut().push(v);
                 } else if state.selected == 21usize {
@@ -580,53 +590,77 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 continue;
             }
             OP_BRZ => {
-                // rpaheui/aheui/aheui.py:299-301: pop, check zero,
-                // jump if zero. The naive D-4 stmt-form per-branch
-                // rewrite (`let zero = jit_pop_is_zero_*(...);`) lowers
-                // cleanly to BC_CALL_INT + IntNe + GuardFalse, but
-                // empirically panics with `_get_2_values <2 elements`
-                // at the next SUB during trace recording. Root cause
-                // (2026-04-28): the `#[jit_interp]` macro design runs
-                // BOTH the metainterp jitcode (via __merge_mainloop's
-                // trace_jitcode → BC_CALL_INT → call_int_function in
-                // dispatch.rs:1536) AND the outer Rust match arm in
-                // each iteration during recording — a residual_int
-                // call with side effects pops once via each path, so
-                // OP_BRZ pops twice and the next SUB sees one element
-                // instead of two. Logo doesn't surface this because
-                // its traces abort permanent before completing
-                // (verified MAJIT_LOG=1: every logo trace start is
-                // followed by abort:permanent), so the compiled trace
-                // never runs and double-execution side effects only
-                // happen during the recording window. loop.aheui's
-                // pattern reaches the panic before the trace aborts.
-                // Revert to D-3 empty-body form pending architectural
-                // fix (gate outer match on `!driver.is_tracing()` —
-                // multi-session macro change in jit_interp/mod.rs).
-                let top = if state.selected == 27usize {
-                    state.selected_dispatch_mut().pop()
-                } else if state.selected == 21usize {
-                    lj::queue_pop(state.selected_ref)
-                } else {
-                    lj::stack_pop(state.selected_ref)
-                };
-                if val_is_zero(&top) {
-                    let target = program.get_label(pc - 1);
-                    if target <= pc - 1 {
-                        can_enter_jit!(
-                            driver,
-                            target,
-                            &mut state,
-                            program,
-                            || {
-                                aheui_io::output_flush();
-                            },
-                            pc,
-                            state.stacksize
-                        );
+                // D-4: per-branch independent stmt-form. Each branch
+                // has its own `let zero = ...;` so the macro emits
+                // BC_CALL_INT + IntNe + GotoIfNot for queue/stack
+                // (port branch silent-skips per OP_DUP precedent). The
+                // metainterp's observer mode (trace_jitcode_observer)
+                // skips concrete-side execution during recording so
+                // the function only runs in outer match (no double-pop),
+                // and the compiled trace runs the IR call op once per
+                // iteration via the fn-ptr CallI machine code. The
+                // resulting BRZ exit guard fires when zero != 0 at
+                // runtime, so the loop terminates correctly.
+                if state.selected == 27usize {
+                    let top = state.selected_dispatch_mut().pop();
+                    if val_is_zero(&top) {
+                        let target = program.get_label(pc - 1);
+                        if target <= pc - 1 {
+                            can_enter_jit!(
+                                driver,
+                                target,
+                                &mut state,
+                                program,
+                                || {
+                                    aheui_io::output_flush();
+                                },
+                                pc,
+                                state.stacksize
+                            );
+                        }
+                        pc = target;
+                        continue;
                     }
-                    pc = target;
-                    continue;
+                } else if state.selected == 21usize {
+                    let zero = jit_pop_is_zero_queue(state.selected_ref);
+                    if zero != 0 {
+                        let target = program.get_label(pc - 1);
+                        if target <= pc - 1 {
+                            can_enter_jit!(
+                                driver,
+                                target,
+                                &mut state,
+                                program,
+                                || {
+                                    aheui_io::output_flush();
+                                },
+                                pc,
+                                state.stacksize
+                            );
+                        }
+                        pc = target;
+                        continue;
+                    }
+                } else {
+                    let zero = jit_pop_is_zero_stack(state.selected_ref);
+                    if zero != 0 {
+                        let target = program.get_label(pc - 1);
+                        if target <= pc - 1 {
+                            can_enter_jit!(
+                                driver,
+                                target,
+                                &mut state,
+                                program,
+                                || {
+                                    aheui_io::output_flush();
+                                },
+                                pc,
+                                state.stacksize
+                            );
+                        }
+                        pc = target;
+                        continue;
+                    }
                 }
             }
             OP_POPNUM => {
