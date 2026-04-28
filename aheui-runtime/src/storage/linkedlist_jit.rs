@@ -11,13 +11,13 @@
 //! Port slot (`VAL_PORT`) keeps the trait-object path: it is the I/O
 //! storage and not on the inner hot path.
 //!
-//! Each helper is a thin `#[inline(always)]` wrapper around the
-//! underlying `LinkedList` method — same logic, monomorphic call site.
-//! When registered with `#[jit_interp(calls = { stack_push =>
-//! residual_call_void, ... })]`, `aheui-jit` emits a residual call to
-//! the concrete function pointer in the trace; a future slice can flip
-//! individual helpers to `#[jit_inline]` once their bodies are
-//! validated against the lowerer.
+//! The arg type is `usize` (raw pointer reinterpreted as integer), not
+//! `*mut Stack` / `*mut Queue`. The `#[jit_interp]` lowerer accepts
+//! integer arguments fed from `int(usize)` state-fields directly, but
+//! it rejects `as *mut Stack` casts at the call site (it only knows
+//! `is_supported_int_cast`), so a typed-pointer signature would cause
+//! every call to silent-skip during trace recording — producing an
+//! empty trace that compiles to a `Label → Jump` infinite loop.
 
 use super::linkedlist::{LinkedList, Queue, Stack};
 use crate::value::*;
@@ -25,105 +25,105 @@ use crate::value::*;
 // ── Stack helpers ────────────────────────────────────────────────────
 
 #[inline(always)]
-pub unsafe fn stack_push(stack: *mut Stack, value: Val) {
-    unsafe { (*stack).push(value) }
+pub fn stack_push(stack: usize, value: Val) {
+    unsafe { (*(stack as *mut Stack)).push(value) }
 }
 
 #[inline(always)]
-pub unsafe fn stack_pop(stack: *mut Stack) -> Val {
-    unsafe { (*stack).pop() }
+pub fn stack_pop(stack: usize) -> Val {
+    unsafe { (*(stack as *mut Stack)).pop() }
 }
 
 #[inline(always)]
-pub unsafe fn stack_add(stack: *mut Stack) {
-    unsafe { (*stack).add() }
+pub fn stack_add(stack: usize) {
+    unsafe { (*(stack as *mut Stack)).add() }
 }
 
 #[inline(always)]
-pub unsafe fn stack_sub(stack: *mut Stack) {
-    unsafe { (*stack).sub() }
+pub fn stack_sub(stack: usize) {
+    unsafe { (*(stack as *mut Stack)).sub() }
 }
 
 #[inline(always)]
-pub unsafe fn stack_mul(stack: *mut Stack) {
-    unsafe { (*stack).mul() }
+pub fn stack_mul(stack: usize) {
+    unsafe { (*(stack as *mut Stack)).mul() }
 }
 
 #[inline(always)]
-pub unsafe fn stack_div(stack: *mut Stack) {
-    unsafe { (*stack).div() }
+pub fn stack_div(stack: usize) {
+    unsafe { (*(stack as *mut Stack)).div() }
 }
 
 #[inline(always)]
-pub unsafe fn stack_mod(stack: *mut Stack) {
-    unsafe { (*stack).modulo() }
+pub fn stack_mod(stack: usize) {
+    unsafe { (*(stack as *mut Stack)).modulo() }
 }
 
 #[inline(always)]
-pub unsafe fn stack_dup(stack: *mut Stack) {
-    unsafe { (*stack).dup() }
+pub fn stack_dup(stack: usize) {
+    unsafe { (*(stack as *mut Stack)).dup() }
 }
 
 #[inline(always)]
-pub unsafe fn stack_swap(stack: *mut Stack) {
-    unsafe { (*stack).swap() }
+pub fn stack_swap(stack: usize) {
+    unsafe { (*(stack as *mut Stack)).swap() }
 }
 
 #[inline(always)]
-pub unsafe fn stack_cmp(stack: *mut Stack) {
-    unsafe { (*stack).cmp() }
+pub fn stack_cmp(stack: usize) {
+    unsafe { (*(stack as *mut Stack)).cmp() }
 }
 
 // ── Queue helpers ────────────────────────────────────────────────────
 
 #[inline(always)]
-pub unsafe fn queue_push(queue: *mut Queue, value: Val) {
-    unsafe { (*queue).push(value) }
+pub fn queue_push(queue: usize, value: Val) {
+    unsafe { (*(queue as *mut Queue)).push(value) }
 }
 
 #[inline(always)]
-pub unsafe fn queue_pop(queue: *mut Queue) -> Val {
-    unsafe { (*queue).pop() }
+pub fn queue_pop(queue: usize) -> Val {
+    unsafe { (*(queue as *mut Queue)).pop() }
 }
 
 #[inline(always)]
-pub unsafe fn queue_add(queue: *mut Queue) {
-    unsafe { (*queue).add() }
+pub fn queue_add(queue: usize) {
+    unsafe { (*(queue as *mut Queue)).add() }
 }
 
 #[inline(always)]
-pub unsafe fn queue_sub(queue: *mut Queue) {
-    unsafe { (*queue).sub() }
+pub fn queue_sub(queue: usize) {
+    unsafe { (*(queue as *mut Queue)).sub() }
 }
 
 #[inline(always)]
-pub unsafe fn queue_mul(queue: *mut Queue) {
-    unsafe { (*queue).mul() }
+pub fn queue_mul(queue: usize) {
+    unsafe { (*(queue as *mut Queue)).mul() }
 }
 
 #[inline(always)]
-pub unsafe fn queue_div(queue: *mut Queue) {
-    unsafe { (*queue).div() }
+pub fn queue_div(queue: usize) {
+    unsafe { (*(queue as *mut Queue)).div() }
 }
 
 #[inline(always)]
-pub unsafe fn queue_mod(queue: *mut Queue) {
-    unsafe { (*queue).modulo() }
+pub fn queue_mod(queue: usize) {
+    unsafe { (*(queue as *mut Queue)).modulo() }
 }
 
 #[inline(always)]
-pub unsafe fn queue_dup(queue: *mut Queue) {
-    unsafe { (*queue).dup() }
+pub fn queue_dup(queue: usize) {
+    unsafe { (*(queue as *mut Queue)).dup() }
 }
 
 #[inline(always)]
-pub unsafe fn queue_swap(queue: *mut Queue) {
-    unsafe { (*queue).swap() }
+pub fn queue_swap(queue: usize) {
+    unsafe { (*(queue as *mut Queue)).swap() }
 }
 
 #[inline(always)]
-pub unsafe fn queue_cmp(queue: *mut Queue) {
-    unsafe { (*queue).cmp() }
+pub fn queue_cmp(queue: usize) {
+    unsafe { (*(queue as *mut Queue)).cmp() }
 }
 
 #[cfg(test)]
@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn stack_push_pop_roundtrip() {
         let mut s = Stack::new();
-        let p = &mut s as *mut Stack;
+        let p = &mut s as *mut Stack as usize;
         unsafe {
             stack_push(p, val_from_i32(1));
             stack_push(p, val_from_i32(2));
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn stack_arith_dispatches_through_pointer() {
         let mut s = Stack::new();
-        let p = &mut s as *mut Stack;
+        let p = &mut s as *mut Stack as usize;
         unsafe {
             stack_push(p, val_from_i32(7));
             stack_push(p, val_from_i32(3));
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn queue_push_pop_fifo_order() {
         let mut q = Queue::new();
-        let p = &mut q as *mut Queue;
+        let p = &mut q as *mut Queue as usize;
         unsafe {
             queue_push(p, val_from_i32(1));
             queue_push(p, val_from_i32(2));
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn queue_add_pushes_sum_to_back() {
         let mut q = Queue::new();
-        let p = &mut q as *mut Queue;
+        let p = &mut q as *mut Queue as usize;
         unsafe {
             queue_push(p, val_from_i32(7));
             queue_push(p, val_from_i32(3));
