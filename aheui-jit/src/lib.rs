@@ -8,6 +8,8 @@
 extern crate majit_ir;
 extern crate majit_metainterp as majit_meta;
 
+use majit_meta::jit::promote;
+
 pub use aheui_runtime;
 pub use aheui_runtime::aheui;
 pub use aheui_runtime::io;
@@ -355,6 +357,12 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
 
         // rpaheui/aheui/aheui.py:253-255: jit_merge_point
         jit_merge_point!();
+        // rpaheui/aheui/aheui.py:256 — `selected = jit.promote(selected)`.
+        // Lowered to `int_guard_value(selected_ref)` so the trace
+        // specializes per concrete pool pointer; the monomorphic
+        // `lj::stack_*` / `lj::queue_*` calls below see a constant
+        // pointer arg, enabling further constant-folding downstream.
+        state.selected_ref = promote(state.selected_ref);
         let op = program.get_op(pc);
         state.stacksize += -OP_STACKDEL[op as usize] + OP_STACKADD[op as usize];
         // Phase D-1 §5: pre-advance `pc` so the interpreter's pc matches
