@@ -403,6 +403,20 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     state.pool_ptr = majit_ir::GcRef(&mut state.storage as *mut Storage as usize);
     state.refresh_selected_ref();
 
+    // RPython `warmspot.py:281-289` `make_jitcodes() →
+    // finish_setup(codewriter)` parity for state-field JIT: register the
+    // canonical `(live_i, live_r, live_f)` liveness slots and seed
+    // `MetaInterpStaticData` so blackhole resume's
+    // `BlackholeInterpreter::get_current_position_info` (which reads
+    // `code[pc] == op_live`) recognises the macro-emitted `BC_LIVE`
+    // markers. Without this hook `op_live` defaults to `-1` (= u8::MAX
+    // post-conversion in `setup_cached_control_opcodes`) and the
+    // resume path panics with `missing liveness[N] in JitCode`.
+    {
+        let meta = <AheuiState as majit_meta::JitState>::build_meta(&state, 0, program);
+        meta.install_canonical_liveness(&mut driver);
+    }
+
     while pc < program.size {
         // rpaheui/aheui/aheui.py:252
         let mut stackok = program.get_req_size(pc) as i32 <= state.stacksize;
