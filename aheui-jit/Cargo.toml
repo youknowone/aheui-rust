@@ -22,6 +22,6 @@ majit-backend-cranelift = { path = "../../majit/majit-backend-cranelift", option
 majit-backend-dynasm = { path = "../../majit/majit-backend-dynasm", optional = true }
 
 [build-dependencies]
-majit-codewriter = { path = "../../majit/majit-codewriter" }
+majit-translate = { path = "../../majit/majit-translate" }
 serde_json = "1"
 syn = { version = "2", features = ["full", "visit"] }
