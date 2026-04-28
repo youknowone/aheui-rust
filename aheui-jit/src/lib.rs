@@ -225,6 +225,31 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
     val_from_i32(raw as i32)
 }
 
+// ── OP_BRZ pop+is_zero shims ──
+//
+// rpaheui/aheui/aheui.py:299-301: `top = selected.pop(); jump =
+// bigint.is_zero(top)`. The polymorphic `selected.pop()` plus the
+// `bigint.is_zero` call are silent-skipped by the lowerer, so the
+// JIT-compiled trace previously had no exit guard for OP_BRZ —
+// loop.aheui infinite-looped in compiled mode.
+//
+// These shims bundle pop + is_zero into a single residual call that
+// returns 1 (zero, take the branch) or 0 (non-zero, fall through).
+// Registered as `residual_int` because pop has the side effect of
+// shrinking the storage; trace records `CallI(jit_pop_is_zero_stack,
+// selected_ref)` followed by an `IntNe(result, 0) + GuardFalse` pair
+// for the branch decision.
+
+extern "C" fn jit_pop_is_zero_stack(stack_ref: usize) -> i64 {
+    let v = unsafe { (*(stack_ref as *mut aheui_runtime::storage::linkedlist::Stack)).pop() };
+    if val_is_zero(&v) { 1 } else { 0 }
+}
+
+extern "C" fn jit_pop_is_zero_queue(queue_ref: usize) -> i64 {
+    let v = unsafe { (*(queue_ref as *mut aheui_runtime::storage::linkedlist::Queue)).pop() };
+    if val_is_zero(&v) { 1 } else { 0 }
+}
+
 // Guard failure resume: handled by the RPython-standard JIT framework.
 // can_enter_jit! / jit_merge_point! flow through JitDriver.back_edge_structured
 // and JitDriver.merge_point, which restore state via JitState::restore.
@@ -302,6 +327,12 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
         lj::queue_dup => residual_void,
         lj::queue_swap => residual_void,
         lj::queue_cmp => residual_void,
+        // Phase D-4: bundled pop + is_zero used by OP_BRZ. Residual
+        // because the underlying pop mutates storage; the result is
+        // immediately consumed as a branch decision so a CallI lands
+        // in the trace IR followed by an IntNe + GuardFalse pair.
+        jit_pop_is_zero_stack => residual_int,
+        jit_pop_is_zero_queue => residual_int,
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
     //
@@ -506,32 +537,73 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_cmp(state.selected_ref);
                 }
             }
-            OP_BRPOP1 | OP_BRPOP2 | OP_JMP | OP_BRZ => {
-                // rpaheui/aheui/aheui.py:294-311
-                let jump = match op {
-                    OP_BRPOP1 | OP_BRPOP2 => !stackok,
-                    OP_JMP => true,
-                    OP_BRZ => {
-                        let top = if state.selected == 27usize {
-                            state.selected_dispatch_mut().pop()
-                        } else if state.selected == 21usize {
-                            lj::queue_pop(state.selected_ref)
-                        } else {
-                            lj::stack_pop(state.selected_ref)
-                        };
-                        val_is_zero(&top)
-                    }
-                    _ => unreachable!(),
-                };
-                if jump {
+            OP_BRPOP1 | OP_BRPOP2 => {
+                // rpaheui/aheui/aheui.py:294-296: jump iff !stackok.
+                // stackok is a green so the cond resolves at trace
+                // record time; the IR records only the taken branch.
+                if !stackok {
                     let target = program.get_label(pc - 1);
                     if target <= pc - 1 {
-                        // Back-edge: can_enter_jit before pc assignment.
-                        // If compiled code ran and finished (FINISH), the
-                        // macro sets pc=target and continues. If guard
-                        // failure occurred, back_edge returns false and
-                        // we fall through to pc=target below (interpreter
-                        // resumes at the loop header).
+                        can_enter_jit!(
+                            driver,
+                            target,
+                            &mut state,
+                            program,
+                            || {
+                                aheui_io::output_flush();
+                            },
+                            pc,
+                            state.stacksize
+                        );
+                    }
+                    pc = target;
+                    continue;
+                }
+            }
+            OP_JMP => {
+                // rpaheui/aheui/aheui.py:297-298: unconditional.
+                let target = program.get_label(pc - 1);
+                if target <= pc - 1 {
+                    can_enter_jit!(
+                        driver,
+                        target,
+                        &mut state,
+                        program,
+                        || {
+                            aheui_io::output_flush();
+                        },
+                        pc,
+                        state.stacksize
+                    );
+                }
+                pc = target;
+                continue;
+            }
+            OP_BRZ => {
+                // rpaheui/aheui/aheui.py:299-301: pop, check zero,
+                // jump if zero. The pop dispatch is the same 3-way
+                // pattern as OP_POP/OP_DUP, but the value-position
+                // form here means `lower_if_value` requires every
+                // branch (including the polymorphic-port pop) to
+                // lower — a regression-free OP_BRZ JIT lowering needs
+                // either a port-side shim (`pool_ptr opaque→int`) or
+                // a structural rewrite that avoids `let top = if
+                // ...`. D-4 attempt with stmt-form per-branch + extern
+                // `jit_pop_is_zero_*` shims regressed loop.aheui with
+                // a `_get_2_values <2 elements` panic during trace
+                // recording; root cause likely metainterp single-step
+                // double-running the pop. Reverted to the safe D-3
+                // form pending a separate diagnosis pass.
+                let top = if state.selected == 27usize {
+                    state.selected_dispatch_mut().pop()
+                } else if state.selected == 21usize {
+                    lj::queue_pop(state.selected_ref)
+                } else {
+                    lj::stack_pop(state.selected_ref)
+                };
+                if val_is_zero(&top) {
+                    let target = program.get_label(pc - 1);
+                    if target <= pc - 1 {
                         can_enter_jit!(
                             driver,
                             target,
