@@ -363,7 +363,24 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // RPython: metainterp_sd.jitcodes — pre-compiled JitCodes for each portal.
     // In majit, #[jit_interp] generates __jitcode_mainloop which produces
     // JitCode on-demand from the interpreter bytecode.
-    driver.register_jitcode_factory(|program: &Program, pc: usize, op: u8| {
+    //
+    // The op argument the factory receives is meaningful on the trace path
+    // (pre-fetched in `__trace_mainloop`) but blackhole resume hardcodes
+    // `op = 0` because pyre's resumedata writer stores `jitcode_index = 0`
+    // for every snapshot frame (`pyjitpl/mod.rs:15586`). With op=0 the
+    // dispatch falls into the `OP_NONE` / `_` arm and we synthesise an
+    // empty JitCode — `BHInterpreter::get_current_position_info` then
+    // panics with `missing liveness[N] in JitCode "" (code_len=0)`.
+    //
+    // Recover the actual opcode from `program.get_op(pc - 1)`. The trace
+    // path passes `pc = original_pc + 1` (post-fetch) so the same
+    // derivation reproduces the op the trace recorder saw, leaving the
+    // trace-side dispatch unchanged.
+    driver.register_jitcode_factory(|program: &Program, pc: usize, _op: u8| {
+        if pc == 0 || pc > program.size {
+            return None;
+        }
+        let op = program.get_op(pc - 1);
         __jitcode_mainloop(program, pc, op)
     });
 
