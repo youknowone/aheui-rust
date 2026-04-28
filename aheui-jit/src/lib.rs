@@ -25,8 +25,8 @@ include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));
 
 use aheui_runtime::aheui::*;
 use aheui_runtime::io as aheui_io;
-use aheui_runtime::storage::Storage;
-use aheui_runtime::storage::LinkedList;
+use aheui_runtime::storage::linkedlist_jit as lj;
+use aheui_runtime::storage::{LinkedList, Queue, Stack, Storage};
 use ahsembler::compiler::Program;
 
 use aheui_runtime::value::*;
@@ -338,23 +338,96 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
 
         match op {
             // rpaheui/aheui/aheui.py:260-269: selected.<binop>().
-            // Polymorphic dispatch through the `LinkedList` trait matches
-            // Python method dispatch on the Stack/Queue/Port subclass.
-            OP_ADD => state.selected_dispatch_mut().add(),
-            OP_SUB => state.selected_dispatch_mut().sub(),
-            OP_MUL => state.selected_dispatch_mut().mul(),
-            OP_DIV => state.selected_dispatch_mut().div(),
-            OP_MOD => state.selected_dispatch_mut().modulo(),
+            // Phase D-1 §4: 3-way branch on the (is_port, is_queue)
+            // greens. The trace specializes per combination so each
+            // compiled trace contains only one of the three call sites
+            // (concrete `stack_*` or `queue_*` function pointer for the
+            // hot path; polymorphic `dispatch_mut()` only for the cold
+            // I/O Port slot).
+            OP_ADD => {
+                if is_port {
+                    state.selected_dispatch_mut().add();
+                } else if is_queue {
+                    unsafe { lj::queue_add(state.selected_ref as *mut Queue); }
+                } else {
+                    unsafe { lj::stack_add(state.selected_ref as *mut Stack); }
+                }
+            }
+            OP_SUB => {
+                if is_port {
+                    state.selected_dispatch_mut().sub();
+                } else if is_queue {
+                    unsafe { lj::queue_sub(state.selected_ref as *mut Queue); }
+                } else {
+                    unsafe { lj::stack_sub(state.selected_ref as *mut Stack); }
+                }
+            }
+            OP_MUL => {
+                if is_port {
+                    state.selected_dispatch_mut().mul();
+                } else if is_queue {
+                    unsafe { lj::queue_mul(state.selected_ref as *mut Queue); }
+                } else {
+                    unsafe { lj::stack_mul(state.selected_ref as *mut Stack); }
+                }
+            }
+            OP_DIV => {
+                if is_port {
+                    state.selected_dispatch_mut().div();
+                } else if is_queue {
+                    unsafe { lj::queue_div(state.selected_ref as *mut Queue); }
+                } else {
+                    unsafe { lj::stack_div(state.selected_ref as *mut Stack); }
+                }
+            }
+            OP_MOD => {
+                if is_port {
+                    state.selected_dispatch_mut().modulo();
+                } else if is_queue {
+                    unsafe { lj::queue_mod(state.selected_ref as *mut Queue); }
+                } else {
+                    unsafe { lj::stack_mod(state.selected_ref as *mut Stack); }
+                }
+            }
             OP_POP => {
-                state.selected_dispatch_mut().pop();
+                if is_port {
+                    state.selected_dispatch_mut().pop();
+                } else if is_queue {
+                    unsafe { lj::queue_pop(state.selected_ref as *mut Queue); }
+                } else {
+                    unsafe { lj::stack_pop(state.selected_ref as *mut Stack); }
+                }
             }
             OP_PUSH => {
                 // rpaheui/aheui/aheui.py:272-275
                 let value = program.get_operand(pc - 1) as i32;
-                state.selected_dispatch_mut().push(val_from_i32(value));
+                let v = val_from_i32(value);
+                if is_port {
+                    state.selected_dispatch_mut().push(v);
+                } else if is_queue {
+                    unsafe { lj::queue_push(state.selected_ref as *mut Queue, v); }
+                } else {
+                    unsafe { lj::stack_push(state.selected_ref as *mut Stack, v); }
+                }
             }
-            OP_DUP => state.selected_dispatch_mut().dup(),
-            OP_SWAP => state.selected_dispatch_mut().swap(),
+            OP_DUP => {
+                if is_port {
+                    state.selected_dispatch_mut().dup();
+                } else if is_queue {
+                    unsafe { lj::queue_dup(state.selected_ref as *mut Queue); }
+                } else {
+                    unsafe { lj::stack_dup(state.selected_ref as *mut Stack); }
+                }
+            }
+            OP_SWAP => {
+                if is_port {
+                    state.selected_dispatch_mut().swap();
+                } else if is_queue {
+                    unsafe { lj::queue_swap(state.selected_ref as *mut Queue); }
+                } else {
+                    unsafe { lj::stack_swap(state.selected_ref as *mut Stack); }
+                }
+            }
             OP_SEL => {
                 // rpaheui/aheui/aheui.py:280-284
                 let value = program.get_operand(pc - 1) as usize;
@@ -365,22 +438,45 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 is_port = value == VAL_PORT;
             }
             OP_MOV => {
-                // rpaheui/aheui/aheui.py:285-291
-                let r = state.selected_dispatch_mut().pop();
+                // rpaheui/aheui/aheui.py:285-291.
+                // Source side: same 3-way as the other pop sites.
+                // Destination side stays polymorphic — the operand is
+                // not a green so the trace cannot specialize on it.
+                let r = if is_port {
+                    state.selected_dispatch_mut().pop()
+                } else if is_queue {
+                    unsafe { lj::queue_pop(state.selected_ref as *mut Queue) }
+                } else {
+                    unsafe { lj::stack_pop(state.selected_ref as *mut Stack) }
+                };
                 let target = program.get_operand(pc - 1) as usize;
                 state.storage.dispatch_mut(target).push(r);
                 if state.selected == target {
                     state.stacksize += 1;
                 }
             }
-            OP_CMP => state.selected_dispatch_mut().cmp(),
+            OP_CMP => {
+                if is_port {
+                    state.selected_dispatch_mut().cmp();
+                } else if is_queue {
+                    unsafe { lj::queue_cmp(state.selected_ref as *mut Queue); }
+                } else {
+                    unsafe { lj::stack_cmp(state.selected_ref as *mut Stack); }
+                }
+            }
             OP_BRPOP1 | OP_BRPOP2 | OP_JMP | OP_BRZ => {
                 // rpaheui/aheui/aheui.py:294-311
                 let jump = match op {
                     OP_BRPOP1 | OP_BRPOP2 => !stackok,
                     OP_JMP => true,
                     OP_BRZ => {
-                        let top = state.selected_dispatch_mut().pop();
+                        let top = if is_port {
+                            state.selected_dispatch_mut().pop()
+                        } else if is_queue {
+                            unsafe { lj::queue_pop(state.selected_ref as *mut Queue) }
+                        } else {
+                            unsafe { lj::stack_pop(state.selected_ref as *mut Stack) }
+                        };
                         val_is_zero(&top)
                     }
                     _ => unreachable!(),
@@ -412,25 +508,51 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_POPNUM => {
                 // rpaheui/aheui/aheui.py:312-314
-                let r = state.selected_dispatch_mut().pop();
+                let r = if is_port {
+                    state.selected_dispatch_mut().pop()
+                } else if is_queue {
+                    unsafe { lj::queue_pop(state.selected_ref as *mut Queue) }
+                } else {
+                    unsafe { lj::stack_pop(state.selected_ref as *mut Stack) }
+                };
                 aheui_io::output_write_number(&r);
             }
             OP_POPCHAR => {
                 // rpaheui/aheui/aheui.py:315-317
-                let r = state.selected_dispatch_mut().pop();
+                let r = if is_port {
+                    state.selected_dispatch_mut().pop()
+                } else if is_queue {
+                    unsafe { lj::queue_pop(state.selected_ref as *mut Queue) }
+                } else {
+                    unsafe { lj::stack_pop(state.selected_ref as *mut Stack) }
+                };
                 aheui_io::output_write_utf8(&r);
             }
             OP_PUSHNUM => {
                 // rpaheui/aheui/aheui.py:318-321
                 jit_output_flush();
                 let num = jit_read_number();
-                state.selected_dispatch_mut().push(jit_tag_val(num));
+                let v = jit_tag_val(num);
+                if is_port {
+                    state.selected_dispatch_mut().push(v);
+                } else if is_queue {
+                    unsafe { lj::queue_push(state.selected_ref as *mut Queue, v); }
+                } else {
+                    unsafe { lj::stack_push(state.selected_ref as *mut Stack, v); }
+                }
             }
             OP_PUSHCHAR => {
                 // rpaheui/aheui/aheui.py:322-325
                 jit_output_flush();
                 let ch = jit_read_utf8();
-                state.selected_dispatch_mut().push(jit_tag_val(ch));
+                let v = jit_tag_val(ch);
+                if is_port {
+                    state.selected_dispatch_mut().push(v);
+                } else if is_queue {
+                    unsafe { lj::queue_push(state.selected_ref as *mut Queue, v); }
+                } else {
+                    unsafe { lj::stack_push(state.selected_ref as *mut Stack, v); }
+                }
             }
             OP_NONE => {}
             OP_HALT => break,
