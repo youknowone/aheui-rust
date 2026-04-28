@@ -1,5 +1,5 @@
 /// Build script for aheui-jit: analyzes the Aheui interpreter via the
-/// majit-codewriter graph pipeline and emits the generated trace code.
+/// majit-translate graph pipeline and emits the generated trace code.
 ///
 /// This uses the same graph-based analysis path as pyre-jit.
 
@@ -30,15 +30,15 @@ fn main() {
     );
 
     let source_refs: Vec<&str> = sources.iter().map(|s| s.as_str()).collect();
-    let pipeline = majit_codewriter::analyze_multiple_pipeline_with_config(
+    let pipeline = majit_translate::analyze_multiple_pipeline_with_config(
         &source_refs,
-        &majit_codewriter::AnalyzeConfig {
-            pipeline: majit_codewriter::PipelineConfig {
-                transform: majit_codewriter::GraphTransformConfig {
+        &majit_translate::AnalyzeConfig {
+            pipeline: majit_translate::PipelineConfig {
+                transform: majit_translate::GraphTransformConfig {
                     vable_fields: virtualizable_spec::AHEUI_VABLE_FIELDS
                         .iter()
                         .map(|(name, idx)| {
-                            majit_codewriter::VirtualizableFieldDescriptor::new(
+                            majit_translate::VirtualizableFieldDescriptor::new(
                                 *name,
                                 Some(virtualizable_spec::AHEUI_VABLE_OWNER_ROOT.to_string()),
                                 *idx,
@@ -48,7 +48,7 @@ fn main() {
                     vable_arrays: virtualizable_spec::AHEUI_VABLE_ARRAYS
                         .iter()
                         .map(|(name, idx)| {
-                            majit_codewriter::VirtualizableFieldDescriptor::new(
+                            majit_translate::VirtualizableFieldDescriptor::new(
                                 *name,
                                 Some(virtualizable_spec::AHEUI_VABLE_OWNER_ROOT.to_string()),
                                 *idx,
@@ -62,7 +62,7 @@ fn main() {
                 //   driver = jit.JitDriver(
                 //       greens=['pc','stackok','is_queue','program'],
                 //       reds=['stacksize','storage','selected'])
-                portal: Some(majit_codewriter::PortalSpec {
+                portal: Some(majit_translate::PortalSpec {
                     name: "mainloop".to_string(),
                     greens: vec![
                         "pc".to_string(),
@@ -75,6 +75,8 @@ fn main() {
                         "storage".to_string(),
                         "selected".to_string(),
                     ],
+                    virtualizables: Vec::new(),
+                    red_types: Vec::new(),
                 }),
             },
         },
@@ -84,9 +86,9 @@ fn main() {
     // the pyre-oriented trace helpers. The `Minimal` flavor emits only
     // the generic metadata tables so the included file compiles without
     // `pyre_object` / `pyre_interpreter` in scope.
-    let code = majit_codewriter::generate_trace_code_from_pipeline_with_flavor(
+    let code = majit_translate::generate_trace_code_from_pipeline_with_flavor(
         &pipeline,
-        majit_codewriter::CodegenFlavor::Minimal,
+        majit_translate::CodegenFlavor::Minimal,
     );
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
@@ -111,7 +113,7 @@ fn main() {
     println!("cargo::rerun-if-changed=src/jit/call_spec.rs");
 }
 
-fn build_call_effect_overrides() -> Vec<majit_codewriter::CallEffectOverride> {
+fn build_call_effect_overrides() -> Vec<majit_translate::CallEffectOverride> {
     call_spec::AHEUI_CALL_EFFECTS
         .iter()
         .map(|spec| {
@@ -119,16 +121,16 @@ fn build_call_effect_overrides() -> Vec<majit_codewriter::CallEffectOverride> {
                 call_spec::CallTargetSpec::Method {
                     name,
                     receiver_root,
-                } => majit_codewriter::CallTarget::method(name, Some(receiver_root.to_string())),
+                } => majit_translate::CallTarget::method(name, Some(receiver_root.to_string())),
                 call_spec::CallTargetSpec::FunctionPath(segments) => {
-                    majit_codewriter::CallTarget::function_path(segments.iter().copied())
+                    majit_translate::CallTarget::function_path(segments.iter().copied())
                 }
             };
             let effect = match spec.effect {
-                call_spec::CallEffectKind::Elidable => majit_codewriter::CallEffectKind::Elidable,
-                call_spec::CallEffectKind::Residual => majit_codewriter::CallEffectKind::Residual,
+                call_spec::CallEffectKind::Elidable => majit_translate::CallEffectKind::Elidable,
+                call_spec::CallEffectKind::Residual => majit_translate::CallEffectKind::Residual,
             };
-            majit_codewriter::CallEffectOverride::new(target, effect)
+            majit_translate::CallEffectOverride::new(target, effect)
         })
         .collect()
 }
