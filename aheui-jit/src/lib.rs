@@ -271,6 +271,35 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
         jit_read_number => residual_int,
         jit_output_flush => residual_void,
         jit_tag_val => elidable_int,
+        // Phase D-1 monomorphic helpers — registered as residual calls
+        // so the lowerer emits a concrete `call_void_args` /
+        // `call_int_args` in the trace IR (function-pointer call) rather
+        // than silent-skipping the storage op. `#[jit_inline]` upgrade
+        // for IR-level body inlining is the next slice.
+        //
+        // The registered path segments must match the call site verbatim
+        // (the macro compares segment-by-segment); use the `lj::*` alias
+        // here since the mainloop arms call `lj::stack_push(...)` etc.
+        lj::stack_push => residual_void,
+        lj::stack_pop => residual_int,
+        lj::stack_add => residual_void,
+        lj::stack_sub => residual_void,
+        lj::stack_mul => residual_void,
+        lj::stack_div => residual_void,
+        lj::stack_mod => residual_void,
+        lj::stack_dup => residual_void,
+        lj::stack_swap => residual_void,
+        lj::stack_cmp => residual_void,
+        lj::queue_push => residual_void,
+        lj::queue_pop => residual_int,
+        lj::queue_add => residual_void,
+        lj::queue_sub => residual_void,
+        lj::queue_mul => residual_void,
+        lj::queue_div => residual_void,
+        lj::queue_mod => residual_void,
+        lj::queue_dup => residual_void,
+        lj::queue_swap => residual_void,
+        lj::queue_cmp => residual_void,
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
     // Phase D-1 adds `is_port` so the trace specializes per storage type
