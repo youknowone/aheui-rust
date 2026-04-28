@@ -56,11 +56,41 @@ fn output_write_all(bytes: &[u8]) {
     wasm_buf::write_all(bytes);
 }
 
+// rpaheui/aheui/aheui.py:196-220 OutputBuffer.
+// Batch single-character writes (one POPNUM/POPCHAR per opcode produces
+// a few bytes) into ~4KB chunks so each `os.write` syscall amortises the
+// stdout lock + write call. Without this buffer logo.aheui (≈1MB output)
+// performs ~1M lock/write/unlock cycles and the interpreter is
+// dominated by I/O cost.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-fn output_write_all(bytes: &[u8]) {
+const OUTPUT_BUFFER_THRESHOLD: usize = 4096;
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+thread_local! {
+    static OUTPUT_BUFFER: std::cell::RefCell<Vec<u8>> =
+        std::cell::RefCell::new(Vec::with_capacity(OUTPUT_BUFFER_THRESHOLD));
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn output_buffer_drain(buf: &mut Vec<u8>) {
+    if buf.is_empty() {
+        return;
+    }
     let stdout = io::stdout();
     let mut handle = stdout.lock();
-    let _ = handle.write_all(bytes);
+    let _ = handle.write_all(buf);
+    buf.clear();
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn output_write_all(bytes: &[u8]) {
+    OUTPUT_BUFFER.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.extend_from_slice(bytes);
+        if buf.len() >= OUTPUT_BUFFER_THRESHOLD {
+            output_buffer_drain(&mut buf);
+        }
+    });
 }
 
 /// Fast decimal encoding for i64, avoids alloc.
@@ -126,6 +156,10 @@ pub fn output_flush() {
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn output_flush() {
+    OUTPUT_BUFFER.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        output_buffer_drain(&mut buf);
+    });
     let stdout = io::stdout();
     let _ = stdout.lock().flush();
 }
