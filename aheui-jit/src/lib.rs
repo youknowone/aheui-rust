@@ -581,19 +581,28 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_BRZ => {
                 // rpaheui/aheui/aheui.py:299-301: pop, check zero,
-                // jump if zero. The pop dispatch is the same 3-way
-                // pattern as OP_POP/OP_DUP, but the value-position
-                // form here means `lower_if_value` requires every
-                // branch (including the polymorphic-port pop) to
-                // lower — a regression-free OP_BRZ JIT lowering needs
-                // either a port-side shim (`pool_ptr opaque→int`) or
-                // a structural rewrite that avoids `let top = if
-                // ...`. D-4 attempt with stmt-form per-branch + extern
-                // `jit_pop_is_zero_*` shims regressed loop.aheui with
-                // a `_get_2_values <2 elements` panic during trace
-                // recording; root cause likely metainterp single-step
-                // double-running the pop. Reverted to the safe D-3
-                // form pending a separate diagnosis pass.
+                // jump if zero. The naive D-4 stmt-form per-branch
+                // rewrite (`let zero = jit_pop_is_zero_*(...);`) lowers
+                // cleanly to BC_CALL_INT + IntNe + GuardFalse, but
+                // empirically panics with `_get_2_values <2 elements`
+                // at the next SUB during trace recording. Root cause
+                // (2026-04-28): the `#[jit_interp]` macro design runs
+                // BOTH the metainterp jitcode (via __merge_mainloop's
+                // trace_jitcode → BC_CALL_INT → call_int_function in
+                // dispatch.rs:1536) AND the outer Rust match arm in
+                // each iteration during recording — a residual_int
+                // call with side effects pops once via each path, so
+                // OP_BRZ pops twice and the next SUB sees one element
+                // instead of two. Logo doesn't surface this because
+                // its traces abort permanent before completing
+                // (verified MAJIT_LOG=1: every logo trace start is
+                // followed by abort:permanent), so the compiled trace
+                // never runs and double-execution side effects only
+                // happen during the recording window. loop.aheui's
+                // pattern reaches the panic before the trace aborts.
+                // Revert to D-3 empty-body form pending architectural
+                // fix (gate outer match on `!driver.is_tracing()` —
+                // multi-session macro change in jit_interp/mod.rs).
                 let top = if state.selected == 27usize {
                     state.selected_dispatch_mut().pop()
                 } else if state.selected == 21usize {
