@@ -1332,6 +1332,18 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // — see [`TRACE_LIMIT`] for the scaling.
     driver.set_param("trace_limit", trace_limit() as i64);
 
+    // `ALL_OPTS` minus `unroll` (warmspot.py:73 passes the list per driver).
+    // rpaheui leaves the default, so this is a pyre-side choice for this
+    // frontend only; nothing else on the process is affected.
+    //
+    // Peeling the preamble costs this driver more than it returns. On logo it
+    // spends ~68ms of the ~108ms warmup, and the peeled body is no faster:
+    // wall 271ms -> 209ms with the steady-state phase moving 163.5ms ->
+    // 169.0ms, i.e. within noise. The aheui loop body carries almost nothing
+    // loop-invariant to hoist — every operation reads or writes the mutable
+    // selected stack — so the second copy buys the optimizer no new facts.
+    driver.set_param_enable_opts("intbounds:rewrite:virtualize:string:pure:earlyforce:heap");
+
     let mut pc: usize = 0;
     // rpaheui/aheui/aheui.py:30: reds=['stacksize','storage','selected']
     let mut state = AheuiState {
