@@ -148,7 +148,11 @@ struct AheuiState {
     selected: usize,
     stacksize: i32,
     pool_ptr: majit_ir::GcRef,
-    selected_ref: majit_ir::GcRef,
+    /// `&mut state.storage.pools[selected]` packed as `usize`. Tracked as
+    /// `int(usize)` in `state_fields` so monomorphic storage helpers
+    /// (`stack_*` / `queue_*`) can read it as an Int operand from the
+    /// trace IR. Phase D-1 design doc: `~/.claude/plans/2026-04-28-phase-d1-monomorphic-dispatch-design.md`.
+    selected_ref: usize,
 }
 
 impl AheuiState {
@@ -158,7 +162,7 @@ impl AheuiState {
         // Point directly at `Stack` in the flat stacks array so the JIT
         // can read head (offset 0) and size (offset 8) without going
         // through the indirection helper.
-        self.selected_ref = majit_ir::GcRef(self.storage.get_stack_ptr(self.selected) as usize);
+        self.selected_ref = self.storage.get_stack_ptr(self.selected) as usize;
     }
 
     /// rpaheui: selected.push/pop/add — polymorphic dispatch (Stack/Queue/Port).
@@ -252,7 +256,11 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
         selected: int(usize),
         stacksize: int(i32),
         pool_ptr: opaque(majit_ir::GcRef),
-        selected_ref: opaque(majit_ir::GcRef),
+        // Tracked as int(usize) so the lowerer can read it via
+        // `lower_state_field_read` and pass it as an Int-kind arg to
+        // monomorphic `stack_*` / `queue_*` helpers (Phase D-1 design,
+        // ~/.claude/plans/2026-04-28-phase-d1-monomorphic-dispatch-design.md).
+        selected_ref: int(usize),
     },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
@@ -264,8 +272,13 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
         jit_output_flush => residual_void,
         jit_tag_val => elidable_int,
     },
-    // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program']
-    greens = [stackok, is_queue],
+    // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
+    // Phase D-1 adds `is_port` so the trace specializes per storage type
+    // (stack vs queue vs port) — match arms branch on these greens to
+    // call concrete `stack_*` / `queue_*` helpers instead of going
+    // through the polymorphic `&dyn LinkedList` dispatch which the
+    // lowerer silent-skips.
+    greens = [stackok, is_queue, is_port],
 )]
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let mut driver: majit_meta::JitDriver<AheuiState> = majit_meta::JitDriver::new(threshold);
@@ -295,14 +308,17 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         selected: 0,
         stacksize: 0,
         pool_ptr: majit_ir::GcRef::NULL,
-        selected_ref: majit_ir::GcRef::NULL,
+        selected_ref: 0,
     };
     // Storage was moved into state — refresh self-referencing pointers.
     state.storage.refresh_pools();
     state.pool_ptr = majit_ir::GcRef(&mut state.storage as *mut Storage as usize);
     state.refresh_selected_ref();
-    // rpaheui/aheui/aheui.py:29: is_queue is a green variable
+    // rpaheui/aheui/aheui.py:29: is_queue is a green variable.
+    // Phase D-1: is_port green added so storage-op match arms branch
+    // monomorphically (stack vs queue vs port).
     let mut is_queue: bool = false;
+    let mut is_port: bool = false;
 
     while pc < program.size {
         // rpaheui/aheui/aheui.py:252
@@ -312,6 +328,13 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         jit_merge_point!();
         let op = program.get_op(pc);
         state.stacksize += -OP_STACKDEL[op as usize] + OP_STACKADD[op as usize];
+        // Phase D-1 §5: pre-advance `pc` so the interpreter's pc matches
+        // the trace's `__jit_pc = op_pc + 1` convention. Operand reads in
+        // the arms use `pc - 1` to recover the opcode row; the trailing
+        // `pc += 1` at the end of the loop is dropped (replaced by this
+        // pre-advance). Branch arms compute targets against `pc - 1`
+        // (op_pc) so the back-edge check stays semantic.
+        pc += 1;
 
         match op {
             // rpaheui/aheui/aheui.py:260-269: selected.<binop>().
@@ -327,23 +350,24 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_PUSH => {
                 // rpaheui/aheui/aheui.py:272-275
-                let value = program.get_operand(pc) as i32;
+                let value = program.get_operand(pc - 1) as i32;
                 state.selected_dispatch_mut().push(val_from_i32(value));
             }
             OP_DUP => state.selected_dispatch_mut().dup(),
             OP_SWAP => state.selected_dispatch_mut().swap(),
             OP_SEL => {
                 // rpaheui/aheui/aheui.py:280-284
-                let value = program.get_operand(pc) as usize;
+                let value = program.get_operand(pc - 1) as usize;
                 state.selected = value;
                 state.refresh_selected_ref();
                 state.stacksize = state.storage.len_at(state.selected) as i32;
                 is_queue = value == VAL_QUEUE;
+                is_port = value == VAL_PORT;
             }
             OP_MOV => {
                 // rpaheui/aheui/aheui.py:285-291
                 let r = state.selected_dispatch_mut().pop();
-                let target = program.get_operand(pc) as usize;
+                let target = program.get_operand(pc - 1) as usize;
                 state.storage.dispatch_mut(target).push(r);
                 if state.selected == target {
                     state.stacksize += 1;
@@ -362,8 +386,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     _ => unreachable!(),
                 };
                 if jump {
-                    let target = program.get_label(pc);
-                    if target <= pc {
+                    let target = program.get_label(pc - 1);
+                    if target <= pc - 1 {
                         // Back-edge: can_enter_jit before pc assignment.
                         // If compiled code ran and finished (FINISH), the
                         // macro sets pc=target and continues. If guard
@@ -412,7 +436,9 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_HALT => break,
             _ => {}
         }
-        pc += 1;
+        // Phase D-1 §5: pc was pre-advanced after `program.get_op`; do
+        // not advance again here. Branch arms own their own `pc = target`
+        // assignment + `continue`.
     }
 
     aheui_io::output_flush();
