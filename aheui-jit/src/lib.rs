@@ -376,13 +376,24 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // path passes `pc = original_pc + 1` (post-fetch) so the same
     // derivation reproduces the op the trace recorder saw, leaving the
     // trace-side dispatch unchanged.
-    driver.register_jitcode_factory(|program: &Program, pc: usize, _op: u8| {
-        if pc == 0 || pc > program.size {
-            return None;
-        }
-        let op = program.get_op(pc - 1);
-        __jitcode_mainloop(program, pc, op)
-    });
+    // Phase 4 Epic B.3-B.4: forward the driver-shared `Assembler` into
+    // `__jitcode_mainloop` so each per-pc body's
+    // `JitCodeBuilder::finalize_liveness(__asm)` can register its
+    // per-marker liveness triples and patch the BC_LIVE 2-byte slots,
+    // mirroring `assembler.py:146-158`'s per-marker `_encode_liveness →
+    // encode_offset` shape.
+    driver.register_jitcode_factory(
+        |asm: &mut majit_metainterp::Assembler,
+         program: &Program,
+         pc: usize,
+         _op: u8| {
+            if pc == 0 || pc > program.size {
+                return None;
+            }
+            let op = program.get_op(pc - 1);
+            __jitcode_mainloop(asm, program, pc, op)
+        },
+    );
 
     // rpaheui/aheui/aheui.py:422 — only trace_limit is set explicitly
     // when the user passes --trace-limit. All other parameters use
@@ -416,6 +427,27 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         let meta = <AheuiState as majit_meta::JitState>::build_meta(&state, 0, program);
         meta.install_canonical_liveness(&mut driver);
     }
+    // RPython `warmspot.py:281-289 make_jitcodes() -> finish_setup`
+    // builds all portal JitCodes before publishing
+    // `metainterp_sd.liveness_info`. The macro path has an on-demand
+    // factory, so pre-run the factory for every bytecode PC here: each
+    // generated body calls `JitCodeBuilder::finalize_liveness(__asm)`,
+    // registering its per-marker liveness triples into the driver-shared
+    // assembler. Only after that do we snapshot `asm.all_liveness()` into
+    // staticdata, so every BC_LIVE offset that can appear during tracing or
+    // blackhole resume is present in the immutable table PyPy would have
+    // after `finish_setup`.
+    {
+        let __shared_asm = driver.shared_asm();
+        let mut __asm = __shared_asm
+            .lock()
+            .expect("shared_asm poisoned while prebuilding jitcode liveness");
+        for pc in 1..=program.size {
+            let op = program.get_op(pc - 1);
+            let _ = __jitcode_mainloop(&mut __asm, program, pc, op);
+        }
+    }
+    driver.sync_liveness_info_from_shared_asm();
 
     while pc < program.size {
         // rpaheui/aheui/aheui.py:252
