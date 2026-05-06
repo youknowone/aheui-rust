@@ -298,10 +298,7 @@ extern "C" fn jit_pop_is_zero_queue(queue_ref: usize) -> i64 {
         jit_read_number => residual_int,
         jit_output_flush => residual_void,
         jit_tag_val => elidable_int,
-        // Lowers `program.get_req_size(pc)` (the body-local `stackok` green
-        // initializer at the top of the dispatch while-body) to a JIT
-        // call_pure_int op so the green compiles down to a constant under
-        // the trace's `int_guard_value` specialization.
+        // First MethodCall RHS consumer; lowered via `lower_method_call_value`.
         Program::get_req_size => elidable_int,
         // Phase D-1 monomorphic helpers — registered as residual calls
         // so the lowerer emits a concrete `call_void_args` /
