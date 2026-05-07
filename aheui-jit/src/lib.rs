@@ -338,20 +338,21 @@ extern "C" fn jit_pop_is_zero_queue(queue_ref: usize) -> i64 {
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
     //
-    // Phase D-3 reverts the `is_queue`/`is_port` greens from Phase D-1
-    // §2: the macro's `lower_value_expr` does not register greens as
-    // lowerable bindings, so `if state.selected == 27usize { ... }` rejected during arm
-    // lowering and the entire arm became empty IR — producing an empty
-    // trace that compiled to a `Label → Jump` infinite loop.
+    // A.3.7 closes the literal-parity gap that Phase D-3 reverted. The
+    // earlier revert was forced by the macro's `lower_value_expr` not
+    // registering greens as lowerable bindings; A.3.6.1
+    // (jitcode_lower.rs:5605 `bind_pre_merge_point_stmts`) walks
+    // pre-merge-point body-local `let` stmts and binds them, so a
+    // synthesised `let is_queue = state.selected == 21usize;` flows
+    // through `resolve_greens` / `emit_promote_greens` without panic.
     //
-    // The replacement matches RPython more closely: `state.selected`
-    // (the slot index) is promoted at the merge point and the
-    // dispatch arms branch on `state.selected == 21usize` /
-    // `state.selected == 27usize`, which the lowerer recognises as
-    // `load_state_field + IntEq + goto_if_not`. Within a trace
-    // specialised by `guard_value(selected)`, the comparison folds to a
-    // constant and only the live branch reaches the optimised IR.
-    greens = [stackok],
+    // The dispatch arms keep their `state.selected == 21usize` /
+    // `state.selected == 27usize` 3-way structure — pyre's discriminator
+    // is finer-grained than rpaheui's 2-way `is_queue` (Port is split
+    // out from the stack family), and within a trace specialised by
+    // `guard_value(selected)` the comparison folds to a constant and
+    // only the live branch reaches the optimised IR.
+    greens = [pc, stackok, is_queue, program],
 )]
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let mut driver: majit_meta::JitDriver<AheuiState> = majit_meta::JitDriver::new(threshold);
@@ -454,6 +455,11 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     while pc < program.size {
         // rpaheui/aheui/aheui.py:252
         let mut stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+        // rpaheui/aheui/aheui.py:284 sets `is_queue = (value == VAL_QUEUE)`
+        // inside OP_SEL; pyre recomputes it pre-merge-point from the
+        // canonical source (`state.selected == VAL_QUEUE`) so A.3.6.1's
+        // body-local walker can bind it as a green for `resolve_greens`.
+        let is_queue = state.selected == 21usize;
 
         // rpaheui/aheui/aheui.py:253-255: jit_merge_point
         jit_merge_point!();
