@@ -149,7 +149,7 @@ struct AheuiState {
     storage: Storage,
     selected: usize,
     stacksize: i32,
-    pool_ptr: majit_ir::GcRef,
+    pool_ptr: usize,
     /// `&mut state.storage.pools[selected]` packed as `usize`. Tracked as
     /// `int(usize)` in `state_fields` so monomorphic storage helpers
     /// (`stack_*` / `queue_*`) can read it as an Int operand from the
@@ -250,6 +250,18 @@ extern "C" fn jit_pop_is_zero_queue(queue_ref: usize) -> i64 {
     if val_is_zero(&v) { 1 } else { 0 }
 }
 
+/// OP_SEL helper: compute selected_ref and stacksize for a given slot index.
+/// Returns (selected_ref, stacksize) packed for the state field writes.
+fn jit_sel_get_ref(pool_ptr: usize, selected: usize) -> i64 {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.get_stack_ptr(selected) as usize as i64
+}
+
+fn jit_sel_get_len(pool_ptr: usize, selected: usize) -> i64 {
+    let storage = unsafe { &*(pool_ptr as *const Storage) };
+    storage.len_at(selected) as i64
+}
+
 // Guard failure resume: handled by the RPython-standard JIT framework.
 // can_enter_jit! / jit_merge_point! flow through JitDriver.back_edge_structured
 // and JitDriver.merge_point, which restore state via JitState::restore.
@@ -282,7 +294,7 @@ extern "C" fn jit_pop_is_zero_queue(queue_ref: usize) -> i64 {
         // casts at the JIT boundary.
         selected: int(usize),
         stacksize: int(i32),
-        pool_ptr: opaque(majit_ir::GcRef),
+        pool_ptr: int(usize),
         // Tracked as int(usize) so the lowerer can read it via
         // `lower_state_field_read` and pass it as an Int-kind arg to
         // monomorphic `stack_*` / `queue_*` helpers (Phase D-1 design,
@@ -338,6 +350,8 @@ extern "C" fn jit_pop_is_zero_queue(queue_ref: usize) -> i64 {
         // in the trace IR followed by an IntNe + GuardFalse pair.
         jit_pop_is_zero_stack => residual_int,
         jit_pop_is_zero_queue => residual_int,
+        jit_sel_get_ref => elidable_int,
+        jit_sel_get_len => elidable_int,
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
     //
@@ -376,12 +390,12 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         storage: Storage::new(),
         selected: 0,
         stacksize: 0,
-        pool_ptr: majit_ir::GcRef::NULL,
+        pool_ptr: 0,
         selected_ref: 0,
     };
     // Storage was moved into state — refresh self-referencing pointers.
     state.storage.refresh_pools();
-    state.pool_ptr = majit_ir::GcRef(&mut state.storage as *mut Storage as usize);
+    state.pool_ptr = &mut state.storage as *mut Storage as usize;
     state.refresh_selected_ref();
 
     // RPython `warmspot.py:281-289` `make_jitcodes() →
@@ -534,8 +548,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 // rpaheui/aheui/aheui.py:280-284
                 let value = program.get_operand(pc - 1) as usize;
                 state.selected = value;
-                state.refresh_selected_ref();
-                state.stacksize = state.storage.len_at(state.selected) as i32;
+                state.selected_ref = jit_sel_get_ref(state.pool_ptr, state.selected) as usize;
+                state.stacksize = jit_sel_get_len(state.pool_ptr, state.selected) as i32;
             }
             OP_MOV => {
                 // rpaheui/aheui/aheui.py:285-291.
