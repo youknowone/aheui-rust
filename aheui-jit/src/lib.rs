@@ -301,6 +301,8 @@ extern "C" fn jit_pop_is_zero_queue(queue_ref: usize) -> i64 {
         // First MethodCall RHS consumer; lowered via `lower_method_call_value`.
         Program::get_req_size => elidable_int,
         Program::get_op => elidable_int,
+        Program::get_label => elidable_int,
+        Program::get_operand => elidable_int,
         // Phase D-1 monomorphic helpers — registered as residual calls
         // so the lowerer emits a concrete `call_void_args` /
         // `call_int_args` in the trace IR (function-pointer call) rather
