@@ -455,7 +455,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             // (concrete `stack_*` or `queue_*` function pointer for the
             // hot path; polymorphic `dispatch_mut()` only for the cold
             // I/O Port slot).
-            OP_ADD => {
+            OP_ADD => { if stackok {
                 if state.selected == 27usize {
                     state.selected_dispatch_mut().add();
                 } else if state.selected == 21usize {
@@ -463,8 +463,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else {
                     lj::stack_add(state.selected_ref);
                 }
-            }
-            OP_SUB => {
+            }}
+            OP_SUB => { if stackok {
                 if state.selected == 27usize {
                     state.selected_dispatch_mut().sub();
                 } else if state.selected == 21usize {
@@ -472,8 +472,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else {
                     lj::stack_sub(state.selected_ref);
                 }
-            }
-            OP_MUL => {
+            }}
+            OP_MUL => { if stackok {
                 if state.selected == 27usize {
                     state.selected_dispatch_mut().mul();
                 } else if state.selected == 21usize {
@@ -481,8 +481,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else {
                     lj::stack_mul(state.selected_ref);
                 }
-            }
-            OP_DIV => {
+            }}
+            OP_DIV => { if stackok {
                 if state.selected == 27usize {
                     state.selected_dispatch_mut().div();
                 } else if state.selected == 21usize {
@@ -490,8 +490,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else {
                     lj::stack_div(state.selected_ref);
                 }
-            }
-            OP_MOD => {
+            }}
+            OP_MOD => { if stackok {
                 if state.selected == 27usize {
                     state.selected_dispatch_mut().modulo();
                 } else if state.selected == 21usize {
@@ -499,8 +499,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else {
                     lj::stack_mod(state.selected_ref);
                 }
-            }
-            OP_POP => {
+            }}
+            OP_POP => { if stackok {
                 if state.selected == 27usize {
                     state.selected_dispatch_mut().pop();
                 } else if state.selected == 21usize {
@@ -508,7 +508,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else {
                     lj::stack_pop(state.selected_ref);
                 }
-            }
+            }}
             OP_PUSH => {
                 // rpaheui/aheui/aheui.py:272-275.
                 //
@@ -531,7 +531,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_push(state.selected_ref, v);
                 }
             }
-            OP_DUP => {
+            OP_DUP => { if stackok {
                 if state.selected == 27usize {
                     state.selected_dispatch_mut().dup();
                 } else if state.selected == 21usize {
@@ -539,8 +539,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else {
                     lj::stack_dup(state.selected_ref);
                 }
-            }
-            OP_SWAP => {
+            }}
+            OP_SWAP => { if stackok {
                 if state.selected == 27usize {
                     state.selected_dispatch_mut().swap();
                 } else if state.selected == 21usize {
@@ -548,7 +548,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else {
                     lj::stack_swap(state.selected_ref);
                 }
-            }
+            }}
             OP_SEL => {
                 // rpaheui/aheui/aheui.py:280-284
                 let value = program.get_operand(pc - 1) as usize;
@@ -556,11 +556,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 state.selected_ref = jit_sel_get_ref(state.pool_ptr, state.selected) as usize;
                 state.stacksize = jit_sel_get_len(state.pool_ptr, state.selected) as i32;
             }
-            OP_MOV => {
-                // rpaheui/aheui/aheui.py:285-291.
-                // Source side: same 3-way as the other pop sites.
-                // Destination side stays polymorphic — the operand is
-                // not a green so the trace cannot specialize on it.
+            OP_MOV => { if stackok {
                 let r = if state.selected == 27usize {
                     state.selected_dispatch_mut().pop()
                 } else if state.selected == 21usize {
@@ -573,8 +569,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if state.selected == target {
                     state.stacksize += 1;
                 }
-            }
-            OP_CMP => {
+            }}
+            OP_CMP => { if stackok {
                 if state.selected == 27usize {
                     state.selected_dispatch_mut().cmp();
                 } else if state.selected == 21usize {
@@ -582,7 +578,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else {
                     lj::stack_cmp(state.selected_ref);
                 }
-            }
+            }}
             OP_BRPOP1 | OP_BRPOP2 => {
                 // rpaheui/aheui/aheui.py:294-296: jump iff !stackok.
                 // stackok is a green so the cond resolves at trace
@@ -699,8 +695,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     }
                 }
             }
-            OP_POPNUM => {
-                // rpaheui/aheui/aheui.py:312-314
+            OP_POPNUM => { if stackok {
                 let r = if state.selected == 27usize {
                     state.selected_dispatch_mut().pop()
                 } else if state.selected == 21usize {
@@ -709,9 +704,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_pop(state.selected_ref)
                 };
                 aheui_io::output_write_number(&r);
-            }
-            OP_POPCHAR => {
-                // rpaheui/aheui/aheui.py:315-317
+            }}
+            OP_POPCHAR => { if stackok {
                 let r = if state.selected == 27usize {
                     state.selected_dispatch_mut().pop()
                 } else if state.selected == 21usize {
@@ -720,7 +714,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_pop(state.selected_ref)
                 };
                 aheui_io::output_write_utf8(&r);
-            }
+            }}
             OP_PUSHNUM => {
                 // rpaheui/aheui/aheui.py:318-321
                 jit_output_flush();
