@@ -262,6 +262,10 @@ fn jit_sel_get_len(pool_ptr: usize, selected: usize) -> i64 {
     storage.len_at(selected) as i64
 }
 
+fn jit_stacksize_delta(op: usize) -> i64 {
+    (-OP_STACKDEL[op] + OP_STACKADD[op]) as i64
+}
+
 // Guard failure resume: handled by the RPython-standard JIT framework.
 // can_enter_jit! / jit_merge_point! flow through JitDriver.back_edge_structured
 // and JitDriver.merge_point, which restore state via JitState::restore.
@@ -352,6 +356,7 @@ fn jit_sel_get_len(pool_ptr: usize, selected: usize) -> i64 {
         jit_pop_is_zero_queue => residual_int,
         jit_sel_get_ref => elidable_int,
         jit_sel_get_len => elidable_int,
+        jit_stacksize_delta => elidable_int,
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
     //
@@ -433,7 +438,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         state.selected = promote(state.selected);
         state.selected_ref = promote(state.selected_ref);
         let op = program.get_op(pc);
-        state.stacksize += -OP_STACKDEL[op as usize] + OP_STACKADD[op as usize];
+        state.stacksize += jit_stacksize_delta(op as usize) as i32;
         // Phase D-1 §5: pre-advance `pc` so the interpreter's pc matches
         // the trace's `__jit_pc = op_pc + 1` convention. Operand reads in
         // the arms use `pc - 1` to recover the opcode row; the trailing
