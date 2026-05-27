@@ -250,6 +250,14 @@ extern "C" fn jit_pop_is_zero_queue(queue_ref: usize) -> i64 {
     if val_is_zero(&v) { 1 } else { 0 }
 }
 
+/// Unified OP_BRZ: pop + is_zero for any selected type.
+/// Returns 1 if zero (take branch), 0 otherwise.
+extern "C" fn jit_pop_is_zero(pool_ptr: usize, selected: usize) -> i64 {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    let v = storage.dispatch_mut(selected).pop();
+    if val_is_zero(&v) { 1 } else { 0 }
+}
+
 /// OP_SEL helper: compute selected_ref and stacksize for a given slot index.
 /// Returns (selected_ref, stacksize) packed for the state field writes.
 fn jit_sel_get_ref(pool_ptr: usize, selected: usize) -> i64 {
@@ -354,8 +362,9 @@ fn jit_stacksize_delta(op: usize) -> i64 {
         // in the trace IR followed by an IntNe + GuardFalse pair.
         jit_pop_is_zero_stack => residual_int,
         jit_pop_is_zero_queue => residual_int,
+        jit_pop_is_zero => residual_int,
         jit_sel_get_ref => elidable_int,
-        jit_sel_get_len => elidable_int,
+        jit_sel_get_len => residual_int,
         jit_stacksize_delta => elidable_int,
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
@@ -384,10 +393,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let gc = Box::new(NurseryGcAllocator::new());
     driver.meta_interp_mut().backend_mut().set_gc_allocator(gc);
 
-    // rpaheui/aheui/aheui.py:422 + LOG.md: logo benchmark's main loop
-    // is ~2500 opcodes → ~4000+ IR ops per iteration, exceeding the
-    // default trace_limit=6000. rpaheui sets it to 100000.
-    driver.set_param("trace_limit", 100000);
+    // rpaheui/aheui/aheui.py:422: trace_limit=100000. majit's sub-JitCode
+    // dispatch model + pre-dispatch branch match generate ~40 IR ops per
+    // opcode (vs RPython's ~8). The logo loop's 2539 opcodes need ~102000.
+    driver.set_param("trace_limit", 200000);
 
     let mut pc: usize = 0;
     // rpaheui/aheui/aheui.py:30: reds=['stacksize','storage','selected']
@@ -447,18 +456,33 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // (op_pc) so the back-edge check stays semantic.
         pc += 1;
 
-        // rpaheui/aheui/aheui.py:297-310: OP_JMP at dispatch level.
-        // lower_match_stmt lowers this into a guard + body in the dispatch
-        // JitCode. pc = target + continue update the JitCode's pc register
-        // and BC_GOTO loop_start. Other branch ops (BRPOP, BRZ) are
-        // handled by the dispatch match arms as sub-JitCodes — they don't
-        // change pc in the JitCode (the concrete interpreter handles it).
+        // rpaheui/aheui/aheui.py:294-311: branch ops at dispatch level.
+        // lower_match_stmt lowers this into chained guards in the dispatch
+        // JitCode. pc = target + continue update the JitCode pc register
+        // and BC_GOTO loop_start.
         match op {
+            OP_BRPOP1 | OP_BRPOP2 => {
+                if stackok == false {
+                    pc = program.get_label(pc - 1);
+                    stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
+                    continue;
+                }
+            }
             OP_JMP => {
                 pc = program.get_label(pc - 1);
                 stackok = program.get_req_size(pc) as i32 <= state.stacksize;
                 can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
                 continue;
+            }
+            OP_BRZ => {
+                let zero = jit_pop_is_zero(state.pool_ptr, state.selected);
+                if zero != 0 {
+                    pc = program.get_label(pc - 1);
+                    stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
+                    continue;
+                }
             }
             _ => {}
         }
