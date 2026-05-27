@@ -163,6 +163,7 @@ struct AheuiState {
     /// (`stack_*` / `queue_*`) can read it as an Int operand from the
     /// trace IR. Phase D-1 design doc: `~/.claude/plans/2026-04-28-phase-d1-monomorphic-dispatch-design.md`.
     selected_ref: usize,
+    jump_target: usize,
 }
 
 impl AheuiState {
@@ -405,6 +406,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         stacksize: 0,
         pool_ptr: 0,
         selected_ref: 0,
+        jump_target: 0,
     };
     // Storage was moved into state — refresh self-referencing pointers.
     state.storage.refresh_pools();
@@ -455,52 +457,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // (op_pc) so the back-edge check stays semantic.
         pc += 1;
 
-        // Emit BC_LOOP_HEADER unconditionally in the dispatch JitCode.
-        // The Rust-level counter (can_enter_jit! inside the if-chain below)
-        // only fires on backward branches, correctly identifying hot loops.
-        // This separation mirrors RPython's single-JitCode model where
-        // loop_header is always present in the trace body.
-        jit_loop_header!();
-
-        // rpaheui/aheui/aheui.py:295-311: branch/jump ops are handled at
-        // the dispatch level so `pc = target; continue;` modifies the
-        // dispatch JitCode's pc register.
-        if op == OP_BRPOP1 || op == OP_BRPOP2 || op == OP_JMP || op == OP_BRZ {
-            let mut jump = false;
-            if op == OP_BRPOP1 || op == OP_BRPOP2 {
-                jump = !stackok;
-            } else if op == OP_JMP {
-                jump = true;
-            } else if op == OP_BRZ {
-                if state.selected == 27usize {
-                    let top = state.selected_dispatch_mut().pop();
-                    jump = val_is_zero(&top);
-                } else if state.selected == 21usize {
-                    let zero = jit_pop_is_zero_queue(state.selected_ref);
-                    jump = zero != 0;
-                } else {
-                    let zero = jit_pop_is_zero_stack(state.selected_ref);
-                    jump = zero != 0;
-                }
-            }
-            if jump {
-                let target = program.get_label(pc - 1);
-                if target <= pc - 1 {
-                    can_enter_jit!(
-                        driver,
-                        target,
-                        &mut state,
-                        program,
-                        || { aheui_io::output_flush(); },
-                        pc,
-                        state.stacksize
-                    );
-                }
-                pc = target;
-                continue;
-            }
-            continue;
-        }
+        state.jump_target = 0;
 
         match op {
             // rpaheui/aheui/aheui.py:260-269: selected.<binop>().
@@ -634,7 +591,45 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_cmp(state.selected_ref);
                 }
             }}
-            // Branch ops handled by dispatch-level if-chain above.
+            OP_BRPOP1 | OP_BRPOP2 => {
+                if !stackok {
+                    state.jump_target = program.get_label(pc - 1);
+                }
+            }
+            OP_JMP => {
+                let target = program.get_label(pc - 1);
+                if target <= pc - 1 {
+                    jit_loop_header!();
+                    can_enter_jit!(
+                        driver,
+                        target,
+                        &mut state,
+                        program,
+                        || { aheui_io::output_flush(); },
+                        pc,
+                        state.stacksize
+                    );
+                }
+                state.jump_target = target;
+            }
+            OP_BRZ => {
+                if state.selected == 27usize {
+                    let top = state.selected_dispatch_mut().pop();
+                    if val_is_zero(&top) {
+                        state.jump_target = program.get_label(pc - 1);
+                    }
+                } else if state.selected == 21usize {
+                    let zero = jit_pop_is_zero_queue(state.selected_ref);
+                    if zero != 0 {
+                        state.jump_target = program.get_label(pc - 1);
+                    }
+                } else {
+                    let zero = jit_pop_is_zero_stack(state.selected_ref);
+                    if zero != 0 {
+                        state.jump_target = program.get_label(pc - 1);
+                    }
+                }
+            }
             OP_POPNUM => { if stackok {
                 let r = if state.selected == 27usize {
                     state.selected_dispatch_mut().pop()
@@ -684,6 +679,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_NONE => {}
             OP_HALT => break,
             _ => {}
+        }
+        if state.jump_target > 0 {
+            pc = state.jump_target;
+            continue;
         }
     }
 
