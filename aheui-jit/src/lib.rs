@@ -384,10 +384,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let gc = Box::new(NurseryGcAllocator::new());
     driver.meta_interp_mut().backend_mut().set_gc_allocator(gc);
 
-    // rpaheui/aheui/aheui.py:422 — only trace_limit is set explicitly
-    // when the user passes --trace-limit. All other parameters use
-    // RPython defaults (warmstate.py PARAMETERS). No bridge_threshold
-    // or retrace_limit overrides in rpaheui.
+    // rpaheui/aheui/aheui.py:422 + LOG.md: logo benchmark's main loop
+    // is ~2500 opcodes → ~4000+ IR ops per iteration, exceeding the
+    // default trace_limit=6000. rpaheui sets it to 100000.
+    driver.set_param("trace_limit", 100000);
 
     let mut pc: usize = 0;
     // rpaheui/aheui/aheui.py:30: reds=['stacksize','storage','selected']
