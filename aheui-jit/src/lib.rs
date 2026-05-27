@@ -448,9 +448,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         pc += 1;
 
         // rpaheui/aheui/aheui.py:295-311: branch/jump ops are handled at
-        // the dispatch level (not inside match arm sub-JitCodes) so that
-        // `pc = target; continue;` modifies the dispatch JitCode's pc
-        // register and the loop-close sees the correct back-edge target.
+        // the dispatch level so `pc = target; continue;` modifies the
+        // dispatch JitCode's pc register.
         if op == OP_BRPOP1 || op == OP_BRPOP2 || op == OP_JMP || op == OP_BRZ {
             let mut jump = false;
             if op == OP_BRPOP1 || op == OP_BRPOP2 {
@@ -471,19 +470,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             if jump {
                 let target = program.get_label(pc - 1);
-                if target <= pc - 1 {
-                    can_enter_jit!(
-                        driver,
-                        target,
-                        &mut state,
-                        program,
-                        || {
-                            aheui_io::output_flush();
-                        },
-                        pc,
-                        state.stacksize
-                    );
-                }
                 pc = target;
                 continue;
             }
@@ -622,7 +608,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_cmp(state.selected_ref);
                 }
             }}
-            // Branch ops (BRPOP1/2, JMP, BRZ) handled before match.
+            // Branch ops handled by dispatch-level if-chain above.
             OP_POPNUM => { if stackok {
                 let r = if state.selected == 27usize {
                     state.selected_dispatch_mut().pop()
@@ -673,9 +659,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_HALT => break,
             _ => {}
         }
-        // Phase D-1 §5: pc was pre-advanced after `program.get_op`; do
-        // not advance again here. Branch arms own their own `pc = target`
-        // assignment + `continue`.
     }
 
     aheui_io::output_flush();
