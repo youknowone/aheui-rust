@@ -175,6 +175,12 @@ impl AheuiState {
     fn selected_dispatch(&self) -> &dyn LinkedList {
         self.storage.dispatch(self.selected)
     }
+
+    fn refresh_state_from_storage(&mut self) {
+        self.pool_ptr = &mut self.storage as *mut Storage as usize;
+        self.refresh_selected_ref();
+        self.stacksize = self.storage.len_at(self.selected) as i32;
+    }
 }
 
 fn find_used_storages(_program: &Program, _header_pc: usize, initial: usize) -> Vec<usize> {
@@ -384,6 +390,7 @@ fn jit_stacksize_delta(op: usize) -> i64 {
     // `guard_value(selected)` the comparison folds to a constant and
     // only the live branch reaches the optimised IR.
     greens = [pc, stackok, is_queue, program],
+    recover = refresh_state_from_storage,
 )]
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let mut driver: majit_meta::JitDriver<AheuiState> = majit_meta::JitDriver::new(threshold);
