@@ -313,6 +313,7 @@ fn jit_stacksize_delta(op: usize) -> i64 {
         // monomorphic `stack_*` / `queue_*` helpers (Phase D-1 design,
         // ~/.claude/plans/2026-04-28-phase-d1-monomorphic-dispatch-design.md).
         selected_ref: int(usize),
+        jump_target: int(usize),
     },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
@@ -428,6 +429,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     }
 
     while pc < program.size {
+        state.jump_target = 0;
         // rpaheui/aheui/aheui.py:252
         let mut stackok = program.get_req_size(pc) as i32 <= state.stacksize;
         // rpaheui/aheui/aheui.py:284 sets `is_queue = (value == VAL_QUEUE)`
@@ -456,8 +458,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // pre-advance). Branch arms compute targets against `pc - 1`
         // (op_pc) so the back-edge check stays semantic.
         pc += 1;
-
-        state.jump_target = 0;
 
         match op {
             // rpaheui/aheui/aheui.py:260-269: selected.<binop>().
