@@ -10,14 +10,6 @@ extern crate majit_metainterp as majit_meta;
 
 use majit_meta::jit::promote;
 
-/// No-op at the Rust level; the proc-macro emits BC_LOOP_HEADER in the
-/// dispatch JitCode. Separates the loop-header signal (needed by the
-/// meta-interp for close-loop detection) from the counter increment
-/// (handled by can_enter_jit! on backward branches only).
-macro_rules! jit_loop_header {
-    () => {};
-}
-
 pub use aheui_runtime;
 pub use aheui_runtime::aheui;
 pub use aheui_runtime::io;
@@ -163,7 +155,6 @@ struct AheuiState {
     /// (`stack_*` / `queue_*`) can read it as an Int operand from the
     /// trace IR. Phase D-1 design doc: `~/.claude/plans/2026-04-28-phase-d1-monomorphic-dispatch-design.md`.
     selected_ref: usize,
-    jump_target: usize,
 }
 
 impl AheuiState {
@@ -313,7 +304,6 @@ fn jit_stacksize_delta(op: usize) -> i64 {
         // monomorphic `stack_*` / `queue_*` helpers (Phase D-1 design,
         // ~/.claude/plans/2026-04-28-phase-d1-monomorphic-dispatch-design.md).
         selected_ref: int(usize),
-        jump_target: int(usize),
     },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
@@ -407,7 +397,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         stacksize: 0,
         pool_ptr: 0,
         selected_ref: 0,
-        jump_target: 0,
     };
     // Storage was moved into state — refresh self-referencing pointers.
     state.storage.refresh_pools();
@@ -429,7 +418,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     }
 
     while pc < program.size {
-        state.jump_target = 0;
         // rpaheui/aheui/aheui.py:252
         let mut stackok = program.get_req_size(pc) as i32 <= state.stacksize;
         // rpaheui/aheui/aheui.py:284 sets `is_queue = (value == VAL_QUEUE)`
@@ -458,6 +446,22 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // pre-advance). Branch arms compute targets against `pc - 1`
         // (op_pc) so the back-edge check stays semantic.
         pc += 1;
+
+        // rpaheui/aheui/aheui.py:297-310: OP_JMP at dispatch level.
+        // lower_match_stmt lowers this into a guard + body in the dispatch
+        // JitCode. pc = target + continue update the JitCode's pc register
+        // and BC_GOTO loop_start. Other branch ops (BRPOP, BRZ) are
+        // handled by the dispatch match arms as sub-JitCodes — they don't
+        // change pc in the JitCode (the concrete interpreter handles it).
+        match op {
+            OP_JMP => {
+                pc = program.get_label(pc - 1);
+                stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
+                continue;
+            }
+            _ => {}
+        }
 
         match op {
             // rpaheui/aheui/aheui.py:260-269: selected.<binop>().
@@ -591,45 +595,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_cmp(state.selected_ref);
                 }
             }}
-            OP_BRPOP1 | OP_BRPOP2 => {
-                if !stackok {
-                    state.jump_target = program.get_label(pc - 1);
-                }
-            }
-            OP_JMP => {
-                let target = program.get_label(pc - 1);
-                if target <= pc - 1 {
-                    jit_loop_header!();
-                    can_enter_jit!(
-                        driver,
-                        target,
-                        &mut state,
-                        program,
-                        || { aheui_io::output_flush(); },
-                        pc,
-                        state.stacksize
-                    );
-                }
-                state.jump_target = target;
-            }
-            OP_BRZ => {
-                if state.selected == 27usize {
-                    let top = state.selected_dispatch_mut().pop();
-                    if val_is_zero(&top) {
-                        state.jump_target = program.get_label(pc - 1);
-                    }
-                } else if state.selected == 21usize {
-                    let zero = jit_pop_is_zero_queue(state.selected_ref);
-                    if zero != 0 {
-                        state.jump_target = program.get_label(pc - 1);
-                    }
-                } else {
-                    let zero = jit_pop_is_zero_stack(state.selected_ref);
-                    if zero != 0 {
-                        state.jump_target = program.get_label(pc - 1);
-                    }
-                }
-            }
+            // Branch ops handled by dispatch-level if-chain above.
             OP_POPNUM => { if stackok {
                 let r = if state.selected == 27usize {
                     state.selected_dispatch_mut().pop()
@@ -676,13 +642,14 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_push(state.selected_ref, v);
                 }
             }
+            // Branch ops: concrete execution handled by the pre-dispatch
+            // match (OP_JMP) or the runtime if-chain. These empty arms
+            // ensure the JitCode dispatch chain has entries for them so
+            // guard failures don't abort the trace.
+            OP_BRPOP1 | OP_BRPOP2 | OP_BRZ | OP_JMP => {}
             OP_NONE => {}
             OP_HALT => break,
             _ => {}
-        }
-        if state.jump_target > 0 {
-            pc = state.jump_target;
-            continue;
         }
     }
 
