@@ -10,6 +10,14 @@ extern crate majit_metainterp as majit_meta;
 
 use majit_meta::jit::promote;
 
+/// No-op at the Rust level; the proc-macro emits BC_LOOP_HEADER in the
+/// dispatch JitCode. Separates the loop-header signal (needed by the
+/// meta-interp for close-loop detection) from the counter increment
+/// (handled by can_enter_jit! on backward branches only).
+macro_rules! jit_loop_header {
+    () => {};
+}
+
 pub use aheui_runtime;
 pub use aheui_runtime::aheui;
 pub use aheui_runtime::io;
@@ -447,6 +455,13 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // (op_pc) so the back-edge check stays semantic.
         pc += 1;
 
+        // Emit BC_LOOP_HEADER unconditionally in the dispatch JitCode.
+        // The Rust-level counter (can_enter_jit! inside the if-chain below)
+        // only fires on backward branches, correctly identifying hot loops.
+        // This separation mirrors RPython's single-JitCode model where
+        // loop_header is always present in the trace body.
+        jit_loop_header!();
+
         // rpaheui/aheui/aheui.py:295-311: branch/jump ops are handled at
         // the dispatch level so `pc = target; continue;` modifies the
         // dispatch JitCode's pc register.
@@ -470,6 +485,17 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             if jump {
                 let target = program.get_label(pc - 1);
+                if target <= pc - 1 {
+                    can_enter_jit!(
+                        driver,
+                        target,
+                        &mut state,
+                        program,
+                        || { aheui_io::output_flush(); },
+                        pc,
+                        state.stacksize
+                    );
+                }
                 pc = target;
                 continue;
             }
