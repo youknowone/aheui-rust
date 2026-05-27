@@ -447,6 +447,49 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // (op_pc) so the back-edge check stays semantic.
         pc += 1;
 
+        // rpaheui/aheui/aheui.py:295-311: branch/jump ops are handled at
+        // the dispatch level (not inside match arm sub-JitCodes) so that
+        // `pc = target; continue;` modifies the dispatch JitCode's pc
+        // register and the loop-close sees the correct back-edge target.
+        if op == OP_BRPOP1 || op == OP_BRPOP2 || op == OP_JMP || op == OP_BRZ {
+            let mut jump = false;
+            if op == OP_BRPOP1 || op == OP_BRPOP2 {
+                jump = !stackok;
+            } else if op == OP_JMP {
+                jump = true;
+            } else if op == OP_BRZ {
+                if state.selected == 27usize {
+                    let top = state.selected_dispatch_mut().pop();
+                    jump = val_is_zero(&top);
+                } else if state.selected == 21usize {
+                    let zero = jit_pop_is_zero_queue(state.selected_ref);
+                    jump = zero != 0;
+                } else {
+                    let zero = jit_pop_is_zero_stack(state.selected_ref);
+                    jump = zero != 0;
+                }
+            }
+            if jump {
+                let target = program.get_label(pc - 1);
+                if target <= pc - 1 {
+                    can_enter_jit!(
+                        driver,
+                        target,
+                        &mut state,
+                        program,
+                        || {
+                            aheui_io::output_flush();
+                        },
+                        pc,
+                        state.stacksize
+                    );
+                }
+                pc = target;
+                continue;
+            }
+            continue;
+        }
+
         match op {
             // rpaheui/aheui/aheui.py:260-269: selected.<binop>().
             // Phase D-1 §4: 3-way branch on the (is_port, is_queue)
@@ -579,122 +622,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_cmp(state.selected_ref);
                 }
             }}
-            OP_BRPOP1 | OP_BRPOP2 => {
-                // rpaheui/aheui/aheui.py:294-296: jump iff !stackok.
-                // stackok is a green so the cond resolves at trace
-                // record time; the IR records only the taken branch.
-                if !stackok {
-                    let target = program.get_label(pc - 1);
-                    if target <= pc - 1 {
-                        can_enter_jit!(
-                            driver,
-                            target,
-                            &mut state,
-                            program,
-                            || {
-                                aheui_io::output_flush();
-                            },
-                            pc,
-                            state.stacksize
-                        );
-                    }
-                    pc = target;
-                    continue;
-                }
-            }
-            OP_JMP => {
-                // rpaheui/aheui/aheui.py:297-298: unconditional.
-                let target = program.get_label(pc - 1);
-                if target <= pc - 1 {
-                    can_enter_jit!(
-                        driver,
-                        target,
-                        &mut state,
-                        program,
-                        || {
-                            aheui_io::output_flush();
-                        },
-                        pc,
-                        state.stacksize
-                    );
-                }
-                pc = target;
-                continue;
-            }
-            OP_BRZ => {
-                // D-4: per-branch independent stmt-form. Each branch
-                // has its own `let zero = ...;` so the macro emits
-                // BC_CALL_INT + IntNe + GotoIfNot for queue/stack
-                // (port branch silent-skips per OP_DUP precedent). The
-                // metainterp's observer mode (trace_jitcode_observer)
-                // skips concrete-side execution during recording so
-                // the function only runs in outer match (no double-pop),
-                // and the compiled trace runs the IR call op once per
-                // iteration via the fn-ptr CallI machine code. The
-                // resulting BRZ exit guard fires when zero != 0 at
-                // runtime, so the loop terminates correctly.
-                if state.selected == 27usize {
-                    let top = state.selected_dispatch_mut().pop();
-                    if val_is_zero(&top) {
-                        let target = program.get_label(pc - 1);
-                        if target <= pc - 1 {
-                            can_enter_jit!(
-                                driver,
-                                target,
-                                &mut state,
-                                program,
-                                || {
-                                    aheui_io::output_flush();
-                                },
-                                pc,
-                                state.stacksize
-                            );
-                        }
-                        pc = target;
-                        continue;
-                    }
-                } else if state.selected == 21usize {
-                    let zero = jit_pop_is_zero_queue(state.selected_ref);
-                    if zero != 0 {
-                        let target = program.get_label(pc - 1);
-                        if target <= pc - 1 {
-                            can_enter_jit!(
-                                driver,
-                                target,
-                                &mut state,
-                                program,
-                                || {
-                                    aheui_io::output_flush();
-                                },
-                                pc,
-                                state.stacksize
-                            );
-                        }
-                        pc = target;
-                        continue;
-                    }
-                } else {
-                    let zero = jit_pop_is_zero_stack(state.selected_ref);
-                    if zero != 0 {
-                        let target = program.get_label(pc - 1);
-                        if target <= pc - 1 {
-                            can_enter_jit!(
-                                driver,
-                                target,
-                                &mut state,
-                                program,
-                                || {
-                                    aheui_io::output_flush();
-                                },
-                                pc,
-                                state.stacksize
-                            );
-                        }
-                        pc = target;
-                        continue;
-                    }
-                }
-            }
+            // Branch ops (BRPOP1/2, JMP, BRZ) handled before match.
             OP_POPNUM => { if stackok {
                 let r = if state.selected == 27usize {
                     state.selected_dispatch_mut().pop()
