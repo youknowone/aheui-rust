@@ -158,7 +158,7 @@ fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
             let program_jit = compile_program(&contents, ahsembler::OptimizationLevel::O2);
             eprintln!("\n--- JIT ---");
             let start = Instant::now();
-            let result = aheui_jit::mainloop(&program_jit, aheui_jit::JIT_THRESHOLD);
+            let result = aheui_jit::mainloop(&program_jit, aheui_jit::jit_threshold());
             let elapsed = start.elapsed();
             eprintln!("result = {result}");
             eprintln!("time   = {elapsed:?}");
@@ -169,7 +169,7 @@ fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
 
     #[cfg(feature = "jit")]
     if args.use_jit() {
-        let exitcode = aheui_jit::mainloop(&program, aheui_jit::JIT_THRESHOLD);
+        let exitcode = aheui_jit::mainloop(&program, aheui_jit::jit_threshold());
         std::process::exit(exit_code_to_i32(exitcode));
     }
 

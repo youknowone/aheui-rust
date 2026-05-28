@@ -21,6 +21,17 @@ pub mod jit;
 /// Default JIT threshold. RPython default = 1039.
 pub const JIT_THRESHOLD: u32 = 1039;
 
+/// JIT threshold honoring the `MAJIT_THRESHOLD` env override (for testing
+/// small hot loops without the production 1039-iteration warmup). RPython
+/// exposes the threshold as a configurable jitdriver param (`warmspot.py`);
+/// this is the same knob, read once at startup.
+pub fn jit_threshold() -> u32 {
+    std::env::var("MAJIT_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(JIT_THRESHOLD)
+}
+
 include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));
 
 // ── Imports ──
