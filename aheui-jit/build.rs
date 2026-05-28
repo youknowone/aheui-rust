@@ -97,6 +97,14 @@ fn main() {
     let json = serde_json::to_string_pretty(&pipeline).unwrap();
     std::fs::write(format!("{out_dir}/jit_metadata.json"), &json).unwrap();
 
+    // Persist `pipeline.jitcodes` (the codewriter's `make_jitcodes()` output:
+    // the `mainloop` portal + per-storage-method sub-jitcodes, inter-linked via
+    // the shared descr pool) as a bincode blob the runtime deserializes into
+    // `Vec<Arc<JitCode>>`. Same single-store model as
+    // `pyre-jit-trace/build.rs` `opcode_jitcodes.bin`.
+    let jitcodes_bin = bincode::serialize(&pipeline.jitcodes).unwrap();
+    std::fs::write(format!("{out_dir}/opcode_jitcodes.bin"), &jitcodes_bin).unwrap();
+
     eprintln!(
         "[aheui-jit build.rs] canonical analysis: {} opcode arms, {} functions, {} blocks, {} flat ops, generated {} bytes",
         pipeline.opcode_dispatch.len(),
