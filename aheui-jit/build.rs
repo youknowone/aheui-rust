@@ -105,6 +105,14 @@ fn main() {
     let jitcodes_bin = bincode::serialize(&pipeline.jitcodes).unwrap();
     std::fs::write(format!("{out_dir}/opcode_jitcodes.bin"), &jitcodes_bin).unwrap();
 
+    // Persist the shared descr pool (`Assembler.descrs`, assembler.py:23 /
+    // blackhole.py:59 `setup_descrs`). Each 'd'/'j' argcode in a
+    // `JitCode.code` byte stream is a 2-byte index into this pool; the 'j'
+    // (BC_INLINE_CALL) entries carry the inter-jitcode links. Same as
+    // `pyre-jit-trace/build.rs` `opcode_descrs.bin`.
+    let descrs_bin = bincode::serialize(&pipeline.descrs).unwrap();
+    std::fs::write(format!("{out_dir}/opcode_descrs.bin"), &descrs_bin).unwrap();
+
     eprintln!(
         "[aheui-jit build.rs] canonical analysis: {} opcode arms, {} functions, {} blocks, {} flat ops, generated {} bytes",
         pipeline.opcode_dispatch.len(),
