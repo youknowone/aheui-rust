@@ -106,6 +106,29 @@ pub fn pipeline_jitcode_by_name(name: &str) -> Option<Arc<RuntimeJitCode>> {
         .find(|jc| jc.name() == name)
 }
 
+/// Map a mainloop storage call's last path segment (`stack_pop`,
+/// `queue_add`, ...) to its monomorphic pipeline jitcode name and resolve
+/// it. The `#[jit_interp]` `inline_pipeline_*` lowering passes the call's
+/// last segment verbatim; the pipeline emitted a single jitcode per
+/// storage operation (`make_jitcodes()`, codewriter.py:89) shared by the
+/// stack and queue families, so both `stack_*` and `queue_*` collapse to
+/// the same callee. `push`/`dup` have no standalone jitcode (not reached as
+/// a separate `make_jitcodes()` entry) and intentionally return `None`.
+pub fn pipeline_jitcode_for_call(call_name: &str) -> Option<Arc<RuntimeJitCode>> {
+    let mapped = match call_name {
+        "stack_add" | "queue_add" => "add",
+        "stack_sub" | "queue_sub" => "sub",
+        "stack_mul" | "queue_mul" => "mul",
+        "stack_div" | "queue_div" => "div",
+        "stack_mod" | "queue_mod" => "modulo",
+        "stack_pop" | "queue_pop" => "pop",
+        "stack_swap" | "queue_swap" => "swap",
+        "stack_cmp" | "queue_cmp" => "cmp",
+        other => other,
+    };
+    pipeline_jitcode_by_name(mapped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +175,36 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn call_name_map_resolves_stack_and_queue_families_to_one_callee() {
+        // Both families collapse to the same monomorphic storage jitcode.
+        for (stack_call, queue_call, jitcode) in [
+            ("stack_add", "queue_add", "add"),
+            ("stack_sub", "queue_sub", "sub"),
+            ("stack_mul", "queue_mul", "mul"),
+            ("stack_div", "queue_div", "div"),
+            ("stack_mod", "queue_mod", "modulo"),
+            ("stack_pop", "queue_pop", "pop"),
+            ("stack_swap", "queue_swap", "swap"),
+            ("stack_cmp", "queue_cmp", "cmp"),
+        ] {
+            let from_stack = pipeline_jitcode_for_call(stack_call)
+                .unwrap_or_else(|| panic!("{stack_call} must resolve a pipeline jitcode"));
+            let from_queue = pipeline_jitcode_for_call(queue_call)
+                .unwrap_or_else(|| panic!("{queue_call} must resolve a pipeline jitcode"));
+            assert_eq!(from_stack.name(), jitcode);
+            assert_eq!(from_queue.name(), jitcode);
+        }
+    }
+
+    #[test]
+    fn call_name_map_returns_none_for_ops_without_a_jitcode() {
+        // `push`/`dup` were not emitted as standalone `make_jitcodes()`
+        // entries, so the inline-pipeline path must not claim to find them.
+        assert!(pipeline_jitcode_for_call("stack_push").is_none());
+        assert!(pipeline_jitcode_for_call("stack_dup").is_none());
     }
 
     #[test]
