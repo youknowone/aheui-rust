@@ -74,6 +74,38 @@ pub fn build_runtime_descr_pool(jitcodes: &[Arc<JitCode>]) -> Vec<RuntimeBhDescr
         .collect()
 }
 
+/// Materialize the pipeline jitcodes as runtime shells, each carrying the
+/// shared descr pool as its `exec.descrs`.
+///
+/// The pool entries' 'd'/'j' operands are GLOBAL indices into
+/// `pipeline.descrs`, and `resolve_jitcode` / the tracer read each
+/// jitcode's own `exec.descrs[idx]`; so every loaded jitcode shares the
+/// same pool and its internal `BC_INLINE_CALL` chain (mainloop→add→
+/// val_add→alloc_node) resolves consistently. This is the runtime
+/// registration the macro dispatch's `add_sub_jitcode` + `BC_INLINE_CALL`
+/// emission targets via [`pipeline_jitcode_by_name`].
+pub fn registered_pipeline_jitcodes() -> Vec<Arc<RuntimeJitCode>> {
+    let canonical = load_pipeline_jitcodes();
+    let pool = build_runtime_descr_pool(&canonical);
+    canonical
+        .iter()
+        .map(|core| {
+            let mut jc = RuntimeJitCode::from_canonical((**core).clone());
+            jc.exec.descrs = pool.clone();
+            Arc::new(jc)
+        })
+        .collect()
+}
+
+/// Look up a registered pipeline jitcode (shared pool installed) by name.
+/// The macro dispatch resolves storage methods (`add`/`pop`/...) through
+/// this to feed `JitCodeBuilder::add_sub_jitcode` + `inline_call_*`.
+pub fn pipeline_jitcode_by_name(name: &str) -> Option<Arc<RuntimeJitCode>> {
+    registered_pipeline_jitcodes()
+        .into_iter()
+        .find(|jc| jc.name() == name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +152,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn registered_jitcode_carries_shared_pool_for_inline_call_chain() {
+        let pool_len = load_pipeline_descrs().len();
+        let add = pipeline_jitcode_by_name("add")
+            .expect("pipeline must produce a storage `add` jitcode the dispatch inlines");
+        assert_eq!(
+            add.exec.descrs.len(),
+            pool_len,
+            "each registered jitcode must carry the full shared descr pool so its \
+             internal BC_INLINE_CALL operands resolve",
+        );
+        // The `add` body inline-calls deeper storage helpers; those 'j' slots
+        // must resolve to named callees through this jitcode's own pool.
+        assert!(
+            add.exec
+                .descrs
+                .iter()
+                .filter_map(RuntimeBhDescr::as_jitcode)
+                .any(|callee| !callee.name().is_empty()),
+            "the shared pool installed on `add` must carry resolvable sub-jitcode links",
+        );
     }
 }
