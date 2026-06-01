@@ -162,9 +162,10 @@ struct AheuiState {
     stacksize: i32,
     pool_ptr: usize,
     /// `&mut state.storage.pools[selected]` packed as `usize`. Tracked as
-    /// `int(usize)` in `state_fields` so monomorphic storage helpers
-    /// (`stack_*` / `queue_*`) can read it as an Int operand from the
-    /// trace IR. Phase D-1 design doc: `~/.claude/plans/2026-04-28-phase-d1-monomorphic-dispatch-design.md`.
+    /// `ref(Stack)` in `state_fields` so it is carried in the ref register
+    /// bank as a genuine `InputArgRef`: promoted with `ref_guard_value` and
+    /// passed to monomorphic storage helpers (`stack_*` / `queue_*`) as a
+    /// ref-kind arg. The `usize` carrier round-trips the raw pointer bits.
     selected_ref: usize,
 }
 
@@ -275,11 +276,17 @@ extern "C" fn jit_pop_is_zero(pool_ptr: usize, selected: usize) -> i64 {
     if val_is_zero(&v) { 1 } else { 0 }
 }
 
-/// OP_SEL helper: compute selected_ref and stacksize for a given slot index.
-/// Returns (selected_ref, stacksize) packed for the state field writes.
-fn jit_sel_get_ref(pool_ptr: usize, selected: usize) -> i64 {
+/// OP_SEL helper: return the raw pointer to the selected linked-list as
+/// the new `selected_ref`. `storage[idx]` (aheui.py:280-284) is a list
+/// getitem returning the Stack/Queue/Port object reference; the result is
+/// carried in the ref register bank, so the call is recorded ref-returning
+/// (`residual_ref_cannot_raise_wrapped`). `#[dont_look_inside_cannot_raise]`
+/// emits the `__majit_call_policy_*` trace/concrete targets the wrapped-ref
+/// lowering reads; the `usize` carrier round-trips the pointer bits.
+#[majit_macros::dont_look_inside_cannot_raise]
+fn jit_sel_get_ref(pool_ptr: usize, selected: usize) -> usize {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.get_stack_ptr(selected) as usize as i64
+    storage.get_stack_ptr(selected) as usize
 }
 
 fn jit_sel_get_len(pool_ptr: usize, selected: usize) -> i64 {
@@ -324,11 +331,14 @@ fn jit_stacksize_delta(op: usize) -> i64 {
         selected: int(usize),
         stacksize: int(i32),
         pool_ptr: int(usize),
-        // Tracked as int(usize) so the lowerer can read it via
-        // `lower_state_field_read` and pass it as an Int-kind arg to
-        // monomorphic `stack_*` / `queue_*` helpers (Phase D-1 design,
-        // ~/.claude/plans/2026-04-28-phase-d1-monomorphic-dispatch-design.md).
-        selected_ref: int(usize),
+        // The selected list's object reference (aheui.py:256
+        // `selected = jit.promote(selected)`). Carried in the ref register
+        // bank as a genuine `InputArgRef` so it can be promoted with
+        // `ref_guard_value` and passed to the monomorphic `stack_*` /
+        // `queue_*` helpers as a ref-kind arg (`JitCallArg::reference`). The
+        // `usize` carrier round-trips the raw pointer bits; `Stack` is a
+        // nominal tag (Queue/Port share the head/size prefix via repr(C)).
+        selected_ref: ref(aheui_runtime::storage::linkedlist::Stack),
     },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
@@ -380,7 +390,12 @@ fn jit_stacksize_delta(op: usize) -> i64 {
         jit_pop_is_zero_stack => residual_int,
         jit_pop_is_zero_queue => residual_int,
         jit_pop_is_zero => residual_int,
-        jit_sel_get_ref => elidable_int,
+        // `storage[idx]` returns the selected list's object reference; the
+        // result lands in the ref register bank. cannot-raise: pure pointer
+        // arithmetic into the stable pool array. Residual (not elidable) is
+        // conservative — OP_SEL is not on the hot inner path and the result
+        // is re-promoted (`ref_guard_value`) every iteration.
+        jit_sel_get_ref => residual_ref_cannot_raise_wrapped,
         jit_sel_get_len => residual_int,
         jit_stacksize_delta => elidable_int,
     },
@@ -611,7 +626,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 // rpaheui/aheui/aheui.py:280-284
                 let value = program.get_operand(pc - 1) as usize;
                 state.selected = value;
-                state.selected_ref = jit_sel_get_ref(state.pool_ptr, state.selected) as usize;
+                // No `as usize` cast: the cast lowerer requires an Int
+                // binding, but `jit_sel_get_ref` lowers to a ref binding for
+                // `store_state_field_ref`. The carrier is `usize` either way.
+                state.selected_ref = jit_sel_get_ref(state.pool_ptr, state.selected);
                 state.stacksize = jit_sel_get_len(state.pool_ptr, state.selected) as i32;
             }
             OP_MOV => { if stackok {
