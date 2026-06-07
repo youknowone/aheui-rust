@@ -12,6 +12,37 @@ fn main() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let base = format!("{manifest_dir}/..");
 
+    // The majit-translate graph pipeline lowers Charon-extracted MIR
+    // (`.ullbc`), not the syn-parsed source strings below. The shared
+    // front-end auto-discovers only the parent repo's pyre artefact pair,
+    // so point it at aheui's own crate LLBC (extracted by
+    // `scripts/extract-llbc.sh` into `<aheui>/build/llbc/`) via
+    // `PYRE_MIR_FRONTEND_LLBC`, which the front-end honours ahead of
+    // auto-discovery. An explicit env override still wins.
+    if std::env::var_os("PYRE_MIR_FRONTEND_LLBC").is_none() {
+        let llbc_dir = std::path::Path::new(&base).join("build").join("llbc");
+        let rt = llbc_dir.join("aheui-runtime.ullbc");
+        let interp = llbc_dir.join("aheuinterpreter.ullbc");
+        if rt.exists() && interp.exists() {
+            let joined = std::env::join_paths([rt, interp])
+                .expect("aheui LLBC paths contain no path separator");
+            // SAFETY: build scripts are single-threaded; no other thread
+            // observes the environment during this set.
+            unsafe { std::env::set_var("PYRE_MIR_FRONTEND_LLBC", joined) };
+        } else {
+            panic!(
+                "aheui LLBC missing under {}.\n\
+                 Run `aheui/scripts/extract-llbc.sh` to produce \
+                 `aheui-runtime.ullbc` + `aheuinterpreter.ullbc` \
+                 (needs `build/charon/charon` from the parent repo's \
+                 `scripts/install-charon.sh`), or set \
+                 `PYRE_MIR_FRONTEND_LLBC` explicitly.",
+                llbc_dir.display()
+            );
+        }
+        println!("cargo::rerun-if-changed={}/build/llbc", base);
+    }
+
     let source_dirs = [
         format!("{base}/aheuinterpreter/src"),
         format!("{base}/aheui-runtime/src"),
