@@ -204,12 +204,23 @@ fn find_used_storages(_program: &Program, _header_pc: usize, initial: usize) -> 
     storages
 }
 
+/// io-shim targets for `aheui_io::output_write_*(&r)`: the recorded call
+/// carries the raw `Val` word (tagged smallint or boxed-bigint pointer),
+/// so reconstruct the `Val` and route through the interpreter's own
+/// decode + output buffer. Writing the raw word through majit's
+/// `jit_write_number_i64` printed tagged payloads (289 for 144) into a
+/// second buffer that interleaved wrongly with interpreter output.
 extern "C" fn jit_write_number(value: i64) {
-    majit_meta::jit_write_number_i64(value);
+    let v: Val = unsafe { std::mem::transmute(value) };
+    if std::env::var_os("MAJIT_BH_DEBUG").is_some() {
+        eprintln!("[io-debug] jit_write_number raw={value}");
+    }
+    aheui_io::output_write_number(&v);
 }
 
 extern "C" fn jit_write_utf8(value: i64) {
-    majit_meta::jit_write_utf8_codepoint(value);
+    let v: Val = unsafe { std::mem::transmute(value) };
+    aheui_io::output_write_utf8(&v);
 }
 
 // ── Input I/O shims for JIT tracing ──
@@ -274,6 +285,16 @@ extern "C" fn jit_pop_is_zero(pool_ptr: usize, selected: usize) -> i64 {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
     let v = storage.dispatch_mut(selected).pop();
     if val_is_zero(&v) { 1 } else { 0 }
+}
+
+/// OP_MOV helper: push the popped value onto the move target
+/// (aheui.py:277-279 `storage[val].push(r)`). The target index is a
+/// per-opcode operand, not the promoted `selected`, so the polymorphic
+/// `dispatch_mut(target)` is bundled into one residual call the same
+/// way `jit_pop_is_zero` bundles pop + is_zero.
+extern "C" fn jit_storage_push(pool_ptr: usize, target: usize, value: Val) {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.dispatch_mut(target).push(value);
 }
 
 /// OP_SEL helper: return the raw pointer to the selected linked-list as
@@ -390,6 +411,9 @@ fn jit_stacksize_delta(op: usize) -> i64 {
         jit_pop_is_zero_stack => residual_int,
         jit_pop_is_zero_queue => residual_int,
         jit_pop_is_zero => residual_int,
+        // OP_MOV bundled `storage[target].push(r)` (target is a
+        // per-opcode operand, not the promoted selected).
+        jit_storage_push => residual_void,
         // `storage[idx]` returns the selected list's object reference; the
         // result lands in the ref register bank. cannot-raise: pure pointer
         // arithmetic into the stable pool array. Residual (not elidable) is
@@ -641,7 +665,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_pop(state.selected_ref)
                 };
                 let target = program.get_operand(pc - 1) as usize;
-                state.storage.dispatch_mut(target).push(r);
+                jit_storage_push(state.pool_ptr, target, r);
                 if state.selected == target {
                     state.stacksize += 1;
                 }
