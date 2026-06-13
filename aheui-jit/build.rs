@@ -60,9 +60,22 @@ fn main() {
         source_dirs.len(),
     );
 
-    let source_refs: Vec<&str> = sources.iter().map(|s| s.as_str()).collect();
-    let pipeline = majit_translate::analyze_multiple_pipeline_with_config(
-        &source_refs,
+    // The graph surface comes from the Charon-extracted LLBC set
+    // (`PYRE_MIR_FRONTEND_LLBC` above). `module_paths[i]` is the
+    // crate-stripped module path of the i-th source file; the analyzer keys
+    // `register_struct_origins` / method resolution on it, and an empty
+    // entry silently drops that file's graphs (lib.rs:374-382) — the portal
+    // `mainloop` would then never resolve. Derive real paths as pyre does.
+    // aheui carries no host vinfo / fnaddr / static-singleton bindings —
+    // the `#[jit_interp]` macro plus the `Minimal` flavor cover those.
+    let module_paths: Vec<String> = source_paths
+        .iter()
+        .map(|p| module_path_from_source_file(p))
+        .collect();
+    let module_path_refs: Vec<&str> = module_paths.iter().map(|s| s.as_str()).collect();
+    let vinfo_factory: &majit_translate::VirtualizableInfoFactory<'_> = &|_, _| None;
+    let pipeline = majit_translate::analyze_multiple_pipeline_with_modules(
+        &module_path_refs,
         &majit_translate::AnalyzeConfig {
             pipeline: majit_translate::PipelineConfig {
                 transform: majit_translate::GraphTransformConfig {
@@ -111,6 +124,10 @@ fn main() {
                 }),
             },
         },
+        None,
+        vinfo_factory,
+        &[],
+        majit_translate::HostStaticAddrs::default(),
     );
 
     // aheui drives the JIT from the `#[jit_interp]` proc macro, not from
@@ -205,4 +222,28 @@ fn collect_rs_files(dir: &str, sources: &mut Vec<String>, paths: &mut Vec<String
             }
         }
     }
+}
+
+/// Crate-stripped module path of a source file: the `/src/`-relative path
+/// with `.rs`, trailing `/lib`, and `/mod` removed and `/` rewritten to
+/// `::` (e.g. `aheui-runtime/src/storage/linkedlist_jit.rs` →
+/// `storage::linkedlist_jit`). The analyzer keys struct-origin and method
+/// resolution on this; an empty path silently drops the file's graphs.
+fn module_path_from_source_file(path: &str) -> String {
+    let normalized_path = path.replace('\\', "/");
+    let path = normalized_path.as_str();
+    let marker = "/src/";
+    let Some(idx) = path.rfind(marker) else {
+        return String::new();
+    };
+    let rest = &path[idx + marker.len()..];
+    let stem = rest.strip_suffix(".rs").unwrap_or(rest);
+    let normalized = stem
+        .strip_suffix("/lib")
+        .or_else(|| stem.strip_suffix("/mod"))
+        .unwrap_or(stem);
+    if normalized == "lib" || normalized == "mod" {
+        return String::new();
+    }
+    normalized.replace('/', "::")
 }
