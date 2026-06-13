@@ -552,60 +552,72 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             // (concrete `stack_*` or `queue_*` function pointer for the
             // hot path; polymorphic `dispatch_mut()` only for the cold
             // I/O Port slot).
-            OP_ADD => { if stackok {
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().add();
-                } else if state.selected == 21usize {
-                    lj::queue_add(state.selected_ref);
-                } else {
-                    lj::stack_add(state.selected_ref);
+            OP_ADD => {
+                if stackok {
+                    if state.selected == 27usize {
+                        state.selected_dispatch_mut().add();
+                    } else if state.selected == 21usize {
+                        lj::queue_add(state.selected_ref);
+                    } else {
+                        lj::stack_add(state.selected_ref);
+                    }
                 }
-            }}
-            OP_SUB => { if stackok {
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().sub();
-                } else if state.selected == 21usize {
-                    lj::queue_sub(state.selected_ref);
-                } else {
-                    lj::stack_sub(state.selected_ref);
+            }
+            OP_SUB => {
+                if stackok {
+                    if state.selected == 27usize {
+                        state.selected_dispatch_mut().sub();
+                    } else if state.selected == 21usize {
+                        lj::queue_sub(state.selected_ref);
+                    } else {
+                        lj::stack_sub(state.selected_ref);
+                    }
                 }
-            }}
-            OP_MUL => { if stackok {
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().mul();
-                } else if state.selected == 21usize {
-                    lj::queue_mul(state.selected_ref);
-                } else {
-                    lj::stack_mul(state.selected_ref);
+            }
+            OP_MUL => {
+                if stackok {
+                    if state.selected == 27usize {
+                        state.selected_dispatch_mut().mul();
+                    } else if state.selected == 21usize {
+                        lj::queue_mul(state.selected_ref);
+                    } else {
+                        lj::stack_mul(state.selected_ref);
+                    }
                 }
-            }}
-            OP_DIV => { if stackok {
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().div();
-                } else if state.selected == 21usize {
-                    lj::queue_div(state.selected_ref);
-                } else {
-                    lj::stack_div(state.selected_ref);
+            }
+            OP_DIV => {
+                if stackok {
+                    if state.selected == 27usize {
+                        state.selected_dispatch_mut().div();
+                    } else if state.selected == 21usize {
+                        lj::queue_div(state.selected_ref);
+                    } else {
+                        lj::stack_div(state.selected_ref);
+                    }
                 }
-            }}
-            OP_MOD => { if stackok {
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().modulo();
-                } else if state.selected == 21usize {
-                    lj::queue_mod(state.selected_ref);
-                } else {
-                    lj::stack_mod(state.selected_ref);
+            }
+            OP_MOD => {
+                if stackok {
+                    if state.selected == 27usize {
+                        state.selected_dispatch_mut().modulo();
+                    } else if state.selected == 21usize {
+                        lj::queue_mod(state.selected_ref);
+                    } else {
+                        lj::stack_mod(state.selected_ref);
+                    }
                 }
-            }}
-            OP_POP => { if stackok {
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().pop();
-                } else if state.selected == 21usize {
-                    lj::queue_pop(state.selected_ref);
-                } else {
-                    lj::stack_pop(state.selected_ref);
+            }
+            OP_POP => {
+                if stackok {
+                    if state.selected == 27usize {
+                        state.selected_dispatch_mut().pop();
+                    } else if state.selected == 21usize {
+                        lj::queue_pop(state.selected_ref);
+                    } else {
+                        lj::stack_pop(state.selected_ref);
+                    }
                 }
-            }}
+            }
             OP_PUSH => {
                 // rpaheui/aheui/aheui.py:272-275.
                 //
@@ -628,24 +640,28 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::stack_push(state.selected_ref, v);
                 }
             }
-            OP_DUP => { if stackok {
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().dup();
-                } else if state.selected == 21usize {
-                    lj::queue_dup(state.selected_ref);
-                } else {
-                    lj::stack_dup(state.selected_ref);
+            OP_DUP => {
+                if stackok {
+                    if state.selected == 27usize {
+                        state.selected_dispatch_mut().dup();
+                    } else if state.selected == 21usize {
+                        lj::queue_dup(state.selected_ref);
+                    } else {
+                        lj::stack_dup(state.selected_ref);
+                    }
                 }
-            }}
-            OP_SWAP => { if stackok {
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().swap();
-                } else if state.selected == 21usize {
-                    lj::queue_swap(state.selected_ref);
-                } else {
-                    lj::stack_swap(state.selected_ref);
+            }
+            OP_SWAP => {
+                if stackok {
+                    if state.selected == 27usize {
+                        state.selected_dispatch_mut().swap();
+                    } else if state.selected == 21usize {
+                        lj::queue_swap(state.selected_ref);
+                    } else {
+                        lj::stack_swap(state.selected_ref);
+                    }
                 }
-            }}
+            }
             OP_SEL => {
                 // rpaheui/aheui/aheui.py:280-284
                 let value = program.get_operand(pc - 1) as usize;
@@ -656,50 +672,58 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 state.selected_ref = jit_sel_get_ref(state.pool_ptr, state.selected);
                 state.stacksize = jit_sel_get_len(state.pool_ptr, state.selected) as i32;
             }
-            OP_MOV => { if stackok {
-                let r = if state.selected == 27usize {
-                    state.selected_dispatch_mut().pop()
-                } else if state.selected == 21usize {
-                    lj::queue_pop(state.selected_ref)
-                } else {
-                    lj::stack_pop(state.selected_ref)
-                };
-                let target = program.get_operand(pc - 1) as usize;
-                jit_storage_push(state.pool_ptr, target, r);
-                if state.selected == target {
-                    state.stacksize += 1;
+            OP_MOV => {
+                if stackok {
+                    let r = if state.selected == 27usize {
+                        state.selected_dispatch_mut().pop()
+                    } else if state.selected == 21usize {
+                        lj::queue_pop(state.selected_ref)
+                    } else {
+                        lj::stack_pop(state.selected_ref)
+                    };
+                    let target = program.get_operand(pc - 1) as usize;
+                    jit_storage_push(state.pool_ptr, target, r);
+                    if state.selected == target {
+                        state.stacksize += 1;
+                    }
                 }
-            }}
-            OP_CMP => { if stackok {
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().cmp();
-                } else if state.selected == 21usize {
-                    lj::queue_cmp(state.selected_ref);
-                } else {
-                    lj::stack_cmp(state.selected_ref);
+            }
+            OP_CMP => {
+                if stackok {
+                    if state.selected == 27usize {
+                        state.selected_dispatch_mut().cmp();
+                    } else if state.selected == 21usize {
+                        lj::queue_cmp(state.selected_ref);
+                    } else {
+                        lj::stack_cmp(state.selected_ref);
+                    }
                 }
-            }}
+            }
             // Branch ops handled by dispatch-level if-chain above.
-            OP_POPNUM => { if stackok {
-                let r = if state.selected == 27usize {
-                    state.selected_dispatch_mut().pop()
-                } else if state.selected == 21usize {
-                    lj::queue_pop(state.selected_ref)
-                } else {
-                    lj::stack_pop(state.selected_ref)
-                };
-                aheui_io::output_write_number(&r);
-            }}
-            OP_POPCHAR => { if stackok {
-                let r = if state.selected == 27usize {
-                    state.selected_dispatch_mut().pop()
-                } else if state.selected == 21usize {
-                    lj::queue_pop(state.selected_ref)
-                } else {
-                    lj::stack_pop(state.selected_ref)
-                };
-                aheui_io::output_write_utf8(&r);
-            }}
+            OP_POPNUM => {
+                if stackok {
+                    let r = if state.selected == 27usize {
+                        state.selected_dispatch_mut().pop()
+                    } else if state.selected == 21usize {
+                        lj::queue_pop(state.selected_ref)
+                    } else {
+                        lj::stack_pop(state.selected_ref)
+                    };
+                    aheui_io::output_write_number(&r);
+                }
+            }
+            OP_POPCHAR => {
+                if stackok {
+                    let r = if state.selected == 27usize {
+                        state.selected_dispatch_mut().pop()
+                    } else if state.selected == 21usize {
+                        lj::queue_pop(state.selected_ref)
+                    } else {
+                        lj::stack_pop(state.selected_ref)
+                    };
+                    aheui_io::output_write_utf8(&r);
+                }
+            }
             OP_PUSHNUM => {
                 // rpaheui/aheui/aheui.py:318-321
                 jit_output_flush();
