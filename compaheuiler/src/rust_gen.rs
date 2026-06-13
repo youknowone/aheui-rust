@@ -34,7 +34,10 @@ pub fn compile_to_rs_opt(source: &str, opt: ahsembler::OptimizationLevel) -> Str
 
 fn compile_to_rs_inner(source: &str, bigint: bool, opt: ahsembler::OptimizationLevel) -> String {
     let mut cfg = ahsembler::compile_to_cfg_aot(source);
-    if matches!(opt, ahsembler::OptimizationLevel::O2 | ahsembler::OptimizationLevel::O3) {
+    if matches!(
+        opt,
+        ahsembler::OptimizationLevel::O2 | ahsembler::OptimizationLevel::O3
+    ) {
         // Guard merging: fold StackGuard ok-paths into GuardDepth instructions
         for _ in 0..10 {
             let before = cfg.num_blocks();
@@ -45,7 +48,9 @@ fn compile_to_rs_inner(source: &str, bigint: bool, opt: ahsembler::OptimizationL
             ahsembler::cfg_optimize::merge_guard_ok(&mut cfg);
             ahsembler::cfg_optimize::merge_blocks(&mut cfg);
             ahsembler::cfg_optimize::eliminate_dead_blocks(&mut cfg);
-            if cfg.num_blocks() == before { break; }
+            if cfg.num_blocks() == before {
+                break;
+            }
         }
     }
     if matches!(opt, ahsembler::OptimizationLevel::O3) {
@@ -59,7 +64,9 @@ fn compile_to_rs_inner(source: &str, bigint: bool, opt: ahsembler::OptimizationL
                 ahsembler::cfg_optimize::thread_jumps(&mut cfg);
                 ahsembler::cfg_optimize::merge_blocks(&mut cfg);
                 ahsembler::cfg_optimize::eliminate_dead_blocks(&mut cfg);
-                if cfg.num_blocks() == before { break; }
+                if cfg.num_blocks() == before {
+                    break;
+                }
             }
             let states = ahsembler::cfg_optimize::analyze_stack_depths(&cfg);
             ahsembler::cfg_optimize::fold_constants(&mut cfg, &states);
@@ -73,7 +80,9 @@ fn compile_to_rs_inner(source: &str, bigint: bool, opt: ahsembler::OptimizationL
                 ahsembler::cfg_optimize::thread_jumps(&mut cfg);
                 ahsembler::cfg_optimize::merge_blocks(&mut cfg);
                 ahsembler::cfg_optimize::eliminate_dead_blocks(&mut cfg);
-                if cfg.num_blocks() == before { break; }
+                if cfg.num_blocks() == before {
+                    break;
+                }
             }
         }
     }

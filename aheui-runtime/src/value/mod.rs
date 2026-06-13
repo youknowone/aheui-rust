@@ -14,15 +14,15 @@
 #[cfg(all(feature = "num-bigint", feature = "malachite-bigint"))]
 compile_error!("features `num-bigint` and `malachite-bigint` are mutually exclusive");
 
-#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
-pub mod smallint;
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 pub mod bigint;
-
 #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
-pub use smallint::*;
+pub mod smallint;
+
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 pub use bigint::*;
+#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+pub use smallint::*;
 
 // ── Tests ───────────────────────────────────────────────────────────
 
