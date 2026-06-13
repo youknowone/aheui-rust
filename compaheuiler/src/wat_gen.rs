@@ -209,9 +209,7 @@ fn generate_wat_dispatch(cfg: &Cfg, wasi: bool) -> String {
 
     // Set initial pc
     let entry_seq = block_order.get(&cfg.entry).copied().unwrap_or(0);
-    out.push_str(&format!(
-        "    (local.set $pc (i32.const {entry_seq}))\n"
-    ));
+    out.push_str(&format!("    (local.set $pc (i32.const {entry_seq}))\n"));
     out.push_str("    (local.set $sel (i32.const 0))\n\n");
 
     // Dispatch loop using br_table
@@ -319,9 +317,7 @@ fn emit_instruction(
         Inst::Pop => {
             if sp_known {
                 let s = sel.unwrap();
-                out.push_str(&format!(
-                    "{ind}(drop (call $sp_pop (i32.const {s})))\n"
-                ));
+                out.push_str(&format!("{ind}(drop (call $sp_pop (i32.const {s})))\n"));
             } else if ds {
                 out.push_str(&format!("{ind}(if (i32.or (i32.eq (local.get $sel) (i32.const {QUEUE})) (i32.eq (local.get $sel) (i32.const {PORT})))\n"));
                 out.push_str(&format!(
@@ -342,9 +338,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind}(call $sp_dup (i32.const {s}))\n"));
             } else if ds {
                 out.push_str(&format!("{ind}(if (i32.or (i32.eq (local.get $sel) (i32.const {QUEUE})) (i32.eq (local.get $sel) (i32.const {PORT})))\n"));
-                out.push_str(&format!(
-                    "{ind}  (then (call $sp_dup (local.get $sel)))\n"
-                ));
+                out.push_str(&format!("{ind}  (then (call $sp_dup (local.get $sel)))\n"));
                 out.push_str(&format!("{ind}  (else\n"));
                 emit_stack_dup_dyn(out, &format!("{ind}    "));
                 out.push_str(&format!("{ind}  )\n"));
@@ -360,9 +354,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind}(call $sp_swap (i32.const {s}))\n"));
             } else if ds {
                 out.push_str(&format!("{ind}(if (i32.or (i32.eq (local.get $sel) (i32.const {QUEUE})) (i32.eq (local.get $sel) (i32.const {PORT})))\n"));
-                out.push_str(&format!(
-                    "{ind}  (then (call $sp_swap (local.get $sel)))\n"
-                ));
+                out.push_str(&format!("{ind}  (then (call $sp_swap (local.get $sel)))\n"));
                 out.push_str(&format!("{ind}  (else\n"));
                 emit_stack_swap_dyn(out, &format!("{ind}    "));
                 out.push_str(&format!("{ind}  )\n"));
@@ -382,9 +374,7 @@ fn emit_instruction(
                     "{ind}(local.set $v1 (call $sp_pop (i32.const {s})))\n"
                 ));
                 let expr = binop_expr(kind, "(local.get $v1)", "(local.get $v0)");
-                out.push_str(&format!(
-                    "{ind}(call $sp_push (i32.const {s}) {expr})\n"
-                ));
+                out.push_str(&format!("{ind}(call $sp_push (i32.const {s}) {expr})\n"));
             } else if ds {
                 // Dynamic storage binop
                 out.push_str(&format!("{ind}(if (i32.or (i32.eq (local.get $sel) (i32.const {QUEUE})) (i32.eq (local.get $sel) (i32.const {PORT})))\n"));
@@ -410,9 +400,7 @@ fn emit_instruction(
             }
         }
         Inst::Sel(new_sel) => {
-            out.push_str(&format!(
-                "{ind}(local.set $sel (i32.const {new_sel}))\n"
-            ));
+            out.push_str(&format!("{ind}(local.set $sel (i32.const {new_sel}))\n"));
             *sel = Some(*new_sel);
         }
         Inst::Mov(target) => {
@@ -589,9 +577,7 @@ fn emit_terminator(
     match term {
         Terminator::Goto(target) => {
             let target_seq = block_order.get(target).copied().unwrap_or(0);
-            out.push_str(&format!(
-                "{ind}(local.set $pc (i32.const {target_seq}))\n"
-            ));
+            out.push_str(&format!("{ind}(local.set $pc (i32.const {target_seq}))\n"));
             out.push_str(&format!("{ind}(br $dispatch)\n"));
         }
         Terminator::StackGuard {
@@ -662,9 +648,7 @@ fn emit_terminator(
             }
 
             // Branch
-            out.push_str(&format!(
-                "{ind}(if (i64.eqz (local.get $v0))\n"
-            ));
+            out.push_str(&format!("{ind}(if (i64.eqz (local.get $v0))\n"));
             out.push_str(&format!(
                 "{ind}  (then (local.set $pc (i32.const {zero_seq})))\n"
             ));
@@ -733,7 +717,9 @@ fn emit_terminator(
 fn emit_stack_push(out: &mut String, ind: &str, s: usize, val_expr: &str) {
     let toff = tops_offset(s);
     // addr = tops[s]; store val at addr; tops[s] += 8
-    out.push_str(&format!("{ind}(local.set $addr (i32.load (i32.const {toff})))\n"));
+    out.push_str(&format!(
+        "{ind}(local.set $addr (i32.load (i32.const {toff})))\n"
+    ));
     out.push_str(&format!("{ind}(i64.store (local.get $addr) {val_expr})\n"));
     out.push_str(&format!(
         "{ind}(i32.store (i32.const {toff}) (i32.add (local.get $addr) (i32.const 8)))\n"
@@ -743,7 +729,9 @@ fn emit_stack_push(out: &mut String, ind: &str, s: usize, val_expr: &str) {
 /// Push onto dynamic (non-special) storage via $sel.
 fn emit_stack_push_dyn(out: &mut String, ind: &str, val_expr: &str) {
     // addr = tops[sel]; store val; tops[sel] += 8
-    out.push_str(&format!("{ind}(local.set $addr (call $tops_get_dyn (local.get $sel)))\n"));
+    out.push_str(&format!(
+        "{ind}(local.set $addr (call $tops_get_dyn (local.get $sel)))\n"
+    ));
     out.push_str(&format!("{ind}(i64.store (local.get $addr) {val_expr})\n"));
     out.push_str(&format!(
         "{ind}(call $tops_set_dyn (local.get $sel) (i32.add (local.get $addr) (i32.const 8)))\n"
@@ -761,7 +749,9 @@ fn emit_stack_pop_drop(out: &mut String, ind: &str, s: usize) {
 
 /// Pop and discard from dynamic storage.
 fn emit_stack_pop_dyn_drop(out: &mut String, ind: &str) {
-    out.push_str(&format!("{ind}(local.set $addr (i32.sub (call $tops_get_dyn (local.get $sel)) (i32.const 8)))\n"));
+    out.push_str(&format!(
+        "{ind}(local.set $addr (i32.sub (call $tops_get_dyn (local.get $sel)) (i32.const 8)))\n"
+    ));
     out.push_str(&format!(
         "{ind}(call $tops_set_dyn (local.get $sel) (local.get $addr))\n"
     ));
@@ -781,7 +771,9 @@ fn emit_stack_pop_to_v0(out: &mut String, ind: &str, s: usize) {
 
 /// Pop from dynamic storage into $v0.
 fn emit_stack_pop_dyn_to_v0(out: &mut String, ind: &str) {
-    out.push_str(&format!("{ind}(local.set $addr (i32.sub (call $tops_get_dyn (local.get $sel)) (i32.const 8)))\n"));
+    out.push_str(&format!(
+        "{ind}(local.set $addr (i32.sub (call $tops_get_dyn (local.get $sel)) (i32.const 8)))\n"
+    ));
     out.push_str(&format!(
         "{ind}(call $tops_set_dyn (local.get $sel) (local.get $addr))\n"
     ));
@@ -800,7 +792,9 @@ fn emit_stack_dup(out: &mut String, ind: &str, s: usize) {
     out.push_str(&format!(
         "{ind}(local.set $addr (i32.load (i32.const {toff})))\n"
     ));
-    out.push_str(&format!("{ind}(i64.store (local.get $addr) (local.get $v0))\n"));
+    out.push_str(&format!(
+        "{ind}(i64.store (local.get $addr) (local.get $v0))\n"
+    ));
     out.push_str(&format!(
         "{ind}(i32.store (i32.const {toff}) (i32.add (local.get $addr) (i32.const 8)))\n"
     ));
@@ -814,7 +808,9 @@ fn emit_stack_dup_dyn(out: &mut String, ind: &str) {
     out.push_str(&format!(
         "{ind}(local.set $v0 (i64.load (i32.sub (local.get $addr) (i32.const 8))))\n"
     ));
-    out.push_str(&format!("{ind}(i64.store (local.get $addr) (local.get $v0))\n"));
+    out.push_str(&format!(
+        "{ind}(i64.store (local.get $addr) (local.get $v0))\n"
+    ));
     out.push_str(&format!(
         "{ind}(call $tops_set_dyn (local.get $sel) (i32.add (local.get $addr) (i32.const 8)))\n"
     ));
