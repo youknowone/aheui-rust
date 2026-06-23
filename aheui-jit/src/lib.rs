@@ -297,6 +297,51 @@ extern "C" fn jit_storage_push(pool_ptr: usize, target: usize, value: Val) {
     storage.dispatch_mut(target).push(value);
 }
 
+// Index-keyed dynamic storage dispatch — rpaheui parity for
+// `selected.METHOD()` (aheui.py:260-389). `selected` is a RED (never
+// promoted), so each storage op is one residual call that dispatches on
+// the live `selected` index at run time (Stack / Queue / Port) instead of
+// a JIT-green 3-way `is_port`/`is_queue` branch + `selected_ref`. This
+// keeps the recorded trace structurally identical to rpaheui's single
+// polymorphic call site, so the optimiser never emits a contradictory
+// `guard_value(selected)` and the loop closes through the real back-edge.
+extern "C" fn jit_storage_pop(pool_ptr: usize, target: usize) -> Val {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.dispatch_mut(target).pop()
+}
+extern "C" fn jit_storage_add(pool_ptr: usize, target: usize) {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.dispatch_mut(target).add();
+}
+extern "C" fn jit_storage_sub(pool_ptr: usize, target: usize) {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.dispatch_mut(target).sub();
+}
+extern "C" fn jit_storage_mul(pool_ptr: usize, target: usize) {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.dispatch_mut(target).mul();
+}
+extern "C" fn jit_storage_div(pool_ptr: usize, target: usize) {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.dispatch_mut(target).div();
+}
+extern "C" fn jit_storage_mod(pool_ptr: usize, target: usize) {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.dispatch_mut(target).modulo();
+}
+extern "C" fn jit_storage_dup(pool_ptr: usize, target: usize) {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.dispatch_mut(target).dup();
+}
+extern "C" fn jit_storage_swap(pool_ptr: usize, target: usize) {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.dispatch_mut(target).swap();
+}
+extern "C" fn jit_storage_cmp(pool_ptr: usize, target: usize) {
+    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
+    storage.dispatch_mut(target).cmp();
+}
+
 /// OP_SEL helper: return the raw pointer to the selected linked-list as
 /// the new `selected_ref`. `storage[idx]` (aheui.py:280-284) is a list
 /// getitem returning the Stack/Queue/Port object reference; the result is
@@ -308,11 +353,6 @@ extern "C" fn jit_storage_push(pool_ptr: usize, target: usize, value: Val) {
 fn jit_sel_get_ref(pool_ptr: usize, selected: usize) -> usize {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
     storage.get_stack_ptr(selected) as usize
-}
-
-fn jit_sel_get_len(pool_ptr: usize, selected: usize) -> i64 {
-    let storage = unsafe { &*(pool_ptr as *const Storage) };
-    storage.len_at(selected) as i64
 }
 
 fn jit_stacksize_delta(op: usize) -> i64 {
@@ -414,14 +454,59 @@ fn jit_stacksize_delta(op: usize) -> i64 {
         // OP_MOV bundled `storage[target].push(r)` (target is a
         // per-opcode operand, not the promoted selected).
         jit_storage_push => residual_void,
+        jit_storage_pop => residual_int,
+        jit_storage_add => residual_void,
+        jit_storage_sub => residual_void,
+        jit_storage_mul => residual_void,
+        jit_storage_div => residual_void,
+        jit_storage_mod => residual_void,
+        jit_storage_dup => residual_void,
+        jit_storage_swap => residual_void,
+        jit_storage_cmp => residual_void,
         // `storage[idx]` returns the selected list's object reference; the
-        // result lands in the ref register bank. cannot-raise: pure pointer
-        // arithmetic into the stable pool array. Residual (not elidable) is
-        // conservative — OP_SEL is not on the hot inner path and the result
-        // is re-promoted (`ref_guard_value`) every iteration.
-        jit_sel_get_ref => residual_ref_cannot_raise_wrapped,
-        jit_sel_get_len => residual_int,
+        // result lands in the ref register bank. Elidable + cannot-raise:
+        // `pools` is an immutable array (`_immutable_fields_ = ['pools']`)
+        // of stable `Stack` pointers, so `pools[selected]` is a pure,
+        // exception-free function of (pool_ptr, selected). Elidable lowers
+        // to CALL_PURE, which the optimizer can re-emit in the short
+        // preamble — required because the stacksize is now a getfield on
+        // `selected_ref.size`, and the short preamble can only re-produce
+        // that getfield if its base (`selected_ref`) is itself re-producible.
+        // A residual call result is not re-emittable, so the length-getfield
+        // loop would fail to close (InvalidLoop). Elidable calls are exempt
+        // from the observer replay queue (CALL_PURE is not recorded), so this
+        // also keeps the observer/concrete walks in lockstep.
+        jit_sel_get_ref => elidable_ref_cannot_raise_wrapped,
         jit_stacksize_delta => elidable_int,
+    },
+    // Residual storage mutators that advance a `Stack.size`.  rpaheui's
+    // push/pop are traced methods, so the `self.size` store is an in-trace
+    // `setfield_gc` that the optimizer's heapcache uses to invalidate the
+    // `len(selected)` getfield (`aheui.py:382 stacksize = len(selected)`).
+    // pyre lowers these mutators to opaque residual calls, which carry an
+    // empty write-set by default — so the `selected_ref.size` getfield that
+    // OP_SEL re-reads is CSE-folded to a single loop-invariant load and a
+    // loop whose exit derives from the stack length never observes the
+    // mutation (spins).  Declaring the `(Stack, size)` field write here
+    // restores that invalidation: `OptHeap::force_from_effectinfo` drops the
+    // cached getfield after each call, the residual analogue of the traced
+    // setfield barrier.  The list is a conservative superset of the
+    // size-changing ops (it includes zero-delta `swap` and the OP_MOV
+    // `storage[target]` family, whose target may alias `selected`); an extra
+    // reload is harmless, a missing invalidation is the spin.
+    residual_writes = {
+        selected_ref.size => [
+            lj::stack_push, lj::stack_pop, lj::stack_add, lj::stack_sub,
+            lj::stack_mul, lj::stack_div, lj::stack_mod, lj::stack_dup,
+            lj::stack_swap, lj::stack_cmp,
+            lj::queue_push, lj::queue_pop, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_swap, lj::queue_cmp,
+            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
+            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
+            jit_storage_swap, jit_storage_cmp,
+            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+        ],
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
     //
@@ -450,10 +535,13 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let gc = Box::new(NurseryGcAllocator::new());
     driver.meta_interp_mut().backend_mut().set_gc_allocator(gc);
 
-    // rpaheui/aheui/aheui.py:422: trace_limit=100000. majit's sub-JitCode
-    // dispatch model + pre-dispatch branch match generate ~40 IR ops per
-    // opcode (vs RPython's ~8). The logo loop's 2539 opcodes need ~102000.
-    driver.set_param("trace_limit", 200000);
+    // rpaheui/aheui/aheui.py:325: jit.set_param(driver, 'trace_limit', 30000).
+    // Scaled for majit's denser IR: the sub-JitCode dispatch + pre-dispatch
+    // branch match emit ~17 IR ops per aheui opcode (measured: logo's ~3751
+    // opcodes -> ~64675 IR ops) vs rpaheui's ~8, so rpaheui's 30000 budget
+    // maps to ~64500 here. 70000 keeps logo's whole-program trace compilable,
+    // matching rpaheui (which compiles logo's loop rather than aborting it).
+    driver.set_param("trace_limit", 70000);
 
     let mut pc: usize = 0;
     // rpaheui/aheui/aheui.py:30: reds=['stacksize','storage','selected']
@@ -494,15 +582,13 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
 
         // rpaheui/aheui/aheui.py:253-255: jit_merge_point
         jit_merge_point!();
-        // rpaheui/aheui/aheui.py:256 — `selected = jit.promote(selected)`.
-        //
-        // Two promotes: `selected` (the slot index) drives the in-arm
-        // `state.selected == 21usize` branches so the optimiser can
-        // const-fold them after `int_guard_value`. `selected_ref` (the
-        // raw pool pointer) feeds the `lj::stack_*` / `lj::queue_*`
-        // residual calls so the optimiser sees a concrete arg.
-        state.selected = promote(state.selected);
-        state.selected_ref = promote(state.selected_ref);
+        // rpaheui parity: `selected` is a RED (reds=['stacksize','storage',
+        // 'selected']) — it is NEVER promoted (aheui.py promotes only
+        // `program`@326 and `storage`@332). Storage ops dispatch on the live
+        // `selected` index via `jit_storage_*` residual calls (one call site,
+        // mirroring rpaheui's polymorphic `selected.METHOD()`), so no
+        // `guard_value(selected)` is emitted and the loop closes through the
+        // real back-edge instead of being rejected as an invalid loop.
         let op = program.get_op(pc);
         state.stacksize += jit_stacksize_delta(op as usize) as i32;
         // Phase D-1 §5: pre-advance `pc` so the interpreter's pc matches
@@ -552,70 +638,36 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             // (concrete `stack_*` or `queue_*` function pointer for the
             // hot path; polymorphic `dispatch_mut()` only for the cold
             // I/O Port slot).
+            // rpaheui/aheui/aheui.py:260-389: `selected.<op>()` — one
+            // polymorphic call site dispatched on the live RED `selected`.
             OP_ADD => {
                 if stackok {
-                    if state.selected == 27usize {
-                        state.selected_dispatch_mut().add();
-                    } else if state.selected == 21usize {
-                        lj::queue_add(state.selected_ref);
-                    } else {
-                        lj::stack_add(state.selected_ref);
-                    }
+                    jit_storage_add(state.pool_ptr, state.selected);
                 }
             }
             OP_SUB => {
                 if stackok {
-                    if state.selected == 27usize {
-                        state.selected_dispatch_mut().sub();
-                    } else if state.selected == 21usize {
-                        lj::queue_sub(state.selected_ref);
-                    } else {
-                        lj::stack_sub(state.selected_ref);
-                    }
+                    jit_storage_sub(state.pool_ptr, state.selected);
                 }
             }
             OP_MUL => {
                 if stackok {
-                    if state.selected == 27usize {
-                        state.selected_dispatch_mut().mul();
-                    } else if state.selected == 21usize {
-                        lj::queue_mul(state.selected_ref);
-                    } else {
-                        lj::stack_mul(state.selected_ref);
-                    }
+                    jit_storage_mul(state.pool_ptr, state.selected);
                 }
             }
             OP_DIV => {
                 if stackok {
-                    if state.selected == 27usize {
-                        state.selected_dispatch_mut().div();
-                    } else if state.selected == 21usize {
-                        lj::queue_div(state.selected_ref);
-                    } else {
-                        lj::stack_div(state.selected_ref);
-                    }
+                    jit_storage_div(state.pool_ptr, state.selected);
                 }
             }
             OP_MOD => {
                 if stackok {
-                    if state.selected == 27usize {
-                        state.selected_dispatch_mut().modulo();
-                    } else if state.selected == 21usize {
-                        lj::queue_mod(state.selected_ref);
-                    } else {
-                        lj::stack_mod(state.selected_ref);
-                    }
+                    jit_storage_mod(state.pool_ptr, state.selected);
                 }
             }
             OP_POP => {
                 if stackok {
-                    if state.selected == 27usize {
-                        state.selected_dispatch_mut().pop();
-                    } else if state.selected == 21usize {
-                        lj::queue_pop(state.selected_ref);
-                    } else {
-                        lj::stack_pop(state.selected_ref);
-                    }
+                    jit_storage_pop(state.pool_ptr, state.selected);
                 }
             }
             OP_PUSH => {
@@ -632,55 +684,35 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 // path that depends on the push reaching storage.
                 let value = program.get_operand(pc - 1) as i64;
                 let v = jit_tag_val(value);
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().push(v);
-                } else if state.selected == 21usize {
-                    lj::queue_push(state.selected_ref, v);
-                } else {
-                    lj::stack_push(state.selected_ref, v);
-                }
+                jit_storage_push(state.pool_ptr, state.selected, v);
             }
             OP_DUP => {
                 if stackok {
-                    if state.selected == 27usize {
-                        state.selected_dispatch_mut().dup();
-                    } else if state.selected == 21usize {
-                        lj::queue_dup(state.selected_ref);
-                    } else {
-                        lj::stack_dup(state.selected_ref);
-                    }
+                    jit_storage_dup(state.pool_ptr, state.selected);
                 }
             }
             OP_SWAP => {
                 if stackok {
-                    if state.selected == 27usize {
-                        state.selected_dispatch_mut().swap();
-                    } else if state.selected == 21usize {
-                        lj::queue_swap(state.selected_ref);
-                    } else {
-                        lj::stack_swap(state.selected_ref);
-                    }
+                    jit_storage_swap(state.pool_ptr, state.selected);
                 }
             }
             OP_SEL => {
-                // rpaheui/aheui/aheui.py:280-284
+                // rpaheui/aheui/aheui.py:280-284: `selected = storage[value];
+                // stacksize = len(selected)`. `len(selected)` is a getfield on
+                // the selected list's mutable `.size` field — re-read each loop
+                // entry and invalidated by stack mutation, so `stacksize` never
+                // freezes to a loop-invariant constant (unlike a residual call
+                // result, which the optimiser bakes once and drops). Mirror it:
+                // rebind `selected_ref` to the new list, then read `.size`
+                // through it as a `getfield_gc_i`.
                 let value = program.get_operand(pc - 1) as usize;
                 state.selected = value;
-                // No `as usize` cast: the cast lowerer requires an Int
-                // binding, but `jit_sel_get_ref` lowers to a ref binding for
-                // `store_state_field_ref`. The carrier is `usize` either way.
                 state.selected_ref = jit_sel_get_ref(state.pool_ptr, state.selected);
-                state.stacksize = jit_sel_get_len(state.pool_ptr, state.selected) as i32;
+                state.stacksize = state.selected_ref.size as i32;
             }
             OP_MOV => {
                 if stackok {
-                    let r = if state.selected == 27usize {
-                        state.selected_dispatch_mut().pop()
-                    } else if state.selected == 21usize {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        lj::stack_pop(state.selected_ref)
-                    };
+                    let r = jit_storage_pop(state.pool_ptr, state.selected);
                     let target = program.get_operand(pc - 1) as usize;
                     jit_storage_push(state.pool_ptr, target, r);
                     if state.selected == target {
@@ -690,37 +722,19 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_CMP => {
                 if stackok {
-                    if state.selected == 27usize {
-                        state.selected_dispatch_mut().cmp();
-                    } else if state.selected == 21usize {
-                        lj::queue_cmp(state.selected_ref);
-                    } else {
-                        lj::stack_cmp(state.selected_ref);
-                    }
+                    jit_storage_cmp(state.pool_ptr, state.selected);
                 }
             }
             // Branch ops handled by dispatch-level if-chain above.
             OP_POPNUM => {
                 if stackok {
-                    let r = if state.selected == 27usize {
-                        state.selected_dispatch_mut().pop()
-                    } else if state.selected == 21usize {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        lj::stack_pop(state.selected_ref)
-                    };
+                    let r = jit_storage_pop(state.pool_ptr, state.selected);
                     aheui_io::output_write_number(&r);
                 }
             }
             OP_POPCHAR => {
                 if stackok {
-                    let r = if state.selected == 27usize {
-                        state.selected_dispatch_mut().pop()
-                    } else if state.selected == 21usize {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        lj::stack_pop(state.selected_ref)
-                    };
+                    let r = jit_storage_pop(state.pool_ptr, state.selected);
                     aheui_io::output_write_utf8(&r);
                 }
             }
@@ -729,26 +743,14 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 jit_output_flush();
                 let num = jit_read_number();
                 let v = jit_tag_val(num);
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().push(v);
-                } else if state.selected == 21usize {
-                    lj::queue_push(state.selected_ref, v);
-                } else {
-                    lj::stack_push(state.selected_ref, v);
-                }
+                jit_storage_push(state.pool_ptr, state.selected, v);
             }
             OP_PUSHCHAR => {
                 // rpaheui/aheui/aheui.py:322-325
                 jit_output_flush();
                 let ch = jit_read_utf8();
                 let v = jit_tag_val(ch);
-                if state.selected == 27usize {
-                    state.selected_dispatch_mut().push(v);
-                } else if state.selected == 21usize {
-                    lj::queue_push(state.selected_ref, v);
-                } else {
-                    lj::stack_push(state.selected_ref, v);
-                }
+                jit_storage_push(state.pool_ptr, state.selected, v);
             }
             // Branch ops: concrete execution handled by the pre-dispatch
             // match (OP_JMP) or the runtime if-chain. These empty arms
