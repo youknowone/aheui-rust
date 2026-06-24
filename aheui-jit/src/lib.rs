@@ -167,6 +167,15 @@ struct AheuiState {
     /// passed to monomorphic storage helpers (`stack_*` / `queue_*`) as a
     /// ref-kind arg. The `usize` carrier round-trips the raw pointer bits.
     selected_ref: usize,
+    /// `&mut state.storage as *mut Storage` packed as `usize` — the base of
+    /// the contiguous `pools: [*mut Stack; N]` array (offset 0 of `Storage`).
+    /// Tracked as `ref(Storage)` and declared a `pool_arrays` base so the
+    /// OP_SEL `selected_ref = pools[selected]` read lowers to a re-producible
+    /// `getarrayitem_gc_r` on this base instead of an opaque residual call;
+    /// the loaded stack ref then re-derives from `selected` each loop entry
+    /// rather than being carried as an independent, divergence-prone red.
+    /// Same value as `pool_ptr` (kept `int` for the residual storage helpers).
+    storage_ref: usize,
 }
 
 impl AheuiState {
@@ -190,6 +199,7 @@ impl AheuiState {
 
     fn refresh_state_from_storage(&mut self) {
         self.pool_ptr = &mut self.storage as *mut Storage as usize;
+        self.storage_ref = self.pool_ptr;
         self.refresh_selected_ref();
         self.stacksize = self.storage.len_at(self.selected) as i32;
     }
@@ -400,7 +410,17 @@ fn jit_stacksize_delta(op: usize) -> i64 {
         // `usize` carrier round-trips the raw pointer bits; `Stack` is a
         // nominal tag (Queue/Port share the head/size prefix via repr(C)).
         selected_ref: ref(aheui_runtime::storage::linkedlist::Stack),
+        // Base of the `pools: [*mut Stack; N]` array (offset 0 of `Storage`).
+        // Declared `ref(Storage)` + listed in `pool_arrays` so OP_SEL's
+        // `selected_ref = jit_sel_get_ref(storage_ref, selected)` lowers to a
+        // re-producible `getarrayitem_gc_r` on this base. Same value as
+        // `pool_ptr`.
+        storage_ref: ref(aheui_runtime::storage::Storage),
     },
+    // `storage_ref` is a raw-pointer-array base: `jit_sel_get_ref(state.
+    // storage_ref, state.selected)` indexes `pools[selected]` and lowers to
+    // getarrayitem_gc_r instead of the opaque residual call below.
+    pool_arrays = [storage_ref],
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
         aheui_io::output_write_utf8 => jit_write_utf8,
@@ -551,10 +571,12 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         stacksize: 0,
         pool_ptr: 0,
         selected_ref: 0,
+        storage_ref: 0,
     };
     // Storage was moved into state — refresh self-referencing pointers.
     state.storage.refresh_pools();
     state.pool_ptr = &mut state.storage as *mut Storage as usize;
+    state.storage_ref = state.pool_ptr;
     state.refresh_selected_ref();
 
     // RPython `warmspot.py:281-289` `make_jitcodes() →
@@ -707,7 +729,12 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 // through it as a `getfield_gc_i`.
                 let value = program.get_operand(pc - 1) as usize;
                 state.selected = value;
-                state.selected_ref = jit_sel_get_ref(state.pool_ptr, state.selected);
+                // `jit_sel_get_ref(state.storage_ref, …)` indexes
+                // `pools[selected]`; the `pool_arrays` recogniser lowers it to
+                // `getarrayitem_gc_r` on the `storage_ref` base, so the loaded
+                // stack ref re-derives from `selected` each loop entry instead
+                // of being carried as an independent, divergence-prone red.
+                state.selected_ref = jit_sel_get_ref(state.storage_ref, state.selected);
                 state.stacksize = state.selected_ref.size as i32;
             }
             OP_MOV => {
