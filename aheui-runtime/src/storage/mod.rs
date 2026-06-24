@@ -182,10 +182,20 @@ pub const QUEUE_TAIL_OFFSET: usize = 16;
 
 /// Byte offset of the `pools` indirection array from `Storage` base.
 /// JIT reads: `base + STORAGE_POOLS_OFFSET + selected * 8` → `*mut Stack`.
-pub const STORAGE_POOLS_OFFSET: usize = 0;
+/// The array is length-prefixed (a `usize` `pools_len` header at offset 0),
+/// matching the GC-array layout the JIT's `getarrayitem_gc_r` descriptor
+/// models (`base_size = 8`, `lendescr.offset = 0`); the items therefore start
+/// one word in.
+pub const STORAGE_POOLS_OFFSET: usize = 8;
 
 #[repr(C)]
 pub struct Storage {
+    /// Length header for the `pools` array (always `STORAGE_COUNT`).  Placed
+    /// first so `Storage` has the GC-array shape `{ len, items.. }` the JIT's
+    /// `ARRAYLEN_GC` reads at offset 0 when it re-establishes the
+    /// `len > selected` bound for the `pools[selected]` `getarrayitem_gc_r`.
+    /// Immutable after construction (`pools` is fixed-size).
+    pub pools_len: usize,
     /// JIT indirection: `pools[idx]` returns a `*mut Stack`-compatible pointer.
     /// Initialized to `&mut stacks[idx]` or `&mut queue`.
     pub pools: [*mut Stack; STORAGE_COUNT],
@@ -206,6 +216,7 @@ impl Storage {
         init_nursery();
 
         let mut storage = Storage {
+            pools_len: STORAGE_COUNT,
             pools: [std::ptr::null_mut(); STORAGE_COUNT],
             stacks: std::array::from_fn(|_| Stack::new()),
             queue: Queue::new(),
