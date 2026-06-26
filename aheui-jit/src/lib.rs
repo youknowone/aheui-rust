@@ -417,10 +417,13 @@ fn jit_stacksize_delta(op: usize) -> i64 {
         // `pool_ptr`.
         storage_ref: ref(aheui_runtime::storage::Storage),
     },
-    // `storage_ref` is a raw-pointer-array base: `jit_sel_get_ref(state.
-    // storage_ref, state.selected)` indexes `pools[selected]` and lowers to
-    // getarrayitem_gc_r instead of the opaque residual call below.
-    pool_arrays = [storage_ref],
+    // `storage_ref` is a raw-pointer-array base: the registered getter
+    // `jit_sel_get_ref(state.storage_ref, state.selected)` indexes
+    // `pools[selected]` and lowers to getarrayitem_gc_r instead of the opaque
+    // residual call below.  Keyed on the getter identity so only this call —
+    // not any other helper sharing the `(state.storage_ref, int)` shape — is
+    // recognized as a pool read.
+    pool_arrays = { storage_ref => jit_sel_get_ref },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
         aheui_io::output_write_utf8 => jit_write_utf8,
