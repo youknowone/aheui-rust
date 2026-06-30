@@ -369,6 +369,18 @@ fn jit_stacksize_delta(op: usize) -> i64 {
     (-OP_STACKDEL[op] + OP_STACKADD[op]) as i64
 }
 
+/// Whether `op`'s storage mutation is guarded by `if stackok` (skipped when the
+/// selected stack is too small). Such an op's stack-size delta must skip
+/// together with the mutation, or `stacksize` drifts above the real storage
+/// size; a later `stackok` then wrongly passes and the binary op underflows
+/// (`_get_2_values on <2 elements`). The guarded ops are exactly the storage
+/// ops that consume elements (`OP_STACKDEL > 0`) — except `BRZ`, which pops
+/// unconditionally at dispatch level, and so always applies its delta. `PUSH`
+/// / `SEL` / branch ops (`OP_STACKDEL == 0`) likewise run regardless.
+fn jit_op_gated_on_stackok(op: usize) -> bool {
+    OP_STACKDEL[op] > 0 && op != OP_BRZ as usize
+}
+
 // Guard failure resume: handled by the RPython-standard JIT framework.
 // can_enter_jit! / jit_merge_point! flow through JitDriver.back_edge_structured
 // and JitDriver.merge_point, which restore state via JitState::restore.
@@ -596,7 +608,18 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         meta.install_canonical_liveness(&mut driver);
     }
 
+    let mut was_replay = false;
     while pc < program.size {
+        // VALIDATION (S19): after observer replay drains, `stacksize` (a red
+        // tracked by per-op deltas) may have desynced from the authoritative
+        // `storage`. Re-derive it from storage at the replay→real transition.
+        // The invariant `stacksize == storage.len_at(selected)` always holds,
+        // so this is sound regardless.
+        let now_replay = majit_metainterp::in_observer_replay();
+        if was_replay && !now_replay {
+            state.stacksize = state.storage.len_at(state.selected) as i32;
+        }
+        was_replay = now_replay;
         // rpaheui/aheui/aheui.py:252
         let mut stackok = program.get_req_size(pc) as i32 <= state.stacksize;
         // rpaheui/aheui/aheui.py:284 sets `is_queue = (value == VAL_QUEUE)`
@@ -606,7 +629,11 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         let is_queue = state.selected == 21usize;
 
         // rpaheui/aheui/aheui.py:253-255: jit_merge_point
-        jit_merge_point!();
+        // `; state` opts this site into single-pass tracing (PYRE_SINGLE_PASS):
+        // the walk's final state is transferred into `state` here (via the
+        // hook's `recover`) instead of being replayed. Inert (byte-identical to
+        // `jit_merge_point!()`) unless the flag is set AND the walk closed.
+        jit_merge_point!(driver, program, pc; state);
         // rpaheui parity: `selected` is a RED (reds=['stacksize','storage',
         // 'selected']) — it is NEVER promoted (aheui.py promotes only
         // `program`@326 and `storage`@332). Storage ops dispatch on the live
@@ -615,7 +642,16 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // `guard_value(selected)` is emitted and the loop closes through the
         // real back-edge instead of being rejected as an invalid loop.
         let op = program.get_op(pc);
-        state.stacksize += jit_stacksize_delta(op as usize) as i32;
+        // Apply the stack-size delta only when this op's storage mutation
+        // actually runs. A guarded op (`if stackok`) skipped on a too-small
+        // stack must not advance `stacksize`, or it drifts above the real
+        // storage size and a later `stackok` wrongly passes -> underflow. The
+        // invariant `stacksize == storage.len_at(selected)` (re-synced at SEL)
+        // then holds across skips. `op`/`stackok` are greens, so this folds to
+        // a constant per trace (no runtime branch in compiled code).
+        if stackok || !jit_op_gated_on_stackok(op as usize) {
+            state.stacksize += jit_stacksize_delta(op as usize) as i32;
+        }
         // Phase D-1 §5: pre-advance `pc` so the interpreter's pc matches
         // the trace's `__jit_pc = op_pc + 1` convention. Operand reads in
         // the arms use `pc - 1` to recover the opcode row; the trailing
