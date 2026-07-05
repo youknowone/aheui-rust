@@ -110,7 +110,6 @@ fn main() {
                     name: "mainloop".to_string(),
                     greens: vec![
                         "pc".to_string(),
-                        "stackok".to_string(),
                         "is_queue".to_string(),
                         "program".to_string(),
                     ],
