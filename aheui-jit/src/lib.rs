@@ -1,9 +1,15 @@
 // JIT-enabled Aheui interpreter — graph pipeline + #[jit_interp] macro.
 //
 // RPython parity: rpaheui/aheui/aheui.py
-//   greens = [pc, stackok, is_queue, program]
+//   greens = [pc, is_queue, program]
 //   reds   = [stacksize, storage, selected]
 //   storage = linked list stacks (no virtualizable arrays)
+//
+// NOTE: rpaheui declares stackok as a green, but in majit that causes
+// green-key explosion — each flip of stackok (true↔false) generates a
+// separate compiled loop, and logo.aheui flips it hundreds of times.
+// Demoting stackok to a red turns the `if stackok` branches into runtime
+// guards; the rare stackok=false path is handled by a bridge.
 
 extern crate majit_ir;
 extern crate majit_metainterp as majit_meta;
@@ -43,6 +49,18 @@ use aheui_runtime::storage::{LinkedList, Storage};
 use ahsembler::compiler::Program;
 
 use aheui_runtime::value::*;
+
+// ── Diagnostic env-var helpers (cached once, safe for hot loops) ──
+
+fn spdiag_enabled() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("MAJIT_SPDIAG").is_some())
+}
+
+fn bh_debug_enabled() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("MAJIT_BH_DEBUG").is_some())
+}
 
 /// GC allocator for JIT-compiled New() ops.
 /// Delegates to the global nursery so alloc/free share the same pool
@@ -156,6 +174,16 @@ impl majit_gc::GcAllocator for NurseryGcAllocator {
 ///   time `selected` changes; treating them as a single logical field
 ///   avoided plumbing a dedicated getter through the `#[jit_interp]`
 ///   macro.
+static SPDIAG_TRACE_OPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+thread_local! {
+    // Latest pre-walk storage dump (updated while output_bytes is in the
+    // trace-start window) so `recover` can print the S_k baseline to compare
+    // against S_{k+1} — disambiguates "stale = state-field red" vs "stale =
+    // folded heap write".
+    static SK_SNAPSHOT: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+}
+
 struct AheuiState {
     storage: Storage,
     selected: usize,
@@ -197,7 +225,38 @@ impl AheuiState {
         self.storage.dispatch(self.selected)
     }
 
+    fn spdiag_dump_stacks(&self) -> String {
+        let mut dump = String::new();
+        for i in 0..STORAGE_COUNT {
+            if self.storage.len_at(i) == 0 {
+                continue;
+            }
+            let mut p = self.storage.dispatch(i).head() as *const u8;
+            let mut vals: Vec<i64> = Vec::new();
+            while !p.is_null() && vals.len() < 8 {
+                let raw = unsafe { *(p as *const i64) };
+                // bigint Val: small = (v<<1)|1; smallint Val: raw == v.
+                vals.push(if raw & 1 != 0 { raw >> 1 } else { raw });
+                p = unsafe { *(p.add(8) as *const *const u8) };
+            }
+            dump.push_str(&format!(" stack[{i}]={vals:?}"));
+        }
+        dump
+    }
+
     fn refresh_state_from_storage(&mut self) {
+        if spdiag_enabled() {
+            eprintln!(
+                "@@@SPDIAG recover output_bytes={} selected={} old_stacksize={} new_stacksize={}{}",
+                aheui_io::output_total_bytes(),
+                self.selected,
+                self.stacksize,
+                self.storage.len_at(self.selected),
+                self.spdiag_dump_stacks(),
+            );
+            SK_SNAPSHOT.with(|s| eprintln!("@@@SPDIAG S_k-snapshot{}", s.borrow()));
+            SPDIAG_TRACE_OPS.store(300, std::sync::atomic::Ordering::Relaxed);
+        }
         self.pool_ptr = &mut self.storage as *mut Storage as usize;
         self.storage_ref = self.pool_ptr;
         self.refresh_selected_ref();
@@ -214,6 +273,36 @@ fn find_used_storages(_program: &Program, _header_pc: usize, initial: usize) -> 
     storages
 }
 
+thread_local! {
+    /// W1 diag: raw `*const Storage` set by the mainloop before each
+    /// `jit_merge_point!`, read by the walk's output shims so they can dump
+    /// the walk's per-emission shared-storage state (the walk runs inside the
+    /// JitCodeMachine, not the mainloop, so the resume-op log can't see it).
+    static WALK_STORAGE_PTR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn dump_storage_ptr(ptr: usize) -> String {
+    if ptr == 0 {
+        return String::new();
+    }
+    let storage = unsafe { &*(ptr as *const Storage) };
+    let mut dump = String::new();
+    for i in 0..STORAGE_COUNT {
+        if storage.len_at(i) == 0 {
+            continue;
+        }
+        let mut p = storage.dispatch(i).head() as *const u8;
+        let mut vals: Vec<i64> = Vec::new();
+        while !p.is_null() && vals.len() < 8 {
+            let raw = unsafe { *(p as *const i64) };
+            vals.push(if raw & 1 != 0 { raw >> 1 } else { raw });
+            p = unsafe { *(p.add(8) as *const *const u8) };
+        }
+        dump.push_str(&format!(" stack[{i}]={vals:?}"));
+    }
+    dump
+}
+
 /// io-shim targets for `aheui_io::output_write_*(&r)`: the recorded call
 /// carries the raw `Val` word (tagged smallint or boxed-bigint pointer),
 /// so reconstruct the `Val` and route through the interpreter's own
@@ -222,14 +311,32 @@ fn find_used_storages(_program: &Program, _header_pc: usize, initial: usize) -> 
 /// second buffer that interleaved wrongly with interpreter output.
 extern "C" fn jit_write_number(value: i64) {
     let v: Val = unsafe { std::mem::transmute(value) };
-    if std::env::var_os("MAJIT_BH_DEBUG").is_some() {
+    if bh_debug_enabled() {
         eprintln!("[io-debug] jit_write_number raw={value}");
+    }
+    if spdiag_enabled() {
+        let out = aheui_io::output_total_bytes();
+        if (1000..=3000).contains(&out) {
+            eprintln!(
+                "@@@WALKEMIT num out={out} val={value}{}",
+                dump_storage_ptr(WALK_STORAGE_PTR.with(|c| c.get()))
+            );
+        }
     }
     aheui_io::output_write_number(&v);
 }
 
 extern "C" fn jit_write_utf8(value: i64) {
     let v: Val = unsafe { std::mem::transmute(value) };
+    if spdiag_enabled() {
+        let out = aheui_io::output_total_bytes();
+        if (1000..=3000).contains(&out) {
+            eprintln!(
+                "@@@WALKEMIT utf8 out={out} val={value}{}",
+                dump_storage_ptr(WALK_STORAGE_PTR.with(|c| c.get()))
+            );
+        }
+    }
     aheui_io::output_write_utf8(&v);
 }
 
@@ -262,6 +369,28 @@ fn jit_output_flush() {
 /// Registered as elidable_int — pure function, result feeds into push.
 extern "C" fn jit_tag_val(raw: i64) -> Val {
     val_from_i32(raw as i32)
+}
+
+// ── Node alloc/free + val comparison — local JIT wrappers ──
+//
+// Local wrappers for functions in aheui_runtime whose `__majit_call_policy_*`
+// probes the macro generates in the LOCAL scope.  Calling `lj::alloc_node_jit`
+// directly would look for the probe in the `lj` module, which doesn't exist.
+
+#[inline(always)]
+fn jit_alloc_node(value: Val, next: usize) -> usize {
+    aheui_runtime::storage::linkedlist_jit::alloc_node_jit(value, next)
+}
+
+#[inline(always)]
+fn jit_free_node(node: usize) {
+    aheui_runtime::storage::linkedlist_jit::free_node_jit(node)
+}
+
+/// `val_ge` returning Val (tagged 0 or 1) for use with `_put_value`.
+#[inline(always)]
+fn jit_val_ge(a: Val, b: Val) -> Val {
+    aheui_runtime::storage::linkedlist_jit::val_ge_jit(a, b)
 }
 
 // ── OP_BRZ pop+is_zero shims ──
@@ -381,6 +510,22 @@ fn jit_op_gated_on_stackok(op: usize) -> bool {
     OP_STACKDEL[op] > 0 && op != OP_BRZ as usize
 }
 
+/// Per-op stack-size delta with the `stackok` gate folded in: 0 when the
+/// op's storage mutation is skipped on a too-small stack (see
+/// `jit_op_gated_on_stackok`). A pure function of the `(op, stackok)`
+/// greens — registered `elidable_int` so the dispatch lowering emits it
+/// as a foldable call and the walk applies the same delta the native
+/// loop does. (An `if`-gated compound assign with a `||`/`!call()`
+/// condition is not a lowerable statement shape; this helper keeps the
+/// stacksize update expressible as `state.stacksize += <call>`.)
+fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
+    if stackok != 0 || !jit_op_gated_on_stackok(op) {
+        jit_stacksize_delta(op)
+    } else {
+        0
+    }
+}
+
 // Guard failure resume: handled by the RPython-standard JIT framework.
 // can_enter_jit! / jit_merge_point! flow through JitDriver.back_edge_structured
 // and JitDriver.merge_point, which restore state via JitState::restore.
@@ -436,6 +581,14 @@ fn jit_op_gated_on_stackok(op: usize) -> bool {
     // not any other helper sharing the `(state.storage_ref, int)` shape — is
     // recognized as a pool read.
     pool_arrays = { storage_ref => jit_sel_get_ref },
+    // Struct field type declarations for ref-kind field access.
+    // Tells the lowerer to emit getfield_gc_r / setfield_gc_r (ref-kind)
+    // instead of _gc_i (int-kind) when accessing these fields through a
+    // ref(T) state scalar or a local ref binding.
+    ref_fields = {
+        aheui_runtime::storage::linkedlist::Stack::head => aheui_runtime::storage::linkedlist::Node,
+        aheui_runtime::storage::linkedlist::Node::next => aheui_runtime::storage::linkedlist::Node,
+    },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
         aheui_io::output_write_utf8 => jit_write_utf8,
@@ -513,6 +666,19 @@ fn jit_op_gated_on_stackok(op: usize) -> bool {
         // also keeps the observer/concrete walks in lockstep.
         jit_sel_get_ref => elidable_ref_cannot_raise_wrapped,
         jit_stacksize_delta => elidable_int,
+        jit_effective_stacksize_delta => elidable_int,
+        // Phase D-2: field-level IR for Stack ops — alloc/free and val
+        // arithmetic registered so the lowerer emits concrete IR ops
+        // instead of silent-skipping unregistered calls.
+        jit_alloc_node => residual_ref,
+        jit_free_node => residual_void,
+        val_add => elidable_int,
+        val_sub => elidable_int,
+        val_mul => elidable_int,
+        val_div => elidable_int,
+        val_mod => elidable_int,
+        jit_val_ge => elidable_int,
+        val_from_i32 => elidable_int,
     },
     // Residual storage mutators that advance a `Stack.size`.  rpaheui's
     // push/pop are traced methods, so the `self.size` store is an in-trace
@@ -559,7 +725,7 @@ fn jit_op_gated_on_stackok(op: usize) -> bool {
     // out from the stack family), and within a trace specialised by
     // `guard_value(selected)` the comparison folds to a constant and
     // only the live branch reaches the optimised IR.
-    greens = [pc, stackok, is_queue, program],
+    greens = [pc, is_queue, program],
     recover = refresh_state_from_storage,
 )]
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
@@ -608,8 +774,78 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         meta.install_canonical_liveness(&mut driver);
     }
 
+    if let Ok(range) = std::env::var("MAJIT_PROGDUMP") {
+        if let Some((s, e)) = range.split_once(':') {
+            let (s, e): (usize, usize) = (s.parse().unwrap_or(0), e.parse().unwrap_or(0));
+            for p in s..e.min(program.size) {
+                let op = program.get_op(p);
+                let name = ahsembler::consts::OP_NAMES
+                    .get(op as usize)
+                    .copied()
+                    .flatten()
+                    .unwrap_or("?");
+                eprintln!(
+                    "@@@PROG pc={p} op={op}({name}) label={} operand={} req={}",
+                    program.get_label(p),
+                    program.get_operand(p),
+                    program.get_req_size(p),
+                );
+            }
+        }
+    }
     let mut was_replay = false;
     while pc < program.size {
+        // W4/D2 handoff diagnostic (MAJIT_HANDOFF): log the pre-op state at the
+        // top of every loop iteration — one line per opcode in BOTH the naive
+        // (MAJIT_THRESHOLD huge) and gate-ON (PYRE_AUTHORITATIVE) paths, since
+        // both hit the loop top once per opcode. Diff the two to find the FIRST
+        // divergent opcode at the native-interp→per-opcode-walk seam. Windowed
+        // + count-capped so the gate-ON spin cannot flood.
+        {
+            // Env reads cached once (a per-iteration `env::var` makes the
+            // naive-threshold oracle run ~100x slower than the interp).
+            static HENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *HENABLED.get_or_init(|| std::env::var_os("MAJIT_HANDOFF").is_some()) {
+            let out = aheui_io::output_total_bytes();
+            // Latch on the first opcode at/after MAJIT_HANDOFF_AT (default
+            // 2085 output bytes), then log the next MAJIT_HANDOFF_CAP (default
+            // 1500) opcodes UNCONDITIONALLY — robust to `out` advancing
+            // unevenly (heavy compute phases span 100s of opcodes per byte).
+            static HLATCH: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            static HCOUNT: std::sync::atomic::AtomicU32 =
+                std::sync::atomic::AtomicU32::new(0);
+            static HAT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+            static HCAP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+            let at: u64 = *HAT.get_or_init(|| {
+                std::env::var("MAJIT_HANDOFF_AT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(2085)
+            });
+            let cap: u32 = *HCAP.get_or_init(|| {
+                std::env::var("MAJIT_HANDOFF_CAP")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(1500)
+            });
+            if !HLATCH.load(std::sync::atomic::Ordering::Relaxed) && out >= at {
+                HLATCH.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if HLATCH.load(std::sync::atomic::Ordering::Relaxed) {
+                let n = HCOUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if n < cap {
+                    let op0 = program.get_op(pc);
+                    eprintln!(
+                        "@@@HANDOFF#{n} pc={pc} op={op0} out={out} ss={} sel={}{}",
+                        state.stacksize,
+                        state.selected,
+                        state.spdiag_dump_stacks(),
+                    );
+                }
+            }
+            }
+        }
         // VALIDATION (S19): after observer replay drains, `stacksize` (a red
         // tracked by per-op deltas) may have desynced from the authoritative
         // `storage`. Re-derive it from storage at the replay→real transition.
@@ -628,6 +864,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // body-local walker can bind it as a green for `resolve_greens`.
         let is_queue = state.selected == 21usize;
 
+        WALK_STORAGE_PTR.with(|c| c.set(&state.storage as *const Storage as usize));
         // rpaheui/aheui/aheui.py:253-255: jit_merge_point
         // `; state` opts this site into single-pass tracing (PYRE_SINGLE_PASS):
         // the walk's final state is transferred into `state` here (via the
@@ -642,16 +879,44 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // `guard_value(selected)` is emitted and the loop closes through the
         // real back-edge instead of being rejected as an invalid loop.
         let op = program.get_op(pc);
+        if spdiag_enabled() {
+            let out = aheui_io::output_total_bytes();
+            if (1240..=1260).contains(&out) {
+                let snap = format!(" out={out} selected={}{}", state.selected, state.spdiag_dump_stacks());
+                SK_SNAPSHOT.with(|s| *s.borrow_mut() = snap);
+            }
+            if op == 19 || op == 20 {
+                let out = aheui_io::output_total_bytes();
+                if (1000..=3000).contains(&out) {
+                    eprintln!(
+                        "@@@MAINEMIT op={op} out={out} selected={}{}",
+                        state.selected,
+                        state.spdiag_dump_stacks(),
+                    );
+                }
+            }
+        }
+        if SPDIAG_TRACE_OPS.load(std::sync::atomic::Ordering::Relaxed) > 0 {
+            SPDIAG_TRACE_OPS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            eprintln!(
+                "@@@SPDIAG resume-op pc={pc} op={op} stacksize={} selected={} stackok={stackok} out={}{}",
+                state.stacksize,
+                state.selected,
+                aheui_io::output_total_bytes(),
+                state.spdiag_dump_stacks(),
+            );
+        }
         // Apply the stack-size delta only when this op's storage mutation
         // actually runs. A guarded op (`if stackok`) skipped on a too-small
         // stack must not advance `stacksize`, or it drifts above the real
         // storage size and a later `stackok` wrongly passes -> underflow. The
         // invariant `stacksize == storage.len_at(selected)` (re-synced at SEL)
         // then holds across skips. `op`/`stackok` are greens, so this folds to
-        // a constant per trace (no runtime branch in compiled code).
-        if stackok || !jit_op_gated_on_stackok(op as usize) {
-            state.stacksize += jit_stacksize_delta(op as usize) as i32;
-        }
+        // a constant per trace (no runtime branch in compiled code). The gate
+        // lives inside `jit_effective_stacksize_delta` (an elidable function
+        // of the two greens) so the statement stays a lowerable
+        // `state.<field> += <call>` shape and the walk applies the delta too.
+        state.stacksize += jit_effective_stacksize_delta(op as usize, stackok as i64) as i32;
         // Phase D-1 §5: pre-advance `pc` so the interpreter's pc matches
         // the trace's `__jit_pc = op_pc + 1` convention. Operand reads in
         // the arms use `pc - 1` to recover the opcode row; the trailing
@@ -669,22 +934,39 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if stackok == false {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i32 <= state.stacksize;
-                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, is_queue, program);
                     continue;
                 }
             }
             OP_JMP => {
                 pc = program.get_label(pc - 1);
                 stackok = program.get_req_size(pc) as i32 <= state.stacksize;
-                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
+                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, is_queue, program);
                 continue;
             }
             OP_BRZ => {
-                let zero = jit_pop_is_zero(state.pool_ptr, state.selected);
+                let zero = if is_queue {
+                    jit_pop_is_zero_queue(state.selected_ref)
+                } else {
+                    // inline pop for Stack, then zero-check on the int value
+                    let top_node = state.selected_ref.head;
+                    let pop_val = top_node.value;
+                    let next = top_node.next;
+                    state.selected_ref.head = next;
+                    state.selected_ref.size = state.selected_ref.size - 1usize;
+                    jit_free_node(top_node);
+                    // pop_val is Val (= i64 repr-transparent). val_is_zero
+                    // checks `*v == 0` for smallint, or the tagged form
+                    // `(0 << 1) | 1 = 1` for bigint. Use the raw int
+                    // comparison `pop_val == jit_tag_val(0)` which the
+                    // lowerer handles natively as IntEq.
+                    let zero_val = jit_tag_val(0i64);
+                    if pop_val == zero_val { 1i64 } else { 0i64 }
+                };
                 if zero != 0 {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i32 <= state.stacksize;
-                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, is_queue, program);
                     continue;
                 }
             }
@@ -692,69 +974,159 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         }
 
         match op {
-            // rpaheui/aheui/aheui.py:260-269: selected.<binop>().
-            // Phase D-1 §4: 3-way branch on the (is_port, is_queue)
-            // greens. The trace specializes per combination so each
-            // compiled trace contains only one of the three call sites
-            // (concrete `stack_*` or `queue_*` function pointer for the
-            // hot path; polymorphic `dispatch_mut()` only for the cold
-            // I/O Port slot).
-            // rpaheui/aheui/aheui.py:260-389: `selected.<op>()` — one
-            // polymorphic call site dispatched on the live RED `selected`.
+            // rpaheui/aheui/aheui.py:260-389: `selected.<op>()`.
+            // Phase D-1 §4: 2-way branch on the `is_queue` green.
+            // The trace specializes per value so only one branch
+            // survives in compiled code: concrete `stack_*` or
+            // `queue_*` (Port falls through to polymorphic dispatch).
+            // `selected_ref` is the `ref(Stack)` state scalar, which
+            // points at the currently selected storage; `is_queue`
+            // (= `selected == VAL_QUEUE`) is a green, so the branch
+            // folds to a constant and the dead arm is eliminated.
             OP_ADD => {
                 if stackok {
-                    jit_storage_add(state.pool_ptr, state.selected);
+                    if is_queue {
+                        lj::queue_add(state.selected_ref);
+                    } else {
+                        // _get_2_values: pop top node, read second's value
+                        let top_node = state.selected_ref.head;
+                        let r1 = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                        // r2 = new head.value
+                        let new_head = state.selected_ref.head;
+                        let r2 = new_head.value;
+                        // _put_value: write result to head
+                        new_head.value = val_add(r2, r1);
+                    }
                 }
             }
             OP_SUB => {
                 if stackok {
-                    jit_storage_sub(state.pool_ptr, state.selected);
+                    if is_queue {
+                        lj::queue_sub(state.selected_ref);
+                    } else {
+                        let top_node = state.selected_ref.head;
+                        let r1 = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                        let new_head = state.selected_ref.head;
+                        let r2 = new_head.value;
+                        new_head.value = val_sub(r2, r1);
+                    }
                 }
             }
             OP_MUL => {
                 if stackok {
-                    jit_storage_mul(state.pool_ptr, state.selected);
+                    if is_queue {
+                        lj::queue_mul(state.selected_ref);
+                    } else {
+                        let top_node = state.selected_ref.head;
+                        let r1 = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                        let new_head = state.selected_ref.head;
+                        let r2 = new_head.value;
+                        new_head.value = val_mul(r2, r1);
+                    }
                 }
             }
             OP_DIV => {
                 if stackok {
-                    jit_storage_div(state.pool_ptr, state.selected);
+                    if is_queue {
+                        lj::queue_div(state.selected_ref);
+                    } else {
+                        let top_node = state.selected_ref.head;
+                        let r1 = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                        let new_head = state.selected_ref.head;
+                        let r2 = new_head.value;
+                        new_head.value = val_div(r2, r1);
+                    }
                 }
             }
             OP_MOD => {
                 if stackok {
-                    jit_storage_mod(state.pool_ptr, state.selected);
+                    if is_queue {
+                        lj::queue_mod(state.selected_ref);
+                    } else {
+                        let top_node = state.selected_ref.head;
+                        let r1 = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                        let new_head = state.selected_ref.head;
+                        let r2 = new_head.value;
+                        new_head.value = val_mod(r2, r1);
+                    }
                 }
             }
             OP_POP => {
                 if stackok {
-                    jit_storage_pop(state.pool_ptr, state.selected);
+                    if is_queue {
+                        lj::queue_pop(state.selected_ref);
+                    } else {
+                        // pop: read top, advance head, free node
+                        let top_node = state.selected_ref.head;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                    }
                 }
             }
             OP_PUSH => {
                 // rpaheui/aheui/aheui.py:272-275.
-                //
-                // Use `jit_tag_val` (registered `elidable_int`) instead of
-                // bare `val_from_i32` so the macro lowerer recognises the
-                // value-conversion call and emits BC_CALL_PURE_INT into
-                // jitcode. Without registration the lowerer's
-                // `expr_references_unknown_local` rejects the let-binding,
-                // silent-skipping the rest of the body and dropping the
-                // push from the trace IR — which leaves OP_PUSH as
-                // state-field guards only and breaks any compiled-trace
-                // path that depends on the push reaching storage.
                 let value = program.get_operand(pc - 1) as i64;
                 let v = jit_tag_val(value);
-                jit_storage_push(state.pool_ptr, state.selected, v);
+                if is_queue {
+                    lj::queue_push(state.selected_ref, v);
+                } else {
+                    // push: alloc node, link to current head
+                    let old_head = state.selected_ref.head;
+                    let new_node = jit_alloc_node(v, old_head);
+                    state.selected_ref.head = new_node;
+                    state.selected_ref.size = state.selected_ref.size + 1usize;
+                }
             }
             OP_DUP => {
                 if stackok {
-                    jit_storage_dup(state.pool_ptr, state.selected);
+                    if is_queue {
+                        lj::queue_dup(state.selected_ref);
+                    } else {
+                        // dup: read head.value, push it
+                        let head = state.selected_ref.head;
+                        let top_val = head.value;
+                        let old_head = state.selected_ref.head;
+                        let new_node = jit_alloc_node(top_val, old_head);
+                        state.selected_ref.head = new_node;
+                        state.selected_ref.size = state.selected_ref.size + 1usize;
+                    }
                 }
             }
             OP_SWAP => {
                 if stackok {
-                    jit_storage_swap(state.pool_ptr, state.selected);
+                    if is_queue {
+                        lj::queue_swap(state.selected_ref);
+                    } else {
+                        // swap: exchange head.value and head.next.value
+                        let node1 = state.selected_ref.head;
+                        let node2 = node1.next;
+                        let v1 = node1.value;
+                        let v2 = node2.value;
+                        node1.value = v2;
+                        node2.value = v1;
+                    }
                 }
             }
             OP_SEL => {
@@ -778,8 +1150,20 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_MOV => {
                 if stackok {
-                    let r = jit_storage_pop(state.pool_ptr, state.selected);
+                    let r = if is_queue {
+                        lj::queue_pop(state.selected_ref)
+                    } else {
+                        // inline pop for Stack
+                        let top_node = state.selected_ref.head;
+                        let pop_val = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                        pop_val
+                    };
                     let target = program.get_operand(pc - 1) as usize;
+                    // target may differ from selected → polymorphic push
                     jit_storage_push(state.pool_ptr, target, r);
                     if state.selected == target {
                         state.stacksize += 1;
@@ -788,19 +1172,51 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_CMP => {
                 if stackok {
-                    jit_storage_cmp(state.pool_ptr, state.selected);
+                    if is_queue {
+                        lj::queue_cmp(state.selected_ref);
+                    } else {
+                        let top_node = state.selected_ref.head;
+                        let r1 = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                        let new_head = state.selected_ref.head;
+                        let r2 = new_head.value;
+                        new_head.value = jit_val_ge(r2, r1);
+                    }
                 }
             }
             // Branch ops handled by dispatch-level if-chain above.
             OP_POPNUM => {
                 if stackok {
-                    let r = jit_storage_pop(state.pool_ptr, state.selected);
+                    let r = if is_queue {
+                        lj::queue_pop(state.selected_ref)
+                    } else {
+                        let top_node = state.selected_ref.head;
+                        let pop_val = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                        pop_val
+                    };
                     aheui_io::output_write_number(&r);
                 }
             }
             OP_POPCHAR => {
                 if stackok {
-                    let r = jit_storage_pop(state.pool_ptr, state.selected);
+                    let r = if is_queue {
+                        lj::queue_pop(state.selected_ref)
+                    } else {
+                        let top_node = state.selected_ref.head;
+                        let pop_val = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                        pop_val
+                    };
                     aheui_io::output_write_utf8(&r);
                 }
             }
@@ -809,14 +1225,28 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 jit_output_flush();
                 let num = jit_read_number();
                 let v = jit_tag_val(num);
-                jit_storage_push(state.pool_ptr, state.selected, v);
+                if is_queue {
+                    lj::queue_push(state.selected_ref, v);
+                } else {
+                    let old_head = state.selected_ref.head;
+                    let new_node = jit_alloc_node(v, old_head);
+                    state.selected_ref.head = new_node;
+                    state.selected_ref.size = state.selected_ref.size + 1usize;
+                }
             }
             OP_PUSHCHAR => {
                 // rpaheui/aheui/aheui.py:322-325
                 jit_output_flush();
                 let ch = jit_read_utf8();
                 let v = jit_tag_val(ch);
-                jit_storage_push(state.pool_ptr, state.selected, v);
+                if is_queue {
+                    lj::queue_push(state.selected_ref, v);
+                } else {
+                    let old_head = state.selected_ref.head;
+                    let new_node = jit_alloc_node(v, old_head);
+                    state.selected_ref.head = new_node;
+                    state.selected_ref.size = state.selected_ref.size + 1usize;
+                }
             }
             // Branch ops: concrete execution handled by the pre-dispatch
             // match (OP_JMP) or the runtime if-chain. These empty arms
