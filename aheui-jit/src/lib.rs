@@ -744,6 +744,23 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // matching rpaheui (which compiles logo's loop rather than aborting it).
     driver.set_param("trace_limit", 70000);
 
+    // Enable single-pass tracing: the observer walk is the sole executor,
+    // transferring final reds into native state at the merge-point hook
+    // instead of replaying.
+    //
+    // Required for field-level IR: getfield_gc / setfield_gc ops mutate
+    // linked-list state (Node alloc/free, Stack.head/size) during the
+    // observer walk.  A two-pass replay would re-read these fields from
+    // already-mutated state, observing different pointers than the walk
+    // recorded — the second loop iteration's Stack.head points to a node
+    // the walk already freed and re-allocated.  This is the same reason
+    // RPython's blackhole replay works: the blackhole IS the sole
+    // executor, not a separate re-read of mutated state.  Single-pass
+    // gives pyre the same property.
+    if std::env::var_os("PYRE_SINGLE_PASS").is_none() {
+        unsafe { std::env::set_var("PYRE_SINGLE_PASS", "1") };
+    }
+
     let mut pc: usize = 0;
     // rpaheui/aheui/aheui.py:30: reds=['stacksize','storage','selected']
     let mut state = AheuiState {
