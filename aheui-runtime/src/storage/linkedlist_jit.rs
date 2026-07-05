@@ -74,6 +74,34 @@ pub fn stack_cmp(stack: usize) {
     unsafe { (*(stack as *mut Stack)).cmp() }
 }
 
+// ── Node alloc/free + val arithmetic — JIT-callable wrappers ────────
+//
+// These expose the storage nursery and value arithmetic to the JIT's
+// field-level IR path.  `alloc_node_jit` / `free_node_jit` use `usize`
+// (Ref-bank) for node pointers; `val_*_jit` use `i64` (Int-bank) for
+// Val, matching the JIT's register banks.
+
+/// Allocate a Node from the nursery free list.
+/// JIT type: `(Val value, usize next) -> usize new_node`.
+#[inline(always)]
+pub fn alloc_node_jit(value: Val, next: usize) -> usize {
+    super::alloc_node(value, next as *mut super::linkedlist::Node) as usize
+}
+
+/// Return a Node to the nursery free list.
+/// JIT type: `(usize node) -> void`.
+#[inline(always)]
+pub fn free_node_jit(node: usize) {
+    super::free_node(node as *mut super::linkedlist::Node)
+}
+
+/// `val_ge` wrapper returning Val (0 or 1) instead of bool.
+/// JIT type: `(Val, Val) -> Val`.
+#[inline(always)]
+pub fn val_ge_jit(a: Val, b: Val) -> Val {
+    if val_ge(&a, &b) { val_from_i32(1) } else { val_from_i32(0) }
+}
+
 // ── Queue helpers ────────────────────────────────────────────────────
 
 #[inline(always)]

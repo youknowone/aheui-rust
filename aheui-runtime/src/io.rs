@@ -82,8 +82,16 @@ fn output_buffer_drain(buf: &mut Vec<u8>) {
     buf.clear();
 }
 
+pub static OUTPUT_TOTAL_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Diagnostic: total bytes handed to the output path so far.
+pub fn output_total_bytes() -> u64 {
+    OUTPUT_TOTAL_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn output_write_all(bytes: &[u8]) {
+    OUTPUT_TOTAL_BYTES.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
     OUTPUT_BUFFER.with(|cell| {
         let mut buf = cell.borrow_mut();
         buf.extend_from_slice(bytes);
