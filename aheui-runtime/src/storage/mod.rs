@@ -119,7 +119,7 @@ impl Nursery {
 static mut NURSERY: Nursery = Nursery::uninit();
 
 #[inline(always)]
-pub(crate) fn alloc_node(value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::Node {
+pub fn alloc_node(value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::Node {
     unsafe {
         let p = std::ptr::addr_of_mut!(NURSERY);
         (*p).alloc(value, next)
