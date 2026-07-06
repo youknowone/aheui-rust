@@ -987,8 +987,12 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         // r2 = new head.value
                         let new_head = state.selected_ref.head;
                         let r2 = new_head.value;
-                        // _put_value: write result to head
-                        new_head.value = val_add(r2, r1);
+                        // smallint: Val = i64, a + b lowers to IntAdd.
+                        // bigint: tagged pointer, val_add stays as CALL_PURE_I.
+                        #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+                        { new_head.value = r2 + r1; }
+                        #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+                        { new_head.value = val_add(r2, r1); }
                     }
                 }
             }
@@ -1005,7 +1009,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         jit_free_node(top_node);
                         let new_head = state.selected_ref.head;
                         let r2 = new_head.value;
-                        new_head.value = val_sub(r2, r1);
+                        #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+                        { new_head.value = r2 - r1; }
+                        #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+                        { new_head.value = val_sub(r2, r1); }
                     }
                 }
             }
@@ -1022,7 +1029,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         jit_free_node(top_node);
                         let new_head = state.selected_ref.head;
                         let r2 = new_head.value;
-                        new_head.value = val_mul(r2, r1);
+                        #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+                        { new_head.value = r2 * r1; }
+                        #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+                        { new_head.value = val_mul(r2, r1); }
                     }
                 }
             }
@@ -1172,7 +1182,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         jit_free_node(top_node);
                         let new_head = state.selected_ref.head;
                         let r2 = new_head.value;
-                        new_head.value = jit_val_ge(r2, r1);
+                        #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+                        { new_head.value = (r2 >= r1) as i64; }
+                        #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+                        { new_head.value = jit_val_ge(r2, r1); }
                     }
                 }
             }
