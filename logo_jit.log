@@ -1,0 +1,538 @@
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-gc/src/collector.rs:2520:29
+     |
+2520 |         self.pinned_objects.remove(&obj.0);
+     |                             ^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+   --> <workspace>/majit/majit-gc/src/rewrite.rs:790:51
+    |
+790 |         if let Some(lowered) = self.forwarded_ops.remove(&self.current_i) {
+    |                                                   ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-gc/src/rewrite.rs:1786:21
+     |
+1786 |             entries.remove(&offset);
+     |                     ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-gc/src/rewrite.rs:2862:40
+     |
+2862 |             let owned = st.changed_ops.remove(&i);
+     |                                        ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+   --> <workspace>/majit/majit-gc/src/shadow_stack.rs:159:24
+    |
+159 |         r.borrow_mut().remove(&addr);
+    |                        ^^^^^^
+
+warning: `majit-gc` (lib) generated 5 warnings
+warning: unused variable: `i`
+   --> ahsembler/src/stackify.rs:158:10
+    |
+158 |     for (i, s) in scopes.iter().enumerate() {
+    |          ^ help: if this is intentional, prefix it with an underscore: `_i`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `kind`
+   --> ahsembler/src/stackify.rs:159:13
+    |
+159 |         let kind = if s.kind == ScopeKind::Loop {
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_kind`
+
+warning: method `optimize_deadcode2` is never used
+   --> ahsembler/src/compiler.rs:412:19
+    |
+168 | impl Compiler {
+    | ------------- method in this implementation
+...
+412 |     pub(crate) fn optimize_deadcode2(&self) -> Vec<bool> {
+    |                   ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ahsembler` (lib) generated 3 warnings (run `cargo fix --lib -p ahsembler` to apply 2 suggestions)
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-backend-dynasm/src/runner.rs:2613:31
+     |
+2613 |             cell.borrow_mut().remove(&token.number);
+     |                               ^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+
+warning: `majit-backend-dynasm` (lib) generated 1 warning
+warning: unnecessary parentheses around `if` condition
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:5080:16
+     |
+5080 |             if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+     |                ^                                            ^
+     |
+     = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+     |
+5080 -             if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+5080 +             if std::env::var_os("MAJIT_CLOSEDBG").is_some()  {
+     |
+
+warning: unnecessary parentheses around `if` condition
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:5322:28
+     |
+5322 |                         if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+     |                            ^                                            ^
+     |
+help: remove these parentheses
+     |
+5322 -                         if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+5322 +                         if std::env::var_os("MAJIT_CLOSEDBG").is_some()  {
+     |
+
+warning: unnecessary parentheses around `if` condition
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:5519:24
+     |
+5519 |                     if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+     |                        ^                                            ^
+     |
+help: remove these parentheses
+     |
+5519 -                     if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+5519 +                     if std::env::var_os("MAJIT_CLOSEDBG").is_some()  {
+     |
+
+warning: unnecessary parentheses around `if` condition
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:5562:20
+     |
+5562 |                 if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+     |                    ^                                            ^
+     |
+help: remove these parentheses
+     |
+5562 -                 if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+5562 +                 if std::env::var_os("MAJIT_CLOSEDBG").is_some()  {
+     |
+
+warning: unnecessary parentheses around `if` condition
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:5812:20
+     |
+5812 |                 if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+     |                    ^                                            ^
+     |
+help: remove these parentheses
+     |
+5812 -                 if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+5812 +                 if std::env::var_os("MAJIT_CLOSEDBG").is_some()  {
+     |
+
+warning: unnecessary parentheses around `if` condition
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:5981:20
+     |
+5981 |                 if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+     |                    ^                                            ^
+     |
+help: remove these parentheses
+     |
+5981 -                 if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+5981 +                 if std::env::var_os("MAJIT_CLOSEDBG").is_some()  {
+     |
+
+warning: unnecessary parentheses around `if` condition
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:6165:20
+     |
+6165 |                 if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+     |                    ^                                            ^
+     |
+help: remove these parentheses
+     |
+6165 -                 if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+6165 +                 if std::env::var_os("MAJIT_CLOSEDBG").is_some()  {
+     |
+
+warning: unnecessary parentheses around `if` condition
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:6275:24
+     |
+6275 |                     if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+     |                        ^                                            ^
+     |
+help: remove these parentheses
+     |
+6275 -                     if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+6275 +                     if std::env::var_os("MAJIT_CLOSEDBG").is_some()  {
+     |
+
+warning: unnecessary parentheses around `if` condition
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:6315:24
+     |
+6315 |                     if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+     |                        ^                                            ^
+     |
+help: remove these parentheses
+     |
+6315 -                     if (std::env::var_os("MAJIT_CLOSEDBG").is_some()) {
+6315 +                     if std::env::var_os("MAJIT_CLOSEDBG").is_some()  {
+     |
+
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+   --> <workspace>/majit/majit-metainterp/src/optimizeopt/heap.rs:929:24
+    |
+929 |         self.unescaped.remove(box_);
+    |                        ^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+   --> <workspace>/majit/majit-metainterp/src/optimizeopt/heap.rs:930:45
+    |
+930 |         if let Some(deps) = self.heapc_deps.remove(box_) {
+    |                                             ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/optimizeopt/heap.rs:1964:44
+     |
+1964 |                     self.cached_dict_reads.remove(&did);
+     |                                            ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/optimizeopt/heap.rs:2041:36
+     |
+2041 |             self.cached_dict_reads.remove(&dict_id);
+     |                                    ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/optimizeopt/optimizer.rs:4629:60
+     |
+4629 |                     .and_then(|op_key| self.replaces_guard.remove(&op_key))
+     |                                                            ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+   --> <workspace>/majit/majit-metainterp/src/optimizeopt/schedule.rs:249:28
+    |
+249 |         self.vecinfo_cache.remove(&opref);
+    |                            ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+   --> <workspace>/majit/majit-metainterp/src/optimizeopt/shortpreamble.rs:897:34
+    |
+897 |         self.boxes_in_production.remove(&okey);
+    |                                  ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/optimizeopt/shortpreamble.rs:2312:18
+     |
+2312 |         visiting.remove(result);
+     |                  ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/optimizeopt/shortpreamble.rs:2835:18
+     |
+2835 |         visiting.remove(&result);
+     |                  ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/optimizeopt/shortpreamble.rs:3194:40
+     |
+3194 |                     included_positions.remove(&ovf_op.pos.get());
+     |                                        ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/optimizeopt/vector.rs:1825:23
+     |
+1825 |             zero_deps.remove(&guard_idx);
+     |                       ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/optimizeopt/vector.rs:1844:39
+     |
+1844 | ...                   zero_deps.remove(&last);
+     |                                 ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+  --> <workspace>/majit/majit-metainterp/src/optimizeopt/version.rs:68:14
+   |
+68 |             .remove(&fail_index)
+   |              ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecSet::<T, S>::remove`: `remove` disrupts the set order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/optimizeopt/virtualstate.rs:2591:23
+     |
+2591 |     cache.in_progress.remove(&key);
+     |                       ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:5207:54
+     |
+5207 |             .or_else(|| self.pending_preamble_tokens.remove(&green_key))
+     |                                                      ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:5899:62
+     |
+5899 |                 if let Some(old_entry) = self.compiled_loops.remove(&green_key) {
+     |                                                              ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:6523:54
+     |
+6523 |             .or_else(|| self.pending_preamble_tokens.remove(&green_key))
+     |                                                      ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:6801:62
+     |
+6801 |                 if let Some(old_entry) = self.compiled_loops.remove(&green_key) {
+     |                                                              ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:7312:66
+     |
+7312 |                     if let Some(old_entry) = self.compiled_loops.remove(&green_key) {
+     |                                                                  ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:7658:62
+     |
+7658 |                 if let Some(old_entry) = self.compiled_loops.remove(&green_key) {
+     |                                                              ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:8336:29
+     |
+8336 |         self.compiled_loops.remove(&green_key);
+     |                             ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:8337:38
+     |
+8337 |         self.pending_preamble_tokens.remove(&green_key);
+     |                                      ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:8431:37
+     |
+8431 |                 self.compiled_loops.remove(&gk);
+     |                                     ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/pyjitpl.rs:9728:62
+     |
+9728 |                 if let Some(old_entry) = self.compiled_loops.remove(&original_green_key) {
+     |                                                              ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/warmstate.rs:1414:47
+     |
+1414 |         let deps = match self.quasiimmut_deps.remove(&qmut_key) {
+     |                                               ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/warmstate.rs:1729:44
+     |
+1729 |             if let Some(head) = self.cells.remove(&hash) {
+     |                                            ^^^^^^
+
+warning: use of deprecated method `majit_ir::VecMap::<K, V, S>::remove`: `remove` disrupts the map order -- use `swap_remove` or `shift_remove` for explicit behavior.
+    --> <workspace>/majit/majit-metainterp/src/warmstate.rs:1788:39
+     |
+1788 |         let mut cell_opt = self.cells.remove(&hash);
+     |                                       ^^^^^^
+
+warning: `majit-metainterp` (lib) generated 36 warnings (run `cargo fix --lib -p majit-metainterp` to apply 9 suggestions)
+warning: unused import: `majit_meta::jit::promote`
+  --> aheui-jit/src/lib.rs:17:5
+   |
+17 | use majit_meta::jit::promote;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `stackok` is never read
+   --> aheui-jit/src/lib.rs:936:21
+    |
+936 |                     stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+943 |                 stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+    |                 ------------------------------------------------------------ `stackok` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `stackok` is never read
+   --> aheui-jit/src/lib.rs:943:17
+    |
+943 |                 stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this value is reassigned later and never used
+...
+968 |                     stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+    |                     ------------------------------------------------------------ `stackok` is overwritten here before the previous value is read
+
+warning: value assigned to `stackok` is never read
+   --> aheui-jit/src/lib.rs:968:21
+    |
+968 |                     stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: function `find_used_storages` is never used
+   --> aheui-jit/src/lib.rs:267:4
+    |
+267 | fn find_used_storages(_program: &Program, _header_pc: usize, initial: usize) -> Vec<usize> {
+    |    ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `jit_pop_is_zero_stack` is never used
+   --> aheui-jit/src/lib.rs:411:15
+    |
+411 | extern "C" fn jit_pop_is_zero_stack(stack_ref: usize) -> i64 {
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `jit_pop_is_zero` is never used
+   --> aheui-jit/src/lib.rs:423:15
+    |
+423 | extern "C" fn jit_pop_is_zero(pool_ptr: usize, selected: usize) -> i64 {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `jit_storage_pop` is never used
+   --> aheui-jit/src/lib.rs:447:15
+    |
+447 | extern "C" fn jit_storage_pop(pool_ptr: usize, target: usize) -> Val {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `jit_storage_add` is never used
+   --> aheui-jit/src/lib.rs:451:15
+    |
+451 | extern "C" fn jit_storage_add(pool_ptr: usize, target: usize) {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `jit_storage_sub` is never used
+   --> aheui-jit/src/lib.rs:455:15
+    |
+455 | extern "C" fn jit_storage_sub(pool_ptr: usize, target: usize) {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `jit_storage_mul` is never used
+   --> aheui-jit/src/lib.rs:459:15
+    |
+459 | extern "C" fn jit_storage_mul(pool_ptr: usize, target: usize) {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `jit_storage_div` is never used
+   --> aheui-jit/src/lib.rs:463:15
+    |
+463 | extern "C" fn jit_storage_div(pool_ptr: usize, target: usize) {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `jit_storage_mod` is never used
+   --> aheui-jit/src/lib.rs:467:15
+    |
+467 | extern "C" fn jit_storage_mod(pool_ptr: usize, target: usize) {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `jit_storage_dup` is never used
+   --> aheui-jit/src/lib.rs:471:15
+    |
+471 | extern "C" fn jit_storage_dup(pool_ptr: usize, target: usize) {
+    |               ^^^^^^^^^^^^^^^
+
+warning: function `jit_storage_swap` is never used
+   --> aheui-jit/src/lib.rs:475:15
+    |
+475 | extern "C" fn jit_storage_swap(pool_ptr: usize, target: usize) {
+    |               ^^^^^^^^^^^^^^^^
+
+warning: function `jit_storage_cmp` is never used
+   --> aheui-jit/src/lib.rs:479:15
+    |
+479 | extern "C" fn jit_storage_cmp(pool_ptr: usize, target: usize) {
+    |               ^^^^^^^^^^^^^^^
+
+warning: unused variable: `has_dyn_sel`
+  --> compaheuiler/src/c_gen.rs:99:9
+   |
+99 |     let has_dyn_sel = live_blocks.iter().any(|&bid| {
+   |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_has_dyn_sel`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `has_dyn_sel`
+   --> compaheuiler/src/rust_gen.rs:182:9
+    |
+182 |     let has_dyn_sel = live_blocks.iter().any(|&bid| {
+    |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_has_dyn_sel`
+
+warning: variable `goto_guard_opened` is assigned to, but never used
+    --> compaheuiler/src/rust_gen.rs:1043:13
+     |
+1043 |         let mut goto_guard_opened = false;
+     |             ^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: consider using `_goto_guard_opened` instead
+
+warning: value assigned to `goto_guard_opened` is never read
+    --> compaheuiler/src/rust_gen.rs:1065:17
+     |
+1065 |                 goto_guard_opened = true;
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `wasi`
+   --> compaheuiler/src/wat_gen.rs:572:5
+    |
+572 |     wasi: bool,
+    |     ^^^^ help: if this is intentional, prefix it with an underscore: `_wasi`
+
+warning: associated items `new`, `from_snap`, and `snapshot` are never used
+   --> compaheuiler/src/rust_gen.rs:785:8
+    |
+784 | impl Abs {
+    | -------- associated items in this implementation
+785 |     fn new(sel: Option<usize>) -> Self {
+    |        ^^^
+...
+793 |     fn from_snap(stacks: HashMap<usize, Vec<String>>, nv: usize, sel: Option<usize>) -> Self {
+    |        ^^^^^^^^^
+...
+825 |     fn snapshot(&self) -> (HashMap<usize, Vec<String>>, usize) {
+    |        ^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `generate_rs` is never used
+   --> compaheuiler/src/rust_gen.rs:870:4
+    |
+870 | fn generate_rs(cfg: &Cfg) -> String {
+    |    ^^^^^^^^^^^
+
+warning: constant `PRELUDE_INT_BIGINT` is never used
+    --> compaheuiler/src/rust_gen.rs:1825:7
+     |
+1825 | const PRELUDE_INT_BIGINT: &str = r#"use num_traits::ToPrimitive;
+     |       ^^^^^^^^^^^^^^^^^^
+
+warning: `aheui-jit` (lib) generated 16 warnings (run `cargo fix --lib -p aheui-jit` to apply 1 suggestion)
+warning: `compaheuiler` (lib) generated 8 warnings (run `cargo fix --lib -p compaheuiler` to apply 3 suggestions)
+warning: unused variable: `program_o2`
+   --> src/main.rs:144:13
+    |
+144 |         let program_o2 = compile_program(&contents, ahsembler::OptimizationLevel::O2);
+    |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_program_o2`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `aheui` (bin "aheui") generated 1 warning (run `cargo fix --bin "aheui" -p aheui` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `target/release/aheui --jit aheui-wasm/web/samples/logo.aheui`
+error: unexpected argument '--jit' found
+
+  tip: to pass '--jit' as a value, use '-- --jit'
+
+Usage: aheui [OPTIONS] [FILE]
+       aheui <COMMAND>
+
+For more information, try '--help'.
