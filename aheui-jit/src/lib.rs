@@ -810,7 +810,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
         }
     }
-    let mut was_replay = false;
     while pc < program.size {
         // W4/D2 handoff diagnostic (MAJIT_HANDOFF): log the pre-op state at the
         // top of every loop iteration — one line per opcode in BOTH the naive
@@ -863,16 +862,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             }
         }
-        // VALIDATION (S19): after observer replay drains, `stacksize` (a red
-        // tracked by per-op deltas) may have desynced from the authoritative
-        // `storage`. Re-derive it from storage at the replay→real transition.
-        // The invariant `stacksize == storage.len_at(selected)` always holds,
-        // so this is sound regardless.
-        let now_replay = majit_metainterp::in_observer_replay();
-        if was_replay && !now_replay {
-            state.stacksize = state.storage.len_at(state.selected) as i32;
-        }
-        was_replay = now_replay;
         // rpaheui/aheui/aheui.py:252
         let mut stackok = program.get_req_size(pc) as i32 <= state.stacksize;
         // rpaheui/aheui/aheui.py:284 sets `is_queue = (value == VAL_QUEUE)`
