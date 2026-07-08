@@ -596,13 +596,13 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     calls = {
         jit_read_utf8 => residual_int,
         jit_read_number => residual_int,
-        jit_output_flush => residual_void,
-        jit_tag_val => elidable_int,
+        jit_output_flush => residual_void_cannot_raise,
+        jit_tag_val => elidable_int_cannot_raise,
         // First MethodCall RHS consumer; lowered via `lower_method_call_value`.
-        Program::get_req_size => elidable_int,
-        Program::get_op => elidable_int,
-        Program::get_label => elidable_int,
-        Program::get_operand => elidable_int,
+        Program::get_req_size => elidable_int_cannot_raise,
+        Program::get_op => elidable_int_cannot_raise,
+        Program::get_label => elidable_int_cannot_raise,
+        Program::get_operand => elidable_int_cannot_raise,
         // Phase D-1 monomorphic helpers — registered as residual calls
         // so the lowerer emits a concrete `call_void_args` /
         // `call_int_args` in the trace IR (function-pointer call) rather
@@ -665,12 +665,15 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // from the observer replay queue (CALL_PURE is not recorded), so this
         // also keeps the observer/concrete walks in lockstep.
         jit_sel_get_ref => elidable_ref_cannot_raise_wrapped,
-        jit_stacksize_delta => elidable_int,
-        jit_effective_stacksize_delta => elidable_int,
+        jit_stacksize_delta => elidable_int_cannot_raise,
+        jit_effective_stacksize_delta => elidable_int_cannot_raise,
         // Phase D-2: field-level IR for Stack ops — alloc/free and val
         // arithmetic registered so the lowerer emits concrete IR ops
         // instead of silent-skipping unregistered calls.
         jit_alloc_node => residual_ref,
+        // jit_free_node stays residual_void (not cannot_raise) — the GNE
+        // after this call is a store-scheduling fence for the preceding
+        // setfield_gc_r(selected_ref.head) lazy set.
         jit_free_node => residual_void,
         val_add => elidable_int,
         val_sub => elidable_int,
@@ -678,7 +681,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         val_div => elidable_int,
         val_mod => elidable_int,
         jit_val_ge => elidable_int,
-        val_from_i32 => elidable_int,
+        val_from_i32 => elidable_int_cannot_raise,
     },
     // Residual storage mutators that advance a `Stack.size`.  rpaheui's
     // push/pop are traced methods, so the `self.size` store is an in-trace
@@ -987,12 +990,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         // r2 = new head.value
                         let new_head = state.selected_ref.head;
                         let r2 = new_head.value;
-                        // smallint: Val = i64, a + b lowers to IntAdd.
-                        // bigint: tagged pointer, val_add stays as CALL_PURE_I.
-                        #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
-                        { new_head.value = r2 + r1; }
-                        #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
-                        { new_head.value = val_add(r2, r1); }
+                        // _put_value: write result to head
+                        new_head.value = val_add(r2, r1);
                     }
                 }
             }
@@ -1009,10 +1008,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         jit_free_node(top_node);
                         let new_head = state.selected_ref.head;
                         let r2 = new_head.value;
-                        #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
-                        { new_head.value = r2 - r1; }
-                        #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
-                        { new_head.value = val_sub(r2, r1); }
+                        new_head.value = val_sub(r2, r1);
                     }
                 }
             }
@@ -1029,10 +1025,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         jit_free_node(top_node);
                         let new_head = state.selected_ref.head;
                         let r2 = new_head.value;
-                        #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
-                        { new_head.value = r2 * r1; }
-                        #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
-                        { new_head.value = val_mul(r2, r1); }
+                        new_head.value = val_mul(r2, r1);
                     }
                 }
             }
@@ -1182,10 +1175,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         jit_free_node(top_node);
                         let new_head = state.selected_ref.head;
                         let r2 = new_head.value;
-                        #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
-                        { new_head.value = (r2 >= r1) as i64; }
-                        #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
-                        { new_head.value = jit_val_ge(r2, r1); }
+                        new_head.value = jit_val_ge(r2, r1);
                     }
                 }
             }
