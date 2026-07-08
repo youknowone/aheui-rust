@@ -977,18 +977,15 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     if is_queue {
                         lj::queue_add(state.selected_ref);
                     } else {
-                        // _get_2_values: pop top node, read second's value
+                        // _get_2_values + _put_value (rpaheui linkedlist.py)
                         let top_node = state.selected_ref.head;
                         let r1 = top_node.value;
                         let next = top_node.next;
                         state.selected_ref.head = next;
                         state.selected_ref.size = state.selected_ref.size - 1usize;
                         jit_free_node(top_node);
-                        // r2 = new head.value
-                        let new_head = state.selected_ref.head;
-                        let r2 = new_head.value;
-                        // _put_value: write result to head
-                        new_head.value = val_add(r2, r1);
+                        let r2 = next.value;
+                        next.value = val_add(r2, r1);
                     }
                 }
             }
@@ -1003,9 +1000,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         state.selected_ref.head = next;
                         state.selected_ref.size = state.selected_ref.size - 1usize;
                         jit_free_node(top_node);
-                        let new_head = state.selected_ref.head;
-                        let r2 = new_head.value;
-                        new_head.value = val_sub(r2, r1);
+                        let r2 = next.value;
+                        next.value = val_sub(r2, r1);
                     }
                 }
             }
@@ -1020,9 +1016,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         state.selected_ref.head = next;
                         state.selected_ref.size = state.selected_ref.size - 1usize;
                         jit_free_node(top_node);
-                        let new_head = state.selected_ref.head;
-                        let r2 = new_head.value;
-                        new_head.value = val_mul(r2, r1);
+                        let r2 = next.value;
+                        next.value = val_mul(r2, r1);
                     }
                 }
             }
@@ -1037,9 +1032,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         state.selected_ref.head = next;
                         state.selected_ref.size = state.selected_ref.size - 1usize;
                         jit_free_node(top_node);
-                        let new_head = state.selected_ref.head;
-                        let r2 = new_head.value;
-                        new_head.value = val_div(r2, r1);
+                        let r2 = next.value;
+                        next.value = val_div(r2, r1);
                     }
                 }
             }
@@ -1054,9 +1048,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         state.selected_ref.head = next;
                         state.selected_ref.size = state.selected_ref.size - 1usize;
                         jit_free_node(top_node);
-                        let new_head = state.selected_ref.head;
-                        let r2 = new_head.value;
-                        new_head.value = val_mod(r2, r1);
+                        let r2 = next.value;
+                        next.value = val_mod(r2, r1);
                     }
                 }
             }
@@ -1093,11 +1086,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     if is_queue {
                         lj::queue_dup(state.selected_ref);
                     } else {
-                        // dup: read head.value, push it
+                        // dup: push(head.value) — rpaheui linkedlist.py
                         let head = state.selected_ref.head;
                         let top_val = head.value;
-                        let old_head = state.selected_ref.head;
-                        let new_node = jit_alloc_node(top_val, old_head);
+                        let new_node = jit_alloc_node(top_val, head);
                         state.selected_ref.head = new_node;
                         state.selected_ref.size = state.selected_ref.size + 1usize;
                     }
@@ -1170,9 +1162,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         state.selected_ref.head = next;
                         state.selected_ref.size = state.selected_ref.size - 1usize;
                         jit_free_node(top_node);
-                        let new_head = state.selected_ref.head;
-                        let r2 = new_head.value;
-                        new_head.value = jit_val_ge(r2, r1);
+                        let r2 = next.value;
+                        next.value = jit_val_ge(r2, r1);
                     }
                 }
             }
