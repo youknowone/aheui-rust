@@ -106,6 +106,7 @@ fn main() {
                 //   driver = jit.JitDriver(
                 //       greens=['pc','stackok','is_queue','program'],
                 //       reds=['stacksize','storage','selected'])
+                register_trait_families: Vec::new(),
                 portal: Some(majit_translate::PortalSpec {
                     name: "mainloop".to_string(),
                     greens: vec![
