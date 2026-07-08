@@ -122,7 +122,6 @@ fn main() {
                     virtualizables: Vec::new(),
                     red_types: Vec::new(),
                 }),
-                register_trait_families: Vec::new(),
             },
         },
         None,
