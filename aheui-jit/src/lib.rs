@@ -377,6 +377,18 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
 // probes the macro generates in the LOCAL scope.  Calling `lj::alloc_node_jit`
 // directly would look for the probe in the `lj` module, which doesn't exist.
 
+/// JIT-visible mirror of `aheui_runtime::storage::linkedlist::Node`.
+/// Used as a struct literal in the `#[jit_interp]` mainloop so the lowerer
+/// emits `New + SetfieldGc` ops that `OptVirtualize` can fold away when the
+/// Node doesn't escape the current iteration. The `struct_allocs` config
+/// rewrites the literal back to `jit_alloc_node(value, next)` on the
+/// concrete (non-tracing) path.
+#[repr(C)]
+struct NodeJit {
+    value: Val,
+    next: usize,
+}
+
 #[inline(always)]
 fn jit_alloc_node(value: Val, next: usize) -> usize {
     aheui_runtime::storage::linkedlist_jit::alloc_node_jit(value, next)
@@ -391,6 +403,16 @@ fn jit_free_node(node: usize) {
 #[inline(always)]
 fn jit_val_ge(a: Val, b: Val) -> Val {
     aheui_runtime::storage::linkedlist_jit::val_ge_jit(a, b)
+}
+
+/// Pipeline jitcode resolver for `inline_pipeline_*` call policies.
+/// The `#[jit_interp]` macro's dispatch JitCode builder calls this to
+/// resolve a function name (e.g. `"val_add"`) to the pipeline-built
+/// sub-jitcode that the tracer will inline-call into.
+#[allow(non_snake_case)]
+fn __majit_pipeline_jitcode(name: &str) -> std::sync::Arc<majit_metainterp::JitCode> {
+    jit::jitcode_runtime::pipeline_jitcode_by_name(name)
+        .unwrap_or_else(|| panic!("pipeline jitcode for '{name}' not found"))
 }
 
 // ── OP_BRZ pop+is_zero shims ──
@@ -588,6 +610,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     ref_fields = {
         aheui_runtime::storage::linkedlist::Stack::head => aheui_runtime::storage::linkedlist::Node,
         aheui_runtime::storage::linkedlist::Node::next => aheui_runtime::storage::linkedlist::Node,
+        NodeJit::next => aheui_runtime::storage::linkedlist::Node,
     },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
@@ -632,15 +655,9 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::queue_dup => residual_void,
         lj::queue_swap => residual_void,
         lj::queue_cmp => residual_void,
-        // Phase D-4: bundled pop + is_zero used by OP_BRZ. Residual
-        // because the underlying pop mutates storage; the result is
-        // immediately consumed as a branch decision so a CallI lands
-        // in the trace IR followed by an IntNe + GuardFalse pair.
         jit_pop_is_zero_stack => residual_int,
         jit_pop_is_zero_queue => residual_int,
         jit_pop_is_zero => residual_int,
-        // OP_MOV bundled `storage[target].push(r)` (target is a
-        // per-opcode operand, not the promoted selected).
         jit_storage_push => residual_void,
         jit_storage_pop => residual_int,
         jit_storage_add => residual_void,
