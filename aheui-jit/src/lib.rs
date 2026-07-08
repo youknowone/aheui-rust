@@ -520,26 +520,10 @@ fn jit_stacksize_delta(op: usize) -> i64 {
     (-OP_STACKDEL[op] + OP_STACKADD[op]) as i64
 }
 
-/// Whether `op`'s storage mutation is guarded by `if stackok` (skipped when the
-/// selected stack is too small). Such an op's stack-size delta must skip
-/// together with the mutation, or `stacksize` drifts above the real storage
-/// size; a later `stackok` then wrongly passes and the binary op underflows
-/// (`_get_2_values on <2 elements`). The guarded ops are exactly the storage
-/// ops that consume elements (`OP_STACKDEL > 0`) — except `BRZ`, which pops
-/// unconditionally at dispatch level, and so always applies its delta. `PUSH`
-/// / `SEL` / branch ops (`OP_STACKDEL == 0`) likewise run regardless.
 fn jit_op_gated_on_stackok(op: usize) -> bool {
     OP_STACKDEL[op] > 0 && op != OP_BRZ as usize
 }
 
-/// Per-op stack-size delta with the `stackok` gate folded in: 0 when the
-/// op's storage mutation is skipped on a too-small stack (see
-/// `jit_op_gated_on_stackok`). A pure function of the `(op, stackok)`
-/// greens — registered `elidable_int` so the dispatch lowering emits it
-/// as a foldable call and the walk applies the same delta the native
-/// loop does. (An `if`-gated compound assign with a `||`/`!call()`
-/// condition is not a lowerable statement shape; this helper keeps the
-/// stacksize update expressible as `state.stacksize += <call>`.)
 fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     if stackok != 0 || !jit_op_gated_on_stackok(op) {
         jit_stacksize_delta(op)
@@ -747,6 +731,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // only the live branch reaches the optimised IR.
     greens = [pc, is_queue, program],
     recover = refresh_state_from_storage,
+    switch_dispatch = true,
 )]
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let mut driver: majit_meta::JitDriver<AheuiState> = majit_meta::JitDriver::new(threshold);
@@ -915,16 +900,11 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 state.spdiag_dump_stacks(),
             );
         }
-        // Apply the stack-size delta only when this op's storage mutation
-        // actually runs. A guarded op (`if stackok`) skipped on a too-small
-        // stack must not advance `stacksize`, or it drifts above the real
-        // storage size and a later `stackok` wrongly passes -> underflow. The
-        // invariant `stacksize == storage.len_at(selected)` (re-synced at SEL)
-        // then holds across skips. `op`/`stackok` are greens, so this folds to
-        // a constant per trace (no runtime branch in compiled code). The gate
-        // lives inside `jit_effective_stacksize_delta` (an elidable function
-        // of the two greens) so the statement stays a lowerable
-        // `state.<field> += <call>` shape and the walk applies the delta too.
+        // Per-op stack-size delta gated on stackok. When a guarded op
+        // (OP_STACKDEL > 0) is skipped because the stack is too small,
+        // its delta must also be skipped to keep stacksize in sync with
+        // the real storage length. `op` is green so the call constant-
+        // folds per trace arm.
         state.stacksize += jit_effective_stacksize_delta(op as usize, stackok as i64) as i32;
         // Phase D-1 §5: pre-advance `pc` so the interpreter's pc matches
         // the trace's `__jit_pc = op_pc + 1` convention. Operand reads in
