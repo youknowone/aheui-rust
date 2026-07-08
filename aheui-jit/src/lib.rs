@@ -744,23 +744,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // matching rpaheui (which compiles logo's loop rather than aborting it).
     driver.set_param("trace_limit", 70000);
 
-    // Enable single-pass tracing: the observer walk is the sole executor,
-    // transferring final reds into native state at the merge-point hook
-    // instead of replaying.
-    //
-    // Required for field-level IR: getfield_gc / setfield_gc ops mutate
-    // linked-list state (Node alloc/free, Stack.head/size) during the
-    // observer walk.  A two-pass replay would re-read these fields from
-    // already-mutated state, observing different pointers than the walk
-    // recorded — the second loop iteration's Stack.head points to a node
-    // the walk already freed and re-allocated.  This is the same reason
-    // RPython's blackhole replay works: the blackhole IS the sole
-    // executor, not a separate re-read of mutated state.  Single-pass
-    // gives pyre the same property.
-    if std::env::var_os("PYRE_SINGLE_PASS").is_none() {
-        unsafe { std::env::set_var("PYRE_SINGLE_PASS", "1") };
-    }
-
     let mut pc: usize = 0;
     // rpaheui/aheui/aheui.py:30: reds=['stacksize','storage','selected']
     let mut state = AheuiState {
@@ -811,12 +794,12 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         }
     }
     while pc < program.size {
-        // W4/D2 handoff diagnostic (MAJIT_HANDOFF): log the pre-op state at the
-        // top of every loop iteration — one line per opcode in BOTH the naive
-        // (MAJIT_THRESHOLD huge) and gate-ON (PYRE_AUTHORITATIVE) paths, since
-        // both hit the loop top once per opcode. Diff the two to find the FIRST
-        // divergent opcode at the native-interp→per-opcode-walk seam. Windowed
-        // + count-capped so the gate-ON spin cannot flood.
+        // Handoff diagnostic (MAJIT_HANDOFF): log the pre-op state at the top
+        // of every loop iteration — one line per opcode in both the naive
+        // (MAJIT_THRESHOLD huge) and JIT paths, since both hit the loop top
+        // once per opcode. Diff the two to find the FIRST divergent opcode at
+        // the native-interp→walk seam. Windowed + count-capped so it cannot
+        // flood.
         {
             // Env reads cached once (a per-iteration `env::var` makes the
             // naive-threshold oracle run ~100x slower than the interp).
@@ -872,10 +855,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
 
         WALK_STORAGE_PTR.with(|c| c.set(&state.storage as *const Storage as usize));
         // rpaheui/aheui/aheui.py:253-255: jit_merge_point
-        // `; state` opts this site into single-pass tracing (PYRE_SINGLE_PASS):
-        // the walk's final state is transferred into `state` here (via the
-        // hook's `recover`) instead of being replayed. Inert (byte-identical to
-        // `jit_merge_point!()`) unless the flag is set AND the walk closed.
+        // `; state` selects the single-pass close: the walk's final state is
+        // transferred into `state` here (via the hook's `recover`) instead of
+        // being replayed. Byte-identical to `jit_merge_point!()` until the walk
+        // closes a loop.
         jit_merge_point!(driver, program, pc; state);
         // rpaheui parity: `selected` is a RED (reds=['stacksize','storage',
         // 'selected']) — it is NEVER promoted (aheui.py promotes only
