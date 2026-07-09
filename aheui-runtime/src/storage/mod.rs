@@ -45,6 +45,7 @@ struct Nursery {
     end: *mut linkedlist::Node,       // one past the last slot in current chunk
     free_list: *mut linkedlist::Node, // singly-linked free list of popped nodes
     chunk_count: usize,               // number of allocated chunks (safety limit)
+    chunks: Vec<*mut linkedlist::Node>, // base pointer of every allocated chunk
 }
 
 impl Nursery {
@@ -54,6 +55,7 @@ impl Nursery {
             end: std::ptr::null_mut(),
             free_list: std::ptr::null_mut(),
             chunk_count: 0,
+            chunks: Vec::new(),
         }
     }
 
@@ -63,6 +65,20 @@ impl Nursery {
 
     #[inline(always)]
     fn alloc(&mut self, value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::Node {
+        // When the free list is empty and the current chunk is exhausted,
+        // reclaim dead nodes before growing. `collect` refills `free_list`
+        // from swept slots; only if it recovers nothing do we grow.
+        if self.free_list.is_null() && self.free >= self.end {
+            // `next` is the node being linked as the new node's successor — the
+            // current top of the selected chain. It is live but may be held
+            // only in a register (its `setfield(head)` not yet committed to
+            // memory), so pass it as an extra root so `collect` never sweeps
+            // it or the chain hanging off it.
+            self.collect(next);
+            if self.free_list.is_null() {
+                self.grow();
+            }
+        }
         if !self.free_list.is_null() {
             let node = self.free_list;
             unsafe {
@@ -71,9 +87,6 @@ impl Nursery {
                 (*node).next = next;
             }
             return node;
-        }
-        if self.free >= self.end {
-            self.grow();
         }
         let node = self.free;
         unsafe {
@@ -111,12 +124,108 @@ impl Nursery {
         let layout = std::alloc::Layout::array::<linkedlist::Node>(NURSERY_SIZE).unwrap();
         let base = unsafe { std::alloc::alloc(layout) as *mut linkedlist::Node };
         assert!(!base.is_null(), "nursery allocation failed");
+        self.chunks.push(base);
         self.free = base;
         self.end = unsafe { base.add(NURSERY_SIZE) };
+    }
+
+    /// Non-moving mark-sweep collection of the node chunks.
+    ///
+    /// Runs from `alloc` when the free list is empty and the current chunk's
+    /// bump region is exhausted, before growing. Marks every node reachable
+    /// from the registered roots (the 28 `pools[*]` head chains plus the
+    /// `Port` chain), then sweeps every unmarked chunk slot onto the free
+    /// list. Nodes are never moved, so pointers held in registers / on the
+    /// stacks stay valid.
+    ///
+    /// Precondition: the caller guarantees `free_list` is empty, so no slot
+    /// is double-linked. Every chunk is fully bumped at this point (collect
+    /// only fires when the current chunk is exhausted and all prior chunks
+    /// were exhausted before it), so there is no uninitialized tail to skip.
+    ///
+    /// Soundness relies on the roots being current: `jit_alloc_node` is a
+    /// `residual_ref` (general heap effect) call, so the optimizer forces all
+    /// pending `setfield(head)` lazy stores to memory before it — every live
+    /// node is therefore reachable from a `pools[*]` / `port` head at collect
+    /// time. A dead node whose head-store is still pending is marked from the
+    /// stale root and merely survives one extra cycle (never a dangling live
+    /// pointer). A node outside every chunk (oversized / foreign origin) is
+    /// treated as always-live: it is walked through but never swept.
+    #[cold]
+    fn collect(&mut self, keep: *mut linkedlist::Node) {
+        let storage_addr = GC_ROOTS.load(std::sync::atomic::Ordering::Relaxed);
+        if storage_addr == 0 || self.chunks.is_empty() {
+            return;
+        }
+        let storage = unsafe { &*(storage_addr as *const Storage) };
+
+        const WORDS: usize = NURSERY_SIZE / 64;
+        let mut marks: Vec<Box<[u64]>> = (0..self.chunks.len())
+            .map(|_| vec![0u64; WORDS].into_boxed_slice())
+            .collect();
+
+        // Register-resident root: the successor node passed to the allocation
+        // that triggered this collect (its head-store may still be pending).
+        Self::mark_chain(&self.chunks, &mut marks, keep);
+        for i in 0..STORAGE_COUNT {
+            let stackp = storage.pools[i];
+            if !stackp.is_null() {
+                Self::mark_chain(&self.chunks, &mut marks, unsafe { (*stackp).head });
+            }
+        }
+        Self::mark_chain(&self.chunks, &mut marks, storage.port.head);
+
+        for ci in 0..self.chunks.len() {
+            let base = self.chunks[ci];
+            let bitmap = &marks[ci];
+            for slot in 0..NURSERY_SIZE {
+                if bitmap[slot / 64] & (1u64 << (slot % 64)) == 0 {
+                    let node = unsafe { base.add(slot) };
+                    unsafe { (*node).next = self.free_list };
+                    self.free_list = node;
+                }
+            }
+        }
+    }
+
+    /// Mark every chunk-resident node reachable through `next` from `head`.
+    /// Stops early when it re-reaches an already-marked node (chains never
+    /// share nodes in aheui, so this only guards against re-walking). A node
+    /// outside every chunk is walked through without marking.
+    fn mark_chain(chunks: &[*mut linkedlist::Node], marks: &mut [Box<[u64]>], head: *mut linkedlist::Node) {
+        let mut node = head;
+        while !node.is_null() {
+            for (ci, &base) in chunks.iter().enumerate() {
+                let end = (base as usize) + NURSERY_SIZE * NODE_SIZE;
+                if node >= base && (node as usize) < end {
+                    let slot = unsafe { node.offset_from(base) } as usize;
+                    let word = &mut marks[ci][slot / 64];
+                    let bit = 1u64 << (slot % 64);
+                    if *word & bit != 0 {
+                        return;
+                    }
+                    *word |= bit;
+                    break;
+                }
+            }
+            node = unsafe { (*node).next };
+        }
     }
 }
 
 static mut NURSERY: Nursery = Nursery::uninit();
+
+/// Root set for `Nursery::collect`: raw `*mut Storage` whose `pools[*]` /
+/// `port` head chains enumerate every live node. Registered by the mainloop
+/// via [`set_gc_roots`] after `Storage::refresh_pools`. Zero until set, which
+/// disables collection (the allocator then only bumps / grows).
+static GC_ROOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Register the live `Storage` as the collection root set. Called once from
+/// the mainloop after the storage pointers are refreshed.
+pub fn set_gc_roots(storage: *mut Storage) {
+    GC_ROOTS.store(storage as usize, std::sync::atomic::Ordering::Relaxed);
+}
 
 #[inline(always)]
 pub fn alloc_node(value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::Node {
