@@ -64,32 +64,40 @@ fn bh_debug_enabled() -> bool {
 
 /// GC allocator for JIT-compiled New() ops.
 /// Delegates to the global nursery so alloc/free share the same pool
-/// as the interpreter path.  Prevents unbounded memory growth.
-/// Max JIT heap allocation: 256 MB safety limit.
+/// as the interpreter path.
+///
+/// Node-sized allocations (`size <= NODE_SIZE`) go to the nursery, which
+/// self-bounds via its own chunk cap (`grow()` exits at 64 chunks). The
+/// cumulative 256 MB limit applies only to the oversized `alloc_zeroed`
+/// fallback, which has no other bound — a running program allocates far
+/// more than 256 MB of *nodes* over its lifetime (each freed and reused),
+/// so a cumulative cap on the node path would spuriously fail.
 const JIT_ALLOC_LIMIT: usize = 256 * 1024 * 1024;
 
 struct NurseryGcAllocator {
-    total_allocated: usize,
+    oversized_allocated: usize,
 }
 
 impl NurseryGcAllocator {
     fn new() -> Self {
-        Self { total_allocated: 0 }
+        Self {
+            oversized_allocated: 0,
+        }
     }
 }
 
 impl majit_gc::GcAllocator for NurseryGcAllocator {
     fn alloc_nursery(&mut self, size: usize) -> majit_ir::GcRef {
-        self.total_allocated += size;
-        if self.total_allocated > JIT_ALLOC_LIMIT {
-            // Return NULL to signal allocation failure — compiled code
-            // will hit a guard and fall back to the interpreter.
-            return majit_ir::GcRef::NULL;
-        }
         if size <= aheui_runtime::storage::NODE_SIZE {
             let node = aheui_runtime::storage::alloc_node_raw();
             majit_ir::GcRef(node as usize)
         } else {
+            self.oversized_allocated += size;
+            if self.oversized_allocated > JIT_ALLOC_LIMIT {
+                // Return NULL to signal allocation failure — compiled code
+                // will hit a guard and fall back to the interpreter.
+                return majit_ir::GcRef::NULL;
+            }
             let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
             let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
             majit_ir::GcRef(ptr as usize)
@@ -671,11 +679,19 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // Phase D-2: field-level IR for Stack ops — alloc/free and val
         // arithmetic registered so the lowerer emits concrete IR ops
         // instead of silent-skipping unregistered calls.
+        //
+        // Node allocation is an opaque residual `New` call (not a
+        // struct-literal `New + SetfieldGc`): the node stored into the
+        // concrete `selected_ref.head` escapes and is never virtualized
+        // away, so `size` and `head` are always mutated together on real
+        // memory. Nodes are not freed on the JIT path (`concrete_only_void`
+        // drops the free); the leak is reclaimed by `Nursery::collect`.
         jit_alloc_node => residual_ref,
-        // jit_free_node stays residual_void (not cannot_raise) — the GNE
-        // after this call is a store-scheduling fence for the preceding
+        // jit_free_node is `concrete_only_void` — the free runs on the
+        // concrete path only; the JIT trace omits it. The GNE after the
+        // call is a store-scheduling fence for the preceding
         // setfield_gc_r(selected_ref.head) lazy set.
-        jit_free_node => residual_void,
+        jit_free_node => concrete_only_void,
         val_add => elidable_int,
         val_sub => elidable_int,
         val_mul => elidable_int,
@@ -768,6 +784,11 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     state.pool_ptr = &mut state.storage as *mut Storage as usize;
     state.storage_ref = state.pool_ptr;
     state.refresh_selected_ref();
+    // Register the storage as the nursery collector's root set. `state` is a
+    // stationary local for the rest of the mainloop, so the pointer stays
+    // valid; the compiled traces omit `jit_free_node`, so leaked nodes are
+    // reclaimed by `Nursery::collect` walking these roots.
+    aheui_runtime::storage::set_gc_roots(&mut state.storage as *mut Storage);
 
     // RPython `warmspot.py:281-289` `make_jitcodes() →
     // finish_setup(codewriter)` parity for state-field JIT: register the
