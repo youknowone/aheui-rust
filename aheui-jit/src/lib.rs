@@ -736,10 +736,14 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let mut driver: majit_meta::JitDriver<AheuiState> = majit_meta::JitDriver::new(threshold);
 
-    // Register a simple malloc-based GC allocator for JIT-compiled New() ops.
-    // Linked list nodes (Node) are allocated here during compiled code execution.
+    // Register the nursery-backed GC allocator for JIT-compiled New() ops.
+    // Linked-list nodes (Node) share the interpreter's nursery pool, so
+    // compiled `New` allocation must route through this allocator rather
+    // than `libc::malloc` — otherwise nodes freed to the nursery free-list
+    // and nodes malloc'd by compiled code come from different pools.
     let gc = Box::new(NurseryGcAllocator::new());
     driver.meta_interp_mut().backend_mut().set_gc_allocator(gc);
+    driver.meta_interp_mut().backend_mut().set_new_via_gc(true);
 
     // rpaheui/aheui/aheui.py:325: jit.set_param(driver, 'trace_limit', 30000).
     // Scaled for majit's denser IR: the sub-JitCode dispatch + pre-dispatch
