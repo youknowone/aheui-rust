@@ -195,7 +195,7 @@ thread_local! {
 struct AheuiState {
     storage: Storage,
     selected: usize,
-    stacksize: i32,
+    stacksize: i64,
     pool_ptr: usize,
     /// `&mut state.storage.pools[selected]` packed as `usize`. Tracked as
     /// `ref(Stack)` in `state_fields` so it is carried in the ref register
@@ -268,7 +268,7 @@ impl AheuiState {
         self.pool_ptr = &mut self.storage as *mut Storage as usize;
         self.storage_ref = self.pool_ptr;
         self.refresh_selected_ref();
-        self.stacksize = self.storage.len_at(self.selected) as i32;
+        self.stacksize = self.storage.len_at(self.selected) as i64;
     }
 }
 
@@ -566,12 +566,14 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     state_fields = {
         storage: opaque(aheui_runtime::storage::Storage),
         // RPython parity: AheuiState.selected is `usize` (slot index into
-        // 28-slot pool); stacksize is `i32` (signed pop/push delta). The
-        // macro carries them as Int in IR; `int(<Type>)` keeps the user's
-        // natural Rust storage type and inserts `as i64` / `as <Type>`
-        // casts at the JIT boundary.
+        // 28-slot pool); stacksize is `i64` (signed pop/push delta) — rpaheui
+        // carries it as a full machine-word Python int, and `i64` matches the
+        // IR's native Int width so no per-op `as i64` sign-extend is emitted
+        // on every `stackok`/delta read. The macro carries them as Int in IR;
+        // `int(<Type>)` keeps the user's natural Rust storage type and inserts
+        // `as i64` / `as <Type>` casts at the JIT boundary (identity for i64).
         selected: int(usize),
-        stacksize: int(i32),
+        stacksize: int(i64),
         pool_ptr: int(usize),
         // The selected list's object reference (aheui.py:256
         // `selected = jit.promote(selected)`). Carried in the ref register
@@ -876,7 +878,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
         }
         // rpaheui/aheui/aheui.py:252
-        let mut stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+        let mut stackok = program.get_req_size(pc) as i64 <= state.stacksize;
         // rpaheui/aheui/aheui.py:284 sets `is_queue = (value == VAL_QUEUE)`
         // inside OP_SEL; pyre recomputes it pre-merge-point from the
         // canonical source (`state.selected == VAL_QUEUE`) so A.3.6.1's
@@ -930,7 +932,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // its delta must also be skipped to keep stacksize in sync with
         // the real storage length. `op` is green so the call constant-
         // folds per trace arm.
-        state.stacksize += jit_effective_stacksize_delta(op as usize, stackok as i64) as i32;
+        state.stacksize += jit_effective_stacksize_delta(op as usize, stackok as i64);
         // Phase D-1 §5: pre-advance `pc` so the interpreter's pc matches
         // the trace's `__jit_pc = op_pc + 1` convention. Operand reads in
         // the arms use `pc - 1` to recover the opcode row; the trailing
@@ -947,14 +949,14 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_BRPOP1 | OP_BRPOP2 => {
                 if stackok == false {
                     pc = program.get_label(pc - 1);
-                    stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+                    stackok = program.get_req_size(pc) as i64 <= state.stacksize;
                     can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, is_queue, program);
                     continue;
                 }
             }
             OP_JMP => {
                 pc = program.get_label(pc - 1);
-                stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+                stackok = program.get_req_size(pc) as i64 <= state.stacksize;
                 can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, is_queue, program);
                 continue;
             }
@@ -979,7 +981,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 };
                 if zero != 0 {
                     pc = program.get_label(pc - 1);
-                    stackok = program.get_req_size(pc) as i32 <= state.stacksize;
+                    stackok = program.get_req_size(pc) as i64 <= state.stacksize;
                     can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, is_queue, program);
                     continue;
                 }
@@ -1152,7 +1154,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 // stack ref re-derives from `selected` each loop entry instead
                 // of being carried as an independent, divergence-prone red.
                 state.selected_ref = jit_sel_get_ref(state.storage_ref, state.selected);
-                state.stacksize = state.selected_ref.size as i32;
+                state.stacksize = state.selected_ref.size as i64;
             }
             OP_MOV => {
                 if stackok {
