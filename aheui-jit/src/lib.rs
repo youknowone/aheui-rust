@@ -1,15 +1,16 @@
 // JIT-enabled Aheui interpreter — graph pipeline + #[jit_interp] macro.
 //
 // RPython parity: rpaheui/aheui/aheui.py
-//   greens = [pc, is_queue, program]
+//   greens = [pc, stackok, is_queue, program]
 //   reds   = [stacksize, storage, selected]
 //   storage = linked list stacks (no virtualizable arrays)
 //
-// NOTE: rpaheui declares stackok as a green, but in majit that causes
-// green-key explosion — each flip of stackok (true↔false) generates a
-// separate compiled loop, and logo.aheui flips it hundreds of times.
-// Demoting stackok to a red turns the `if stackok` branches into runtime
-// guards; the rare stackok=false path is handled by a bridge.
+// stackok is a green (rpaheui parity): specialising the trace on it lets
+// `jit_effective_stacksize_delta(op, stackok)` fold to a constant, so the
+// per-op stacksize update carries no residual call. The green-key-explosion
+// concern (each stackok flip generating a separate compiled loop) does not
+// reproduce on logo.aheui — the distinct (pc, stackok) merge points that
+// occur are few, so logo compiles a single bounded loop.
 
 extern crate majit_ir;
 extern crate majit_metainterp as majit_meta;
@@ -747,7 +748,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // out from the stack family), and within a trace specialised by
     // `guard_value(selected)` the comparison folds to a constant and
     // only the live branch reaches the optimised IR.
-    greens = [pc, is_queue, program],
+    greens = [pc, stackok, is_queue, program],
     recover = refresh_state_from_storage,
     switch_dispatch = true,
 )]
@@ -950,14 +951,14 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if stackok == false {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, is_queue, program);
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
                     continue;
                 }
             }
             OP_JMP => {
                 pc = program.get_label(pc - 1);
                 stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, is_queue, program);
+                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
                 continue;
             }
             OP_BRZ => {
@@ -982,7 +983,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if zero != 0 {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, is_queue, program);
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
                     continue;
                 }
             }
