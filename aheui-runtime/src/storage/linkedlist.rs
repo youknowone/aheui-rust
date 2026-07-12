@@ -272,6 +272,9 @@ impl LinkedList for Queue {
             (*tail).value = value;
         }
         let new = alloc_node(val_from_i32(0), std::ptr::null_mut());
+        // A copying collect can move the sentinel while allocating `new`;
+        // re-read the root field before storing through it.
+        let tail = self.tail;
         unsafe {
             (*tail).next = new;
         }

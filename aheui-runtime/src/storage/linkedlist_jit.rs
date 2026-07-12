@@ -99,7 +99,11 @@ pub fn free_node_jit(node: usize) {
 /// JIT type: `(Val, Val) -> Val`.
 #[inline(always)]
 pub fn val_ge_jit(a: Val, b: Val) -> Val {
-    if val_ge(&a, &b) { val_from_i32(1) } else { val_from_i32(0) }
+    if val_ge(&a, &b) {
+        val_from_i32(1)
+    } else {
+        val_from_i32(0)
+    }
 }
 
 // ── Queue helpers ────────────────────────────────────────────────────
