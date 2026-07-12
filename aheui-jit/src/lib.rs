@@ -140,17 +140,15 @@ impl majit_gc::GcAllocator for NurseryGcAllocator {
     fn nursery_top(&self) -> *const u8 {
         std::ptr::null()
     }
-    /// nursery_free_addr / nursery_top_addr expose the bump-pointer
-    /// limits to the JIT-emitted inline allocator. aheui-jit allocates
-    /// only `Node`-sized objects via the global node pool and never goes
-    /// through the inline bump path; both addresses report 0 so any
-    /// inline alloc-fast-path in compiled code immediately spills to
-    /// alloc_nursery (which routes to alloc_node_raw).
+    /// nursery_free_addr / nursery_top_addr expose the bump-pointer slot
+    /// addresses to the JIT-emitted inline allocator so a compiled
+    /// alloc-fast-path can bump `free` toward `end` inline and cond-call the
+    /// slowpath only on nursery exhaustion.
     fn nursery_free_addr(&self) -> usize {
-        0
+        aheui_runtime::storage::nursery_bump_addrs().0
     }
     fn nursery_top_addr(&self) -> usize {
-        0
+        aheui_runtime::storage::nursery_bump_addrs().1
     }
     fn max_nursery_object_size(&self) -> usize {
         usize::MAX
@@ -683,13 +681,17 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // arithmetic registered so the lowerer emits concrete IR ops
         // instead of silent-skipping unregistered calls.
         //
-        // Node allocation is an opaque residual `New` call (not a
-        // struct-literal `New + SetfieldGc`): the node stored into the
-        // concrete `selected_ref.head` escapes and is never virtualized
-        // away, so `size` and `head` are always mutated together on real
-        // memory. Nodes are not freed on the JIT path (`concrete_only_void`
-        // drops the free); the leak is reclaimed by `Nursery::collect`.
-        jit_alloc_node => residual_ref,
+        // Node allocation is a residual ref-returning call tagged
+        // `nursery_alloc_ref`: identical to `residual_ref` (the node stored
+        // into the concrete `selected_ref.head` escapes and is never
+        // virtualized away, so `size` and `head` are always mutated together
+        // on real memory), but the descr EffectInfo carries
+        // `PyreHelperKind::NurseryAlloc` so the dynasm CallR genop emits an
+        // inline nursery bump (RPython malloc_cond shape) with a slowpath
+        // cond-call into `jit_alloc_node`, instead of a full residual `blr`.
+        // Nodes are not freed on the JIT path (`concrete_only_void` drops the
+        // free); the leak is reclaimed by `Nursery::collect`.
+        jit_alloc_node => nursery_alloc_ref,
         // jit_free_node is `concrete_only_void` — the free runs on the
         // concrete path only; the JIT trace omits it. The GNE after the
         // call is a store-scheduling fence for the preceding
