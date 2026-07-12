@@ -155,6 +155,55 @@ impl majit_gc::GcAllocator for NurseryGcAllocator {
     }
 }
 
+fn register_aheui_copying_gc_jit_roots() {
+    majit_gc::shadow_stack::register_libc_jitframe_tracer(
+        majit_backend::jitframe::jitframe_custom_trace,
+    );
+    let hook: aheui_runtime::storage::NodeRootWalkHook = walk_aheui_jit_node_roots;
+    aheui_runtime::storage::NODE_ROOT_WALK_HOOK
+        .store(hook as usize, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn walk_aheui_jit_node_roots(
+    visit_node_slot: &mut dyn FnMut(*mut *mut aheui_runtime::storage::linkedlist::Node),
+) {
+    let mut visit_gcref_slot = |slot: *mut majit_ir::GcRef| {
+        visit_node_slot(slot as *mut *mut aheui_runtime::storage::linkedlist::Node);
+    };
+
+    majit_gc::shadow_stack::walk_roots(|gcref| {
+        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
+    });
+
+    majit_gc::shadow_stack::walk_jf_roots(|gcref| {
+        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
+        if !gcref.is_null() && majit_gc::shadow_stack::is_libc_jitframe(gcref.0) {
+            majit_gc::shadow_stack::trace_libc_jitframe(gcref.0, &mut visit_gcref_slot);
+        }
+    });
+
+    majit_gc::shadow_stack::walk_bh_regs(|gcref| {
+        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
+    });
+
+    majit_gc::shadow_stack::walk_resume_ref_roots(|gcref| {
+        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
+    });
+
+    majit_gc::shadow_stack::set_extra_root_walk_kind(
+        majit_gc::shadow_stack::ExtraRootWalkKind::Minor,
+    );
+    majit_gc::walk_active_extra_roots(&mut |gcref| {
+        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
+    });
+    majit_gc::shadow_stack::walk_extra_roots(|gcref| {
+        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
+    });
+    majit_gc::shadow_stack::set_extra_root_walk_kind(
+        majit_gc::shadow_stack::ExtraRootWalkKind::Major,
+    );
+}
+
 /// Trace-time state for the Aheui JIT.
 ///
 /// rpaheui/aheui/aheui.py:228-234 stores the reds as:
@@ -794,6 +843,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // valid; the compiled traces omit `jit_free_node`, so leaked nodes are
     // reclaimed by `Nursery::collect` walking these roots.
     aheui_runtime::storage::set_gc_roots(&mut state.storage as *mut Storage);
+    register_aheui_copying_gc_jit_roots();
 
     // RPython `warmspot.py:281-289` `make_jitcodes() →
     // finish_setup(codewriter)` parity for state-field JIT: register the
