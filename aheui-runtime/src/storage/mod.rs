@@ -25,6 +25,9 @@ pub use linkedlist::{
 
 use crate::aheui::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
 use crate::value::*;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ── Nursery bump allocator for `Node` ────────────────────────────────
 //
@@ -46,6 +49,7 @@ struct Nursery {
     free_list: *mut linkedlist::Node, // singly-linked free list of popped nodes
     chunk_count: usize,               // number of allocated chunks (safety limit)
     chunks: Vec<*mut linkedlist::Node>, // base pointer of every allocated chunk
+    spare_chunk: *mut linkedlist::Node, // to-space for the next copying collect
 }
 
 impl Nursery {
@@ -56,6 +60,7 @@ impl Nursery {
             free_list: std::ptr::null_mut(),
             chunk_count: 0,
             chunks: Vec::new(),
+            spare_chunk: std::ptr::null_mut(),
         }
     }
 
@@ -65,6 +70,7 @@ impl Nursery {
 
     #[inline(always)]
     fn alloc(&mut self, value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::Node {
+        let mut next = next;
         // When the free list is empty and the current chunk is exhausted,
         // reclaim dead nodes before growing. `collect` refills `free_list`
         // from swept slots; only if it recovers nothing do we grow.
@@ -74,8 +80,8 @@ impl Nursery {
             // only in a register (its `setfield(head)` not yet committed to
             // memory), so pass it as an extra root so `collect` never sweeps
             // it or the chain hanging off it.
-            self.collect(next);
-            if self.free_list.is_null() {
+            self.collect(&mut next);
+            if self.free_list.is_null() && self.free >= self.end {
                 self.grow();
             }
         }
@@ -110,6 +116,13 @@ impl Nursery {
 
     #[cold]
     fn grow(&mut self) {
+        let base = self.allocate_chunk();
+        self.chunks.push(base);
+        self.free = base;
+        self.end = unsafe { base.add(NURSERY_SIZE) };
+    }
+
+    fn allocate_chunk(&mut self) -> *mut linkedlist::Node {
         self.chunk_count += 1;
         if self.chunk_count > MAX_NURSERY_CHUNKS {
             eprintln!(
@@ -124,9 +137,28 @@ impl Nursery {
         let layout = std::alloc::Layout::array::<linkedlist::Node>(NURSERY_SIZE).unwrap();
         let base = unsafe { std::alloc::alloc(layout) as *mut linkedlist::Node };
         assert!(!base.is_null(), "nursery allocation failed");
-        self.chunks.push(base);
-        self.free = base;
-        self.end = unsafe { base.add(NURSERY_SIZE) };
+        base
+    }
+
+    fn release_chunk(&mut self, base: *mut linkedlist::Node) {
+        if base.is_null() {
+            return;
+        }
+        let layout = std::alloc::Layout::array::<linkedlist::Node>(NURSERY_SIZE).unwrap();
+        unsafe { std::alloc::dealloc(base as *mut u8, layout) };
+        self.chunk_count -= 1;
+    }
+
+    #[cfg(test)]
+    fn reset_for_test(&mut self) {
+        let layout = std::alloc::Layout::array::<linkedlist::Node>(NURSERY_SIZE).unwrap();
+        for chunk in self.chunks.drain(..) {
+            unsafe { std::alloc::dealloc(chunk as *mut u8, layout) };
+        }
+        if !self.spare_chunk.is_null() {
+            unsafe { std::alloc::dealloc(self.spare_chunk as *mut u8, layout) };
+        }
+        *self = Nursery::uninit();
     }
 
     /// Non-moving mark-sweep collection of the node chunks.
@@ -152,8 +184,17 @@ impl Nursery {
     /// pointer). A node outside every chunk (oversized / foreign origin) is
     /// treated as always-live: it is walked through but never swept.
     #[cold]
-    fn collect(&mut self, keep: *mut linkedlist::Node) {
-        let storage_addr = GC_ROOTS.load(std::sync::atomic::Ordering::Relaxed);
+    fn collect(&mut self, keep: &mut *mut linkedlist::Node) {
+        if copying_collect_enabled() {
+            self.collect_copying(keep);
+        } else {
+            self.collect_sweep(*keep);
+        }
+    }
+
+    #[cold]
+    fn collect_sweep(&mut self, keep: *mut linkedlist::Node) {
+        let storage_addr = GC_ROOTS.load(Ordering::Relaxed);
         if storage_addr == 0 || self.chunks.is_empty() {
             return;
         }
@@ -192,7 +233,11 @@ impl Nursery {
     /// Stops early when it re-reaches an already-marked node (chains never
     /// share nodes in aheui, so this only guards against re-walking). A node
     /// outside every chunk is walked through without marking.
-    fn mark_chain(chunks: &[*mut linkedlist::Node], marks: &mut [Box<[u64]>], head: *mut linkedlist::Node) {
+    fn mark_chain(
+        chunks: &[*mut linkedlist::Node],
+        marks: &mut [Box<[u64]>],
+        head: *mut linkedlist::Node,
+    ) {
         let mut node = head;
         while !node.is_null() {
             for (ci, &base) in chunks.iter().enumerate() {
@@ -211,6 +256,181 @@ impl Nursery {
             node = unsafe { (*node).next };
         }
     }
+
+    /// Copying minor collection of nursery-resident `Node` chains.
+    ///
+    /// This follows RPython's incminimark nursery evacuation shape:
+    /// `trace_and_drag_out_of_nursery` copies nursery objects, installs a
+    /// forwarding pointer, then traces copied objects until the worklist is
+    /// drained. `Node` is headerless (`value,next`), so the forwarding state
+    /// lives in a side bitmap per from-space chunk and the forwarded address
+    /// is stored in the old node's `next` field after copying.
+    #[cold]
+    fn collect_copying(&mut self, keep: &mut *mut linkedlist::Node) {
+        let storage_addr = GC_ROOTS.load(Ordering::Relaxed);
+        if storage_addr == 0 || self.chunks.is_empty() {
+            return;
+        }
+        #[cfg(test)]
+        COPYING_COLLECT_COUNT_FOR_TESTS.fetch_add(1, Ordering::Relaxed);
+
+        let storage = unsafe { &mut *(storage_addr as *mut Storage) };
+        let from_chunks = self.chunks.clone();
+        let mut copy = CopyState::new(from_chunks);
+
+        let first_to = if self.spare_chunk.is_null() {
+            self.allocate_chunk()
+        } else {
+            let chunk = self.spare_chunk;
+            self.spare_chunk = std::ptr::null_mut();
+            chunk
+        };
+        copy.add_to_chunk(first_to);
+
+        self.forward_root(&mut copy, keep as *mut *mut linkedlist::Node);
+        for i in 0..STORAGE_COUNT {
+            let stackp = storage.pools[i];
+            if !stackp.is_null() {
+                self.forward_root(&mut copy, unsafe { std::ptr::addr_of_mut!((*stackp).head) });
+            }
+        }
+        self.forward_root(&mut copy, std::ptr::addr_of_mut!(storage.queue.tail));
+        self.forward_root(&mut copy, std::ptr::addr_of_mut!(storage.port.head));
+
+        let hook_addr = NODE_ROOT_WALK_HOOK.load(Ordering::Relaxed);
+        if hook_addr != 0 {
+            let hook: NodeRootWalkHook = unsafe { std::mem::transmute(hook_addr) };
+            let mut visit = |slot: *mut *mut linkedlist::Node| {
+                self.forward_root(&mut copy, slot);
+            };
+            hook(&mut visit);
+        }
+
+        self.trace_copied_nodes(&mut copy);
+
+        let old_chunks = std::mem::replace(&mut self.chunks, copy.to_chunks);
+        self.free = copy.to_free;
+        self.end = copy.to_end;
+        self.free_list = std::ptr::null_mut();
+
+        let mut spare = old_chunks.into_iter();
+        self.spare_chunk = spare.next().unwrap_or(std::ptr::null_mut());
+        for chunk in spare {
+            self.release_chunk(chunk);
+        }
+    }
+
+    fn trace_copied_nodes(&mut self, copy: &mut CopyState) {
+        let mut scan_chunk = 0usize;
+        let mut scan = copy.to_chunks[0];
+        loop {
+            if scan_chunk >= copy.to_chunks.len() {
+                break;
+            }
+
+            if scan_chunk + 1 == copy.to_chunks.len() {
+                if scan == copy.to_free {
+                    break;
+                }
+            } else {
+                let chunk_end = unsafe { copy.to_chunks[scan_chunk].add(NURSERY_SIZE) };
+                if scan == chunk_end {
+                    scan_chunk += 1;
+                    scan = copy.to_chunks[scan_chunk];
+                    continue;
+                }
+            }
+
+            self.forward_root(copy, unsafe { std::ptr::addr_of_mut!((*scan).next) });
+            scan = unsafe { scan.add(1) };
+        }
+    }
+
+    fn forward_root(&mut self, copy: &mut CopyState, slot: *mut *mut linkedlist::Node) {
+        if slot.is_null() {
+            return;
+        }
+        let old = unsafe { *slot };
+        if old.is_null() {
+            return;
+        }
+        let Some((ci, index)) = Self::chunk_slot(&copy.from_chunks, old) else {
+            return;
+        };
+
+        let bit = 1u64 << (index % 64);
+        if copy.forwarded[ci][index / 64] & bit != 0 {
+            unsafe {
+                *slot = (*old).next;
+            }
+            return;
+        }
+
+        let new = self.copy_alloc(copy);
+        unsafe {
+            (*new).value = (*old).value;
+            (*new).next = (*old).next;
+            (*old).next = new;
+            *slot = new;
+        }
+        copy.forwarded[ci][index / 64] |= bit;
+    }
+
+    fn copy_alloc(&mut self, copy: &mut CopyState) -> *mut linkedlist::Node {
+        if copy.to_free >= copy.to_end {
+            let chunk = self.allocate_chunk();
+            copy.add_to_chunk(chunk);
+        }
+        let node = copy.to_free;
+        copy.to_free = unsafe { copy.to_free.add(1) };
+        node
+    }
+
+    fn chunk_slot(
+        chunks: &[*mut linkedlist::Node],
+        node: *mut linkedlist::Node,
+    ) -> Option<(usize, usize)> {
+        let node_addr = node as usize;
+        for (ci, &base) in chunks.iter().enumerate() {
+            let base_addr = base as usize;
+            let end = base_addr + NURSERY_SIZE * NODE_SIZE;
+            if node_addr >= base_addr && node_addr < end {
+                let slot = unsafe { node.offset_from(base) } as usize;
+                return Some((ci, slot));
+            }
+        }
+        None
+    }
+}
+
+struct CopyState {
+    from_chunks: Vec<*mut linkedlist::Node>,
+    forwarded: Vec<Box<[u64]>>,
+    to_chunks: Vec<*mut linkedlist::Node>,
+    to_free: *mut linkedlist::Node,
+    to_end: *mut linkedlist::Node,
+}
+
+impl CopyState {
+    fn new(from_chunks: Vec<*mut linkedlist::Node>) -> Self {
+        const WORDS: usize = NURSERY_SIZE / 64;
+        let forwarded = (0..from_chunks.len())
+            .map(|_| vec![0u64; WORDS].into_boxed_slice())
+            .collect();
+        CopyState {
+            from_chunks,
+            forwarded,
+            to_chunks: Vec::new(),
+            to_free: std::ptr::null_mut(),
+            to_end: std::ptr::null_mut(),
+        }
+    }
+
+    fn add_to_chunk(&mut self, chunk: *mut linkedlist::Node) {
+        self.to_chunks.push(chunk);
+        self.to_free = chunk;
+        self.to_end = unsafe { chunk.add(NURSERY_SIZE) };
+    }
 }
 
 static mut NURSERY: Nursery = Nursery::uninit();
@@ -219,12 +439,37 @@ static mut NURSERY: Nursery = Nursery::uninit();
 /// `port` head chains enumerate every live node. Registered by the mainloop
 /// via [`set_gc_roots`] after `Storage::refresh_pools`. Zero until set, which
 /// disables collection (the allocator then only bumps / grows).
-static GC_ROOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static GC_ROOTS: AtomicUsize = AtomicUsize::new(0);
+
+pub type NodeRootWalkHook = fn(&mut dyn FnMut(*mut *mut Node));
+
+/// Optional JIT-frame root walker for moving `Node` pointers.
+///
+/// S1/S2 leave this unset; S3 will register a function that visits every
+/// mutable jitframe slot holding a node reference before copying collection
+/// swaps spaces.
+pub static NODE_ROOT_WALK_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+fn copying_collect_enabled() -> bool {
+    #[cfg(test)]
+    if FORCE_COPYING_COLLECT_FOR_TESTS.load(Ordering::Relaxed) {
+        return true;
+    }
+
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var("AHEUI_COPY_COLLECT").as_deref() == Ok("1"))
+}
+
+#[cfg(test)]
+static FORCE_COPYING_COLLECT_FOR_TESTS: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+static COPYING_COLLECT_COUNT_FOR_TESTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Register the live `Storage` as the collection root set. Called once from
 /// the mainloop after the storage pointers are refreshed.
 pub fn set_gc_roots(storage: *mut Storage) {
-    GC_ROOTS.store(storage as usize, std::sync::atomic::Ordering::Relaxed);
+    GC_ROOTS.store(storage as usize, Ordering::Relaxed);
 }
 
 #[inline(always)]
@@ -464,6 +709,60 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    struct NurseryTestGuard {
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl NurseryTestGuard {
+        fn new() -> Self {
+            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            let lock = LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            GC_ROOTS.store(0, Ordering::Relaxed);
+            NODE_ROOT_WALK_HOOK.store(0, Ordering::Relaxed);
+            FORCE_COPYING_COLLECT_FOR_TESTS.store(true, Ordering::Relaxed);
+            COPYING_COLLECT_COUNT_FOR_TESTS.store(0, Ordering::Relaxed);
+            unsafe {
+                (*std::ptr::addr_of_mut!(NURSERY)).reset_for_test();
+            }
+
+            NurseryTestGuard { _lock: lock }
+        }
+    }
+
+    impl Drop for NurseryTestGuard {
+        fn drop(&mut self) {
+            GC_ROOTS.store(0, Ordering::Relaxed);
+            NODE_ROOT_WALK_HOOK.store(0, Ordering::Relaxed);
+            FORCE_COPYING_COLLECT_FOR_TESTS.store(false, Ordering::Relaxed);
+            unsafe {
+                (*std::ptr::addr_of_mut!(NURSERY)).reset_for_test();
+            }
+        }
+    }
+
+    fn assert_chain_in_current_chunks(mut node: *mut Node, expected_len: usize, label: &str) {
+        let chunks = unsafe { &(*std::ptr::addr_of!(NURSERY)).chunks };
+        let mut seen = 0usize;
+        while !node.is_null() {
+            assert!(
+                Nursery::chunk_slot(chunks, node).is_some(),
+                "{label} node {seen} points outside current to-space chunks"
+            );
+            seen += 1;
+            assert!(
+                seen <= expected_len,
+                "{label} chain is longer than expected or cyclic"
+            );
+            node = unsafe { (*node).next };
+        }
+        assert_eq!(seen, expected_len, "{label} chain length changed");
+    }
 
     #[test]
     fn test_storage_init() {
@@ -488,5 +787,58 @@ mod tests {
         assert_eq!(q.__len__(), 2);
         assert_eq!(val_to_i64(&q.pop()), 3);
         assert_eq!(val_to_i64(&q.pop()), 3);
+    }
+
+    #[test]
+    fn test_copying_collect_preserves_deep_stack_and_queue_chains() {
+        let _guard = NurseryTestGuard::new();
+
+        let mut storage = Storage::new();
+        storage.refresh_pools();
+        set_gc_roots(&mut storage as *mut Storage);
+
+        let stack_idx = (0..STORAGE_COUNT)
+            .find(|&idx| idx != VAL_QUEUE && idx != VAL_PORT)
+            .unwrap();
+        const STACK_VALUES: i32 = 300_000;
+        const QUEUE_VALUES: i32 = 270_000;
+
+        for value in 0..STACK_VALUES {
+            storage.stack_mut(stack_idx).push(val_from_i32(value));
+        }
+        assert!(
+            COPYING_COLLECT_COUNT_FOR_TESTS.load(Ordering::Relaxed) > 0,
+            "stack pushes did not trigger copying collection"
+        );
+        assert_chain_in_current_chunks(
+            storage.stack(stack_idx).head,
+            STACK_VALUES as usize,
+            "stack",
+        );
+
+        for value in 0..QUEUE_VALUES {
+            storage.queue_mut().push(val_from_i32(value));
+        }
+        assert!(
+            COPYING_COLLECT_COUNT_FOR_TESTS.load(Ordering::Relaxed) > 1,
+            "queue pushes did not trigger copying collection"
+        );
+        assert_chain_in_current_chunks(storage.queue().head, QUEUE_VALUES as usize + 1, "queue");
+
+        assert_eq!(storage.stack(stack_idx).__len__(), STACK_VALUES as usize);
+        for expected in (0..STACK_VALUES).rev() {
+            assert_eq!(
+                val_to_i64(&storage.stack_mut(stack_idx).pop()),
+                expected as i64
+            );
+        }
+        assert_eq!(storage.stack(stack_idx).__len__(), 0);
+
+        assert_eq!(storage.queue().__len__(), QUEUE_VALUES as usize);
+        for expected in 0..QUEUE_VALUES {
+            assert_eq!(val_to_i64(&storage.queue_mut().pop()), expected as i64);
+        }
+        assert_eq!(storage.queue().__len__(), 0);
+        assert_chain_in_current_chunks(storage.queue().head, 1, "queue sentinel");
     }
 }
