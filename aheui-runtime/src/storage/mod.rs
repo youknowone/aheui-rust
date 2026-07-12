@@ -245,6 +245,22 @@ pub fn free_node(node: *mut linkedlist::Node) {
     }
 }
 
+/// Stable addresses of the nursery bump pointers (`free`, `end`) for the
+/// JIT-emitted inline allocator. The `static NURSERY` never moves, so the
+/// field slot addresses are stable; `grow()` mutates only the contents,
+/// which the inline code re-reads through these addresses each allocation.
+/// `end` is one-past-the-last slot (the nursery_top limit used by `alloc`'s
+/// own `free >= end` guard).
+pub fn nursery_bump_addrs() -> (usize, usize) {
+    unsafe {
+        let p = std::ptr::addr_of_mut!(NURSERY);
+        (
+            std::ptr::addr_of!((*p).free) as usize,
+            std::ptr::addr_of!((*p).end) as usize,
+        )
+    }
+}
+
 /// Allocate a zeroed `Node` without initializing fields.
 /// Used by JIT's GcAllocator to get a node from the shared nursery.
 #[inline(always)]
