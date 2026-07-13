@@ -1114,7 +1114,25 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         state.selected_ref.size = state.selected_ref.size - 1usize;
                         jit_free_node(top_node);
                         let r2 = next.value;
-                        next.value = val_mul(r2, r1);
+                        // D3-on-E1: native smallint mul fast path. Untag, sign-
+                        // extend each operand to 32 bits (so the i64 product can
+                        // never overflow), multiply, and re-tag natively via
+                        // native_tag_small — falling back to val_mul only when an
+                        // operand is a bigint or exceeds the ±2^31 fast range.
+                        let av = r2 >> 1;
+                        let bv = r1 >> 1;
+                        let av32 = (av << 32) >> 32;
+                        let bv32 = (bv << 32) >> 32;
+                        let prod = av32 * bv32;
+                        next.value = if ((r1 & r2) & 1 != 0)
+                            & (av32 == av)
+                            & (bv32 == bv)
+                            & (((prod << 1) >> 1) == prod)
+                        {
+                            jit_retag_small(prod)
+                        } else {
+                            val_mul(r2, r1)
+                        };
                     }
                 }
             }
