@@ -427,6 +427,11 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
     val_from_i32(raw as i32)
 }
 
+#[inline(always)]
+fn jit_retag_small(untagged: i64) -> Val {
+    aheui_runtime::value::val_retag_small(untagged)
+}
+
 // ── Node alloc/free + val comparison — local JIT wrappers ──
 //
 // Local wrappers for functions in aheui_runtime whose `__majit_call_policy_*`
@@ -663,6 +668,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_read_number => residual_int,
         jit_output_flush => residual_void_cannot_raise,
         jit_tag_val => elidable_int_cannot_raise,
+        jit_retag_small => elidable_int_cannot_raise,
         // First MethodCall RHS consumer; lowered via `lower_method_call_value`.
         Program::get_req_size => elidable_int_cannot_raise,
         Program::get_op => elidable_int_cannot_raise,
@@ -1065,7 +1071,12 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         state.selected_ref.size = state.selected_ref.size - 1usize;
                         jit_free_node(top_node);
                         let r2 = next.value;
-                        next.value = val_add(r2, r1);
+                        let sum = (r2 >> 1) + (r1 >> 1);
+                        next.value = if ((r1 & r2) & 1 != 0) & (((sum << 1) >> 1) == sum) {
+                            jit_retag_small(sum)
+                        } else {
+                            val_add(r2, r1)
+                        };
                     }
                 }
             }
@@ -1081,7 +1092,12 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         state.selected_ref.size = state.selected_ref.size - 1usize;
                         jit_free_node(top_node);
                         let r2 = next.value;
-                        next.value = val_sub(r2, r1);
+                        let diff = (r2 >> 1) - (r1 >> 1);
+                        next.value = if ((r1 & r2) & 1 != 0) & (((diff << 1) >> 1) == diff) {
+                            jit_retag_small(diff)
+                        } else {
+                            val_sub(r2, r1)
+                        };
                     }
                 }
             }
