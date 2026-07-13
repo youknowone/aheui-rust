@@ -1243,7 +1243,12 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         state.selected_ref.size = state.selected_ref.size - 1usize;
                         jit_free_node(top_node);
                         let r2 = next.value;
-                        next.value = jit_val_ge(r2, r1);
+                        next.value = if (r1 & r2) & 1 != 0 {
+                            // Both tagged smallints; the tag is order-preserving.
+                            jit_tag_val((r2 >= r1) as i64)
+                        } else {
+                            jit_val_ge(r2, r1)
+                        };
                     }
                 }
             }
