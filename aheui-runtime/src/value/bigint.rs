@@ -22,6 +22,32 @@ const SMALL_MAX: i64 = (1i64 << 62) - 1;
 #[repr(transparent)]
 pub struct Val(i64);
 
+/// Raw tagged-word AND for JIT fast paths.
+///
+/// This compares/ANDs the packed `i64` representation directly. It is correct
+/// only when operands share the small tag, and is not general-purpose `Val`
+/// semantics.
+impl std::ops::BitAnd for Val {
+    type Output = i64;
+
+    #[inline(always)]
+    fn bitand(self, r: Val) -> i64 {
+        self.0 & r.0
+    }
+}
+
+/// Raw tagged-word ordering for JIT fast paths.
+///
+/// This compares the packed `i64` representation directly. It is correct only
+/// when operands share the small tag, and is not general-purpose `Val`
+/// semantics. `PartialEq` is derived over the same representation.
+impl PartialOrd for Val {
+    #[inline(always)]
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(&o.0)
+    }
+}
+
 impl Val {
     #[inline(always)]
     fn from_small(v: i64) -> Self {
