@@ -271,11 +271,13 @@ impl LinkedList for Queue {
         unsafe {
             (*tail).value = value;
         }
-        let new = alloc_node(val_from_i32(0), std::ptr::null_mut());
-        // A copying collect can move the sentinel while allocating `new`;
-        // re-read the root field before storing through it.
-        let tail = self.tail;
+        // Use the new sentinel's temporary `next` field as an explicit keep
+        // root for the old tail. If allocation collects, this is rewritten to
+        // the forwarded tail before `alloc_node` returns.
+        let new = alloc_node(val_from_i32(0), tail);
+        let tail = unsafe { (*new).next };
         unsafe {
+            (*new).next = std::ptr::null_mut();
             (*tail).next = new;
         }
         self.tail = new;

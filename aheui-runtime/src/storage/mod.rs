@@ -25,8 +25,6 @@ pub use linkedlist::{
 
 use crate::aheui::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
 use crate::value::*;
-#[cfg(test)]
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ── Nursery bump allocator for `Node` ────────────────────────────────
@@ -72,14 +70,15 @@ impl Nursery {
     fn alloc(&mut self, value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::Node {
         let mut next = next;
         // When the free list is empty and the current chunk is exhausted,
-        // reclaim dead nodes before growing. `collect` refills `free_list`
-        // from swept slots; only if it recovers nothing do we grow.
+        // evacuate live nodes into to-space before growing. Interpreter
+        // pops still reuse `free_list`; collection discards it because the
+        // moving collector builds a compact current chunk set instead.
         if self.free_list.is_null() && self.free >= self.end {
             // `next` is the node being linked as the new node's successor — the
             // current top of the selected chain. It is live but may be held
             // only in a register (its `setfield(head)` not yet committed to
-            // memory), so pass it as an extra root so `collect` never sweeps
-            // it or the chain hanging off it.
+            // memory), so pass it as an extra root so `collect` forwards it
+            // and the chain hanging off it.
             self.collect(&mut next);
             if self.free_list.is_null() && self.free >= self.end {
                 self.grow();
@@ -161,112 +160,37 @@ impl Nursery {
         *self = Nursery::uninit();
     }
 
-    /// Non-moving mark-sweep collection of the node chunks.
+    /// Copying collection of nursery-resident `Node` chains.
     ///
-    /// Runs from `alloc` when the free list is empty and the current chunk's
-    /// bump region is exhausted, before growing. Marks every node reachable
-    /// from the registered roots (the 28 `pools[*]` head chains plus the
-    /// `Port` chain), then sweeps every unmarked chunk slot onto the free
-    /// list. Nodes are never moved, so pointers held in registers / on the
-    /// stacks stay valid.
+    /// Runs from `alloc` when the interpreter's eager-free list is empty and
+    /// the current bump chunk is exhausted. The collector follows RPython
+    /// incminimark's nursery evacuation shape, anchored at
+    /// `rpython/memory/gc/incminimark.py:2108`
+    /// `trace_and_drag_out_of_nursery`: copy a nursery object, install a
+    /// forwarding pointer in from-space, then trace copied objects until the
+    /// worklist is drained. `Node` is headerless (`value,next`), so the
+    /// forwarding mark lives in a side bitmap per from-space chunk and the
+    /// forwarded address is stored in the old node's `next` field after
+    /// copying.
     ///
-    /// Precondition: the caller guarantees `free_list` is empty, so no slot
-    /// is double-linked. Every chunk is fully bumped at this point (collect
-    /// only fires when the current chunk is exhausted and all prior chunks
-    /// were exhausted before it), so there is no uninitialized tail to skip.
+    /// Root set:
+    /// - every `pools[*].head` chain registered through [`set_gc_roots`],
+    /// - `queue.tail`, because the queue sentinel may be reachable only from
+    ///   the tail field,
+    /// - `port.head`,
+    /// - the allocating call's `&mut next`, which may still be register-held
+    ///   before the caller stores the new head, and
+    /// - every slot reported by [`NODE_ROOT_WALK_HOOK`] for JIT-held node
+    ///   references.
     ///
-    /// Soundness relies on the roots being current: `jit_alloc_node` is a
-    /// `residual_ref` (general heap effect) call, so the optimizer forces all
-    /// pending `setfield(head)` lazy stores to memory before it — every live
-    /// node is therefore reachable from a `pools[*]` / `port` head at collect
-    /// time. A dead node whose head-store is still pending is marked from the
-    /// stale root and merely survives one extra cycle (never a dangling live
-    /// pointer). A node outside every chunk (oversized / foreign origin) is
-    /// treated as always-live: it is walked through but never swept.
+    /// Soundness contract: at can-collect calls, `SAVE_GCREF_REGS` spills all
+    /// JIT-held `Ref`s to `jf_gcmap`-marked jitframe slots, and the hook walks
+    /// those slots before from-space is released. Interpreter helpers never
+    /// hold a node pointer across allocation except for the forwarded `next`
+    /// root passed here and `Queue::push`'s tail, which is passed through
+    /// allocation as an explicit keep root because collection may move it.
     #[cold]
     fn collect(&mut self, keep: &mut *mut linkedlist::Node) {
-        if copying_collect_enabled() {
-            self.collect_copying(keep);
-        } else {
-            self.collect_sweep(*keep);
-        }
-    }
-
-    #[cold]
-    fn collect_sweep(&mut self, keep: *mut linkedlist::Node) {
-        let storage_addr = GC_ROOTS.load(Ordering::Relaxed);
-        if storage_addr == 0 || self.chunks.is_empty() {
-            return;
-        }
-        let storage = unsafe { &*(storage_addr as *const Storage) };
-
-        const WORDS: usize = NURSERY_SIZE / 64;
-        let mut marks: Vec<Box<[u64]>> = (0..self.chunks.len())
-            .map(|_| vec![0u64; WORDS].into_boxed_slice())
-            .collect();
-
-        // Register-resident root: the successor node passed to the allocation
-        // that triggered this collect (its head-store may still be pending).
-        Self::mark_chain(&self.chunks, &mut marks, keep);
-        for i in 0..STORAGE_COUNT {
-            let stackp = storage.pools[i];
-            if !stackp.is_null() {
-                Self::mark_chain(&self.chunks, &mut marks, unsafe { (*stackp).head });
-            }
-        }
-        Self::mark_chain(&self.chunks, &mut marks, storage.port.head);
-
-        for ci in 0..self.chunks.len() {
-            let base = self.chunks[ci];
-            let bitmap = &marks[ci];
-            for slot in 0..NURSERY_SIZE {
-                if bitmap[slot / 64] & (1u64 << (slot % 64)) == 0 {
-                    let node = unsafe { base.add(slot) };
-                    unsafe { (*node).next = self.free_list };
-                    self.free_list = node;
-                }
-            }
-        }
-    }
-
-    /// Mark every chunk-resident node reachable through `next` from `head`.
-    /// Stops early when it re-reaches an already-marked node (chains never
-    /// share nodes in aheui, so this only guards against re-walking). A node
-    /// outside every chunk is walked through without marking.
-    fn mark_chain(
-        chunks: &[*mut linkedlist::Node],
-        marks: &mut [Box<[u64]>],
-        head: *mut linkedlist::Node,
-    ) {
-        let mut node = head;
-        while !node.is_null() {
-            for (ci, &base) in chunks.iter().enumerate() {
-                let end = (base as usize) + NURSERY_SIZE * NODE_SIZE;
-                if node >= base && (node as usize) < end {
-                    let slot = unsafe { node.offset_from(base) } as usize;
-                    let word = &mut marks[ci][slot / 64];
-                    let bit = 1u64 << (slot % 64);
-                    if *word & bit != 0 {
-                        return;
-                    }
-                    *word |= bit;
-                    break;
-                }
-            }
-            node = unsafe { (*node).next };
-        }
-    }
-
-    /// Copying minor collection of nursery-resident `Node` chains.
-    ///
-    /// This follows RPython's incminimark nursery evacuation shape:
-    /// `trace_and_drag_out_of_nursery` copies nursery objects, installs a
-    /// forwarding pointer, then traces copied objects until the worklist is
-    /// drained. `Node` is headerless (`value,next`), so the forwarding state
-    /// lives in a side bitmap per from-space chunk and the forwarded address
-    /// is stored in the old node's `next` field after copying.
-    #[cold]
-    fn collect_copying(&mut self, keep: &mut *mut linkedlist::Node) {
         let storage_addr = GC_ROOTS.load(Ordering::Relaxed);
         if storage_addr == 0 || self.chunks.is_empty() {
             return;
@@ -435,33 +359,19 @@ impl CopyState {
 
 static mut NURSERY: Nursery = Nursery::uninit();
 
-/// Root set for `Nursery::collect`: raw `*mut Storage` whose `pools[*]` /
-/// `port` head chains enumerate every live node. Registered by the mainloop
-/// via [`set_gc_roots`] after `Storage::refresh_pools`. Zero until set, which
-/// disables collection (the allocator then only bumps / grows).
+/// Root set for `Nursery::collect`: raw `*mut Storage` whose pool heads,
+/// queue tail, and port head enumerate interpreter-visible live nodes.
+/// Registered by the mainloop via [`set_gc_roots`] after
+/// `Storage::refresh_pools`. Zero until set, which disables collection (the
+/// allocator then only bumps / grows).
 static GC_ROOTS: AtomicUsize = AtomicUsize::new(0);
 
 pub type NodeRootWalkHook = fn(&mut dyn FnMut(*mut *mut Node));
 
-/// Optional JIT-frame root walker for moving `Node` pointers.
-///
-/// S1/S2 leave this unset; S3 will register a function that visits every
-/// mutable jitframe slot holding a node reference before copying collection
-/// swaps spaces.
+/// Optional JIT-frame root walker for moving `Node` pointers. The JIT
+/// registers a function that visits every mutable jitframe slot holding a node
+/// reference before copying collection swaps spaces.
 pub static NODE_ROOT_WALK_HOOK: AtomicUsize = AtomicUsize::new(0);
-
-fn copying_collect_enabled() -> bool {
-    #[cfg(test)]
-    if FORCE_COPYING_COLLECT_FOR_TESTS.load(Ordering::Relaxed) {
-        return true;
-    }
-
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("AHEUI_COPY_COLLECT").as_deref() == Ok("1"))
-}
-
-#[cfg(test)]
-static FORCE_COPYING_COLLECT_FOR_TESTS: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 static COPYING_COLLECT_COUNT_FOR_TESTS: AtomicUsize = AtomicUsize::new(0);
@@ -725,7 +635,6 @@ mod tests {
 
             GC_ROOTS.store(0, Ordering::Relaxed);
             NODE_ROOT_WALK_HOOK.store(0, Ordering::Relaxed);
-            FORCE_COPYING_COLLECT_FOR_TESTS.store(true, Ordering::Relaxed);
             COPYING_COLLECT_COUNT_FOR_TESTS.store(0, Ordering::Relaxed);
             unsafe {
                 (*std::ptr::addr_of_mut!(NURSERY)).reset_for_test();
@@ -739,7 +648,6 @@ mod tests {
         fn drop(&mut self) {
             GC_ROOTS.store(0, Ordering::Relaxed);
             NODE_ROOT_WALK_HOOK.store(0, Ordering::Relaxed);
-            FORCE_COPYING_COLLECT_FOR_TESTS.store(false, Ordering::Relaxed);
             unsafe {
                 (*std::ptr::addr_of_mut!(NURSERY)).reset_for_test();
             }

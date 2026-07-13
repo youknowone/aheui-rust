@@ -809,8 +809,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // Register the nursery-backed GC allocator for JIT-compiled New() ops.
     // Linked-list nodes (Node) share the interpreter's nursery pool, so
     // compiled `New` allocation must route through this allocator rather
-    // than `libc::malloc` — otherwise nodes freed to the nursery free-list
-    // and nodes malloc'd by compiled code come from different pools.
+    // than `libc::malloc`; the copying collector only knows how to forward
+    // nodes allocated from nursery chunks.
     let gc = Box::new(NurseryGcAllocator::new());
     driver.meta_interp_mut().backend_mut().set_gc_allocator(gc);
     driver.meta_interp_mut().backend_mut().set_new_via_gc(true);
