@@ -649,7 +649,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // residual call below.  Keyed on the getter identity so only this call —
     // not any other helper sharing the `(state.storage_ref, int)` shape — is
     // recognized as a pool read.
-    pool_arrays = { storage_ref => jit_sel_get_ref },
+    pool_arrays = { storage_ref => jit_sel_get_ref -> aheui_runtime::storage::linkedlist::Stack },
     // Struct field type declarations for ref-kind field access.
     // Tells the lowerer to emit getfield_gc_r / setfield_gc_r (ref-kind)
     // instead of _gc_i (int-kind) when accessing these fields through a
@@ -1259,8 +1259,18 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         pop_val
                     };
                     let target = program.get_operand(pc - 1) as usize;
-                    // target may differ from selected → polymorphic push
-                    jit_storage_push(state.pool_ptr, target, r);
+                    if target == VAL_QUEUE || target == VAL_PORT {
+                        // Queue/Port keep the polymorphic residual (tail-append semantics).
+                        jit_storage_push(state.pool_ptr, target, r);
+                    } else {
+                        // Stack: orthodox inline push into pools[target],
+                        // mirroring OP_PUSH into selected_ref.
+                        let target_ref = jit_sel_get_ref(state.storage_ref, target);
+                        let old_head = target_ref.head;
+                        let new_node = jit_alloc_node(r, old_head);
+                        target_ref.head = new_node;
+                        target_ref.size = target_ref.size + 1usize;
+                    }
                     if state.selected == target {
                         state.stacksize += 1;
                     }
