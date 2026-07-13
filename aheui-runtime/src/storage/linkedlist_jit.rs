@@ -81,7 +81,7 @@ pub fn stack_cmp(stack: usize) {
 // (Ref-bank) for node pointers; `val_*_jit` use `i64` (Int-bank) for
 // Val, matching the JIT's register banks.
 
-/// Allocate a Node from the nursery free list.
+/// Allocate a Node from the shared node nursery.
 /// JIT type: `(Val value, usize next) -> usize new_node`.
 #[inline(always)]
 pub fn alloc_node_jit(value: Val, next: usize) -> usize {
