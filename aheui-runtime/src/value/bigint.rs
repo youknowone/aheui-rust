@@ -36,6 +36,20 @@ impl std::ops::BitAnd for Val {
     }
 }
 
+/// Raw tagged-word arithmetic shift for JIT fast paths.
+///
+/// This shifts the packed `i64` representation directly. For small integers,
+/// shifting right by one untags the value. This is not general-purpose `Val`
+/// semantics.
+impl std::ops::Shr<i64> for Val {
+    type Output = i64;
+
+    #[inline(always)]
+    fn shr(self, s: i64) -> i64 {
+        self.0 >> s
+    }
+}
+
 /// Raw tagged-word ordering for JIT fast paths.
 ///
 /// This compares the packed `i64` representation directly. It is correct only
@@ -152,6 +166,14 @@ impl std::fmt::Debug for Val {
 #[inline(always)]
 pub fn val_from_i32(v: i32) -> Val {
     Val::from_small(v as i64)
+}
+
+/// Raw tagged-word retag for JIT fast paths.
+///
+/// The caller guarantees `untagged` is in the small-integer range.
+#[inline(always)]
+pub fn val_retag_small(untagged: i64) -> Val {
+    Val((untagged << 1) | 1)
 }
 
 #[inline(always)]
