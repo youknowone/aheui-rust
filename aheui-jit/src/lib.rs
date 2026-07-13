@@ -808,6 +808,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     greens = [pc, stackok, is_queue, program],
     recover = refresh_state_from_storage,
     switch_dispatch = true,
+    native_tag_small = { jit_retag_small },
 )]
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let mut driver: majit_meta::JitDriver<AheuiState> = majit_meta::JitDriver::new(threshold);
@@ -1261,7 +1262,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         let r2 = next.value;
                         next.value = if (r1 & r2) & 1 != 0 {
                             // Both tagged smallints; the tag is order-preserving.
-                            jit_tag_val((r2 >= r1) as i64)
+                            jit_retag_small((r2 >= r1) as i64)
                         } else {
                             jit_val_ge(r2, r1)
                         };
