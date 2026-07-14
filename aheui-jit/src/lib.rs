@@ -281,6 +281,32 @@ impl AheuiState {
         self.storage.dispatch(self.selected)
     }
 
+    #[cfg(debug_assertions)]
+    fn debug_assert_stack_chain_matches_size(&self, stack_index: usize) {
+        if stack_index == VAL_QUEUE || stack_index == VAL_PORT {
+            return;
+        }
+        let expected = self.storage.len_at(stack_index);
+        let mut actual = 0usize;
+        let mut node = self.storage.dispatch(stack_index).head();
+        while !node.is_null() {
+            actual += 1;
+            debug_assert!(
+                actual <= expected,
+                "stack node chain exceeds size: stack={} walked={} size={}",
+                stack_index,
+                actual,
+                expected,
+            );
+            node = unsafe { (*node).next };
+        }
+        debug_assert_eq!(
+            actual, expected,
+            "stack node chain length differs from size: stack={}",
+            stack_index,
+        );
+    }
+
     fn spdiag_dump_stacks(&self) -> String {
         let mut dump = String::new();
         for i in 0..STORAGE_COUNT {
@@ -316,6 +342,15 @@ impl AheuiState {
         self.pool_ptr = &mut self.storage as *mut Storage as usize;
         self.storage_ref = self.pool_ptr;
         self.refresh_selected_ref();
+        #[cfg(debug_assertions)]
+        {
+            // Recover does not receive the green pc/program, so it cannot name
+            // only the current OP_MOV operand. Walk every ordinary stack; this
+            // includes any OP_MOV target distinct from `selected`.
+            for stack_index in 0..STORAGE_COUNT {
+                self.debug_assert_stack_chain_matches_size(stack_index);
+            }
+        }
         self.stacksize = self.storage.len_at(self.selected) as i64;
     }
 }
@@ -659,6 +694,8 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         aheui_runtime::storage::linkedlist::Node::next => aheui_runtime::storage::linkedlist::Node,
         NodeJit::next => aheui_runtime::storage::linkedlist::Node,
     },
+    struct_allocs = { NodeJit => jit_alloc_node },
+    headerless_structs = { NodeJit },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
         aheui_io::output_write_utf8 => jit_write_utf8,
@@ -732,21 +769,12 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_sel_get_ref => elidable_ref_cannot_raise_wrapped,
         jit_stacksize_delta => elidable_int_cannot_raise,
         jit_effective_stacksize_delta => elidable_int_cannot_raise,
-        // Phase D-2: field-level IR for Stack ops — alloc/free and val
-        // arithmetic registered so the lowerer emits concrete IR ops
-        // instead of silent-skipping unregistered calls.
-        //
-        // Node allocation is a residual ref-returning call tagged
-        // `nursery_alloc_ref`: identical to `residual_ref` (the node stored
-        // into the concrete `selected_ref.head` escapes and is never
-        // virtualized away, so `size` and `head` are always mutated together
-        // on real memory), but the descr EffectInfo carries
-        // `PyreHelperKind::NurseryAlloc` so the dynasm CallR genop emits an
-        // inline nursery bump (RPython malloc_cond shape) with a slowpath
-        // cond-call into `jit_alloc_node`, instead of a full residual `blr`.
-        // Nodes are not freed on the JIT path (`concrete_only_void` drops the
-        // free); the leak is reclaimed by `Nursery::collect`.
-        jit_alloc_node => nursery_alloc_ref,
+        // Phase D-2: field-level IR for Stack ops — free and val arithmetic
+        // registered so the lowerer emits concrete IR ops instead of
+        // silent-skipping unregistered calls. Node allocation now goes through
+        // `struct_allocs = { NodeJit => jit_alloc_node }`: concrete execution
+        // calls `jit_alloc_node`, while tracing emits headerless `New(NodeJit)`
+        // plus field stores.
         // jit_free_node is `concrete_only_void` — the free runs on the
         // concrete path only; the JIT trace omits it. The GNE after the
         // call is a store-scheduling fence for the preceding
@@ -1191,7 +1219,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else {
                     // push: alloc node, link to current head
                     let old_head = state.selected_ref.head;
-                    let new_node = jit_alloc_node(v, old_head);
+                    let new_node = NodeJit {
+                        value: v,
+                        next: old_head,
+                    };
                     state.selected_ref.head = new_node;
                     state.selected_ref.size = state.selected_ref.size + 1usize;
                 }
@@ -1204,7 +1235,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         // dup: push(head.value) — rpaheui linkedlist.py
                         let head = state.selected_ref.head;
                         let top_val = head.value;
-                        let new_node = jit_alloc_node(top_val, head);
+                        let new_node = NodeJit {
+                            value: top_val,
+                            next: head,
+                        };
                         state.selected_ref.head = new_node;
                         state.selected_ref.size = state.selected_ref.size + 1usize;
                     }
@@ -1267,7 +1301,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         // mirroring OP_PUSH into selected_ref.
                         let target_ref = jit_sel_get_ref(state.storage_ref, target);
                         let old_head = target_ref.head;
-                        let new_node = jit_alloc_node(r, old_head);
+                        let new_node = NodeJit {
+                            value: r,
+                            next: old_head,
+                        };
                         target_ref.head = new_node;
                         target_ref.size = target_ref.size + 1usize;
                     }
