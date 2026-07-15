@@ -103,6 +103,13 @@ mod bigint_gc {
             return Box::into_raw(Box::new(value));
         }
 
+        // Collect BEFORE allocating the new bignum: `value` is a Rust-owned
+        // AheuiBigInt (not yet a GC object) so it cannot be swept, and the
+        // just-consumed operands are reclaimable. Bignum allocation is the GC
+        // safepoint for compiled node-virt code — the interpreter push/pop
+        // hooks and the loop merge point are bypassed once the trace is
+        // compiled, so collection would otherwise never fire under --jit.
+        maybe_collect_bigints();
         let external = bigint_external_bytes(&value);
         let raw = majit_gc::gc_sync::gc_op(|gc| gc.alloc_oldgen_typed(tid, BIGINT_PAYLOAD_SIZE));
         if raw.is_null() {
