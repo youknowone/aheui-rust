@@ -382,6 +382,44 @@ pub fn set_gc_roots(storage: *mut Storage) {
     GC_ROOTS.store(storage as usize, Ordering::Relaxed);
 }
 
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+pub fn walk_bigint_root_values(visit: &mut dyn FnMut(&mut Val)) {
+    fn walk_node_chain(mut node: *mut linkedlist::Node, visit: &mut dyn FnMut(&mut Val)) {
+        while !node.is_null() {
+            unsafe {
+                visit(&mut (*node).value);
+                node = (*node).next;
+            }
+        }
+    }
+
+    let storage_addr = GC_ROOTS.load(Ordering::Relaxed);
+    if storage_addr != 0 {
+        let storage = unsafe { &mut *(storage_addr as *mut Storage) };
+        for i in 0..STORAGE_COUNT {
+            if i != VAL_QUEUE && i != VAL_PORT {
+                walk_node_chain(storage.stacks[i].head, visit);
+            }
+        }
+        walk_node_chain(storage.queue.head, visit);
+        walk_node_chain(storage.port.head, visit);
+        visit(&mut storage.port.last_push);
+    }
+
+    let hook_addr = NODE_ROOT_WALK_HOOK.load(Ordering::Relaxed);
+    if hook_addr != 0 {
+        let hook: NodeRootWalkHook = unsafe { std::mem::transmute(hook_addr) };
+        let mut visit_node_slot = |slot: *mut *mut linkedlist::Node| {
+            if !slot.is_null() {
+                walk_node_chain(unsafe { *slot }, visit);
+            }
+        };
+        hook(&mut visit_node_slot);
+    }
+
+    crate::value::walk_bigint_transient_roots(visit);
+}
+
 #[inline(always)]
 pub fn alloc_node(value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::Node {
     unsafe {

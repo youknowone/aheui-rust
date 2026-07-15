@@ -5,7 +5,7 @@
 //! layout so the hot small-int path stays allocation-free:
 //!
 //!   bit 0 = 1  →  small integer, value = word >> 1  (arithmetic shift)
-//!   bit 0 = 0  →  pointer to a leaked `Box<BigInt>` (always aligned)
+//!   bit 0 = 0  →  pointer to a heap `BigInt` (always aligned)
 //!
 //! Small-integer range: −2^62 .. 2^62 − 1 (±4.6 × 10^18).
 
@@ -14,9 +14,22 @@ use malachite_bigint::BigInt;
 #[cfg(all(feature = "num-bigint", not(feature = "malachite-bigint")))]
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
+use std::cell::RefCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const SMALL_MIN: i64 = -(1i64 << 62);
 const SMALL_MAX: i64 = (1i64 << 62) - 1;
+
+pub type AheuiBigInt = BigInt;
+pub type BigIntAllocHook = fn(BigInt) -> *mut BigInt;
+pub type BigIntMaybeCollectHook = fn();
+
+static BIGINT_ALLOC_HOOK: AtomicUsize = AtomicUsize::new(0);
+static BIGINT_MAYBE_COLLECT_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+thread_local! {
+    static BIGINT_TRANSIENT_ROOTS: RefCell<Vec<*mut Val>> = const { RefCell::new(Vec::new()) };
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
@@ -71,7 +84,15 @@ impl Val {
 
     #[inline(always)]
     fn from_big(b: BigInt) -> Self {
-        let ptr = Box::into_raw(Box::new(b));
+        let hook_addr = BIGINT_ALLOC_HOOK.load(Ordering::Relaxed);
+        let ptr = if hook_addr != 0 {
+            let hook: BigIntAllocHook = unsafe { std::mem::transmute(hook_addr) };
+            hook(b)
+        } else {
+            Box::into_raw(Box::new(b))
+        };
+        debug_assert!(!ptr.is_null());
+        debug_assert_eq!(ptr as usize & 1, 0);
         Val(ptr as i64) // aligned pointer, bit 0 = 0
     }
 
@@ -158,6 +179,56 @@ impl std::fmt::Debug for Val {
         } else {
             write!(f, "Val::Big({})", self.as_big())
         }
+    }
+}
+
+pub fn register_bigint_alloc_hook(hook: BigIntAllocHook) {
+    BIGINT_ALLOC_HOOK.store(hook as usize, Ordering::Relaxed);
+}
+
+pub fn register_bigint_maybe_collect_hook(hook: BigIntMaybeCollectHook) {
+    BIGINT_MAYBE_COLLECT_HOOK.store(hook as usize, Ordering::Relaxed);
+}
+
+#[inline(always)]
+pub fn val_bigint_addr(v: &Val) -> Option<usize> {
+    (!v.is_small()).then_some(v.0 as usize)
+}
+
+#[inline]
+pub fn with_bigint_transient_root<R>(value: &mut Val, f: impl FnOnce() -> R) -> R {
+    struct RootGuard;
+
+    impl Drop for RootGuard {
+        fn drop(&mut self) {
+            BIGINT_TRANSIENT_ROOTS.with(|roots| {
+                roots.borrow_mut().pop();
+            });
+        }
+    }
+
+    BIGINT_TRANSIENT_ROOTS.with(|roots| {
+        roots.borrow_mut().push(value as *mut Val);
+    });
+    let _guard = RootGuard;
+    f()
+}
+
+pub fn walk_bigint_transient_roots(visit: &mut dyn FnMut(&mut Val)) {
+    let roots = BIGINT_TRANSIENT_ROOTS.with(|roots| roots.borrow().clone());
+    for root in roots {
+        if !root.is_null() {
+            visit(unsafe { &mut *root });
+        }
+    }
+}
+
+#[inline]
+pub fn maybe_collect_bigints() {
+    let hook_addr = BIGINT_MAYBE_COLLECT_HOOK.load(Ordering::Relaxed);
+    if hook_addr != 0 {
+        let hook: BigIntMaybeCollectHook = unsafe { std::mem::transmute(hook_addr) };
+        hook();
     }
 }
 

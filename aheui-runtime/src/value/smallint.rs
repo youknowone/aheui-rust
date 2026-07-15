@@ -67,3 +67,11 @@ pub fn val_ge(a: &Val, b: &Val) -> bool {
 pub fn val_from_str(s: &str) -> Option<Val> {
     s.parse::<i64>().ok()
 }
+
+#[inline(always)]
+pub fn with_bigint_transient_root<R>(_value: &mut Val, f: impl FnOnce() -> R) -> R {
+    f()
+}
+
+#[inline(always)]
+pub fn maybe_collect_bigints() {}

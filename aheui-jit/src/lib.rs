@@ -39,6 +39,137 @@ pub fn jit_threshold() -> u32 {
         .unwrap_or(JIT_THRESHOLD)
 }
 
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+mod bigint_gc {
+    use aheui_runtime::value::bigint::AheuiBigInt;
+    use majit_gc::GcAllocator;
+    use majit_gc::collector::MiniMarkGC;
+    use majit_gc::trace::TypeInfo;
+    use majit_ir::GcRef;
+    use std::cell::Cell;
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+    const BIGINT_PAYLOAD_SIZE: usize = std::mem::size_of::<AheuiBigInt>();
+    const BIGINT_COLLECT_THRESHOLD: usize = 8 * 1024 * 1024;
+
+    static BIGINT_GC_TYPE_ID: AtomicU32 = AtomicU32::new(u32::MAX);
+    static BIGINT_BYTES_SINCE_COLLECT: AtomicUsize = AtomicUsize::new(0);
+    static GC_GLOBAL_INIT: Once = Once::new();
+    static BIGINT_HOOKS_INIT: Once = Once::new();
+
+    thread_local! {
+        static GC_THREAD_REGISTERED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub fn init() {
+        GC_GLOBAL_INIT.call_once(|| {
+            let tid = if majit_gc::gc_sync::is_initialized() {
+                majit_gc::gc_sync::gc_op(register_bigint_type)
+            } else {
+                let mut gc = MiniMarkGC::new();
+                let tid = register_bigint_type(&mut gc);
+                majit_gc::gc_sync::store_singleton(Box::new(gc));
+                tid
+            };
+            BIGINT_GC_TYPE_ID.store(tid, Ordering::Release);
+            majit_gc::shadow_stack::register_extra_root_walker(walk_aheui_bigint_roots);
+        });
+
+        GC_THREAD_REGISTERED.with(|registered| {
+            if !registered.get() {
+                majit_gc::gc_sync::register_thread();
+                majit_gc::shadow_stack::register_mutator();
+                registered.set(true);
+            }
+        });
+
+        BIGINT_HOOKS_INIT.call_once(|| {
+            aheui_runtime::value::register_bigint_alloc_hook(alloc_bigint_oldgen);
+            aheui_runtime::value::register_bigint_maybe_collect_hook(maybe_collect_bigints);
+        });
+    }
+
+    fn register_bigint_type(gc: &mut dyn GcAllocator) -> u32 {
+        gc.register_type(
+            TypeInfo::with_destructor(BIGINT_PAYLOAD_SIZE, bigint_destructor)
+                .with_external_size(bigint_external_size),
+        )
+    }
+
+    fn alloc_bigint_oldgen(value: AheuiBigInt) -> *mut AheuiBigInt {
+        let tid = BIGINT_GC_TYPE_ID.load(Ordering::Acquire);
+        if tid == u32::MAX {
+            return Box::into_raw(Box::new(value));
+        }
+
+        let external = bigint_external_bytes(&value);
+        let raw = majit_gc::gc_sync::gc_op(|gc| gc.alloc_oldgen_typed(tid, BIGINT_PAYLOAD_SIZE));
+        if raw.is_null() {
+            return Box::into_raw(Box::new(value));
+        }
+
+        unsafe {
+            std::ptr::write(raw.0 as *mut AheuiBigInt, value);
+        }
+        majit_gc::gc_sync::gc_op(|gc| gc.charge_oldgen_external(raw.0, external));
+        BIGINT_BYTES_SINCE_COLLECT.fetch_add(BIGINT_PAYLOAD_SIZE + external, Ordering::Relaxed);
+        raw.0 as *mut AheuiBigInt
+    }
+
+    fn maybe_collect_bigints() {
+        if BIGINT_BYTES_SINCE_COLLECT.load(Ordering::Relaxed) < BIGINT_COLLECT_THRESHOLD {
+            return;
+        }
+        if BIGINT_BYTES_SINCE_COLLECT
+            .compare_exchange(
+                BIGINT_BYTES_SINCE_COLLECT.load(Ordering::Relaxed),
+                0,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            majit_gc::gc_sync::gc_op(|gc| gc.collect_oldgen_nonmoving());
+        }
+    }
+
+    fn walk_aheui_bigint_roots(visit: &mut dyn FnMut(&mut GcRef)) {
+        aheui_runtime::storage::walk_bigint_root_values(&mut |value| {
+            if let Some(addr) = aheui_runtime::value::val_bigint_addr(value) {
+                let mut root = GcRef(addr);
+                visit(&mut root);
+            }
+        });
+    }
+
+    unsafe fn bigint_destructor(addr: usize) {
+        unsafe { std::ptr::drop_in_place(addr as *mut AheuiBigInt) }
+    }
+
+    unsafe fn bigint_external_size(addr: usize) -> usize {
+        bigint_external_bytes(unsafe { &*(addr as *const AheuiBigInt) })
+    }
+
+    fn bigint_external_bytes(value: &AheuiBigInt) -> usize {
+        let bits = value.bits();
+        if bits <= 64 {
+            0
+        } else {
+            ((bits + 63) / 64) as usize * 8
+        }
+    }
+}
+
+#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+mod bigint_gc {
+    pub fn init() {}
+}
+
+pub fn init_gc_subsystem() {
+    bigint_gc::init();
+}
+
 include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));
 
 // ── Imports ──
@@ -190,18 +321,7 @@ fn walk_aheui_jit_node_roots(
         visit_gcref_slot(gcref as *mut majit_ir::GcRef);
     });
 
-    majit_gc::shadow_stack::set_extra_root_walk_kind(
-        majit_gc::shadow_stack::ExtraRootWalkKind::Minor,
-    );
-    majit_gc::walk_active_extra_roots(&mut |gcref| {
-        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
-    });
-    majit_gc::shadow_stack::walk_extra_roots(|gcref| {
-        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
-    });
-    majit_gc::shadow_stack::set_extra_root_walk_kind(
-        majit_gc::shadow_stack::ExtraRootWalkKind::Major,
-    );
+    // This hook enumerates only shadow-stack node-ref slots; majit extra-roots hold aheui bignums, walked separately by MiniMarkGC.
 }
 
 /// Trace-time state for the Aheui JIT.
@@ -839,6 +959,8 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     native_tag_small = { jit_retag_small },
 )]
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
+    init_gc_subsystem();
+
     let mut driver: majit_meta::JitDriver<AheuiState> = majit_meta::JitDriver::new(threshold);
 
     // Register the nursery-backed GC allocator for JIT-compiled New() ops.
@@ -925,44 +1047,43 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             // naive-threshold oracle run ~100x slower than the interp).
             static HENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             if *HENABLED.get_or_init(|| std::env::var_os("MAJIT_HANDOFF").is_some()) {
-            let out = aheui_io::output_total_bytes();
-            // Latch on the first opcode at/after MAJIT_HANDOFF_AT (default
-            // 2085 output bytes), then log the next MAJIT_HANDOFF_CAP (default
-            // 1500) opcodes UNCONDITIONALLY — robust to `out` advancing
-            // unevenly (heavy compute phases span 100s of opcodes per byte).
-            static HLATCH: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            static HCOUNT: std::sync::atomic::AtomicU32 =
-                std::sync::atomic::AtomicU32::new(0);
-            static HAT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-            static HCAP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-            let at: u64 = *HAT.get_or_init(|| {
-                std::env::var("MAJIT_HANDOFF_AT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(2085)
-            });
-            let cap: u32 = *HCAP.get_or_init(|| {
-                std::env::var("MAJIT_HANDOFF_CAP")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(1500)
-            });
-            if !HLATCH.load(std::sync::atomic::Ordering::Relaxed) && out >= at {
-                HLATCH.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-            if HLATCH.load(std::sync::atomic::Ordering::Relaxed) {
-                let n = HCOUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if n < cap {
-                    let op0 = program.get_op(pc);
-                    eprintln!(
-                        "@@@HANDOFF#{n} pc={pc} op={op0} out={out} ss={} sel={}{}",
-                        state.stacksize,
-                        state.selected,
-                        state.spdiag_dump_stacks(),
-                    );
+                let out = aheui_io::output_total_bytes();
+                // Latch on the first opcode at/after MAJIT_HANDOFF_AT (default
+                // 2085 output bytes), then log the next MAJIT_HANDOFF_CAP (default
+                // 1500) opcodes UNCONDITIONALLY — robust to `out` advancing
+                // unevenly (heavy compute phases span 100s of opcodes per byte).
+                static HLATCH: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                static HCOUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+                static HAT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+                static HCAP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+                let at: u64 = *HAT.get_or_init(|| {
+                    std::env::var("MAJIT_HANDOFF_AT")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(2085)
+                });
+                let cap: u32 = *HCAP.get_or_init(|| {
+                    std::env::var("MAJIT_HANDOFF_CAP")
+                        .ok()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(1500)
+                });
+                if !HLATCH.load(std::sync::atomic::Ordering::Relaxed) && out >= at {
+                    HLATCH.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
-            }
+                if HLATCH.load(std::sync::atomic::Ordering::Relaxed) {
+                    let n = HCOUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if n < cap {
+                        let op0 = program.get_op(pc);
+                        eprintln!(
+                            "@@@HANDOFF#{n} pc={pc} op={op0} out={out} ss={} sel={}{}",
+                            state.stacksize,
+                            state.selected,
+                            state.spdiag_dump_stacks(),
+                        );
+                    }
+                }
             }
         }
         // rpaheui/aheui/aheui.py:252
@@ -991,7 +1112,11 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         if spdiag_enabled() {
             let out = aheui_io::output_total_bytes();
             if (1240..=1260).contains(&out) {
-                let snap = format!(" out={out} selected={}{}", state.selected, state.spdiag_dump_stacks());
+                let snap = format!(
+                    " out={out} selected={}{}",
+                    state.selected,
+                    state.spdiag_dump_stacks()
+                );
                 SK_SNAPSHOT.with(|s| *s.borrow_mut() = snap);
             }
             if op == 19 || op == 20 {
