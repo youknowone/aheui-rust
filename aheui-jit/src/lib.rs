@@ -235,6 +235,11 @@ impl majit_gc::GcAllocator for NurseryGcAllocator {
             majit_ir::GcRef(ptr as usize)
         }
     }
+    fn alloc_nursery_headerless(&mut self, size: usize) -> majit_ir::GcRef {
+        // Headerless-aware: aheui's node nursery is collected by its own
+        // copying node GC and handles raw 16B nodes without MiniMark headers.
+        self.alloc_nursery(size)
+    }
     fn alloc_nursery_no_collect(&mut self, size: usize) -> majit_ir::GcRef {
         self.alloc_nursery(size)
     }
