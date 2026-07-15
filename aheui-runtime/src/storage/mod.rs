@@ -406,16 +406,14 @@ pub fn walk_bigint_root_values(visit: &mut dyn FnMut(&mut Val)) {
         visit(&mut storage.port.last_push);
     }
 
-    let hook_addr = NODE_ROOT_WALK_HOOK.load(Ordering::Relaxed);
-    if hook_addr != 0 {
-        let hook: NodeRootWalkHook = unsafe { std::mem::transmute(hook_addr) };
-        let mut visit_node_slot = |slot: *mut *mut linkedlist::Node| {
-            if !slot.is_null() {
-                walk_node_chain(unsafe { *slot }, visit);
-            }
-        };
-        hook(&mut visit_node_slot);
-    }
+    // Bignum roots come only from Storage. The collection safepoint is the
+    // bignum allocation itself (`alloc_bigint_oldgen`), reached at an aheui op
+    // boundary where every live bignum is in a committed Storage node; the
+    // just-computed result is not yet a GC object. Do NOT reuse the untyped JIT
+    // shadow-stack node hook here: its slots can hold Stack*/Storage* pointers,
+    // and blindly following `.next` from those addresses walks arbitrary memory
+    // forever. `Nursery::collect` may use the hook because `forward_root`
+    // range-checks each slot against node chunks before treating it as a Node.
 
     crate::value::walk_bigint_transient_roots(visit);
 }
