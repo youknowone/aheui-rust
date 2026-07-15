@@ -187,9 +187,14 @@ impl LinkedList for Stack {
     //     self.head = node
     //     self.size += 1
     fn push(&mut self, value: Val) {
-        let node = alloc_node(value, self.head);
-        self.head = node;
-        self.size += 1;
+        let rooted = value;
+        let mut root = rooted;
+        with_bigint_transient_root(&mut root, || {
+            let node = alloc_node(rooted, self.head);
+            self.head = node;
+            self.size += 1;
+            maybe_collect_bigints();
+        });
     }
 
     // linkedlist.py:82-83
@@ -212,9 +217,14 @@ impl LinkedList for Stack {
     // linkedlist.py:90-91
     // def _put_value(self, value): self.head.value = value
     fn _put_value(&mut self, value: Val) {
-        unsafe {
-            (*self.head).value = value;
-        }
+        let rooted = value;
+        let mut root = rooted;
+        with_bigint_transient_root(&mut root, || {
+            unsafe {
+                (*self.head).value = rooted;
+            }
+            maybe_collect_bigints();
+        });
     }
 }
 
@@ -267,21 +277,26 @@ impl LinkedList for Queue {
     //     self.tail = new
     //     self.size += 1
     fn push(&mut self, value: Val) {
-        let tail = self.tail;
-        unsafe {
-            (*tail).value = value;
-        }
-        // Use the new sentinel's temporary `next` field as an explicit keep
-        // root for the old tail. If allocation collects, this is rewritten to
-        // the forwarded tail before `alloc_node` returns.
-        let new = alloc_node(val_from_i32(0), tail);
-        let tail = unsafe { (*new).next };
-        unsafe {
-            (*new).next = std::ptr::null_mut();
-            (*tail).next = new;
-        }
-        self.tail = new;
-        self.size += 1;
+        let rooted = value;
+        let mut root = rooted;
+        with_bigint_transient_root(&mut root, || {
+            let tail = self.tail;
+            unsafe {
+                (*tail).value = rooted;
+            }
+            // Use the new sentinel's temporary `next` field as an explicit keep
+            // root for the old tail. If allocation collects, this is rewritten to
+            // the forwarded tail before `alloc_node` returns.
+            let new = alloc_node(val_from_i32(0), tail);
+            let tail = unsafe { (*new).next };
+            unsafe {
+                (*new).next = std::ptr::null_mut();
+                (*tail).next = new;
+            }
+            self.tail = new;
+            self.size += 1;
+            maybe_collect_bigints();
+        });
     }
 
     // linkedlist.py:112-116
@@ -360,10 +375,15 @@ impl LinkedList for Port {
     //     self.size += 1
     //     self.last_push = value
     fn push(&mut self, value: Val) {
-        let node = alloc_node(value, self.head);
-        self.head = node;
-        self.size += 1;
-        self.last_push = value;
+        let rooted = value;
+        let mut root = rooted;
+        with_bigint_transient_root(&mut root, || {
+            let node = alloc_node(rooted, self.head);
+            self.head = node;
+            self.size += 1;
+            self.last_push = rooted;
+            maybe_collect_bigints();
+        });
     }
 
     // linkedlist.py:141-142

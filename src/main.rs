@@ -137,6 +137,9 @@ fn exit_code_to_i32(exit_code: aheuinterpreter::Val) -> i32 {
 }
 
 fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
+    #[cfg(feature = "jit")]
+    aheui_jit::init_gc_subsystem();
+
     let contents = args.input()?;
     let program = compile_program(&contents, args.opt_level);
 
