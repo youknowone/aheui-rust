@@ -107,8 +107,10 @@ fn main() {
                 //       greens=['pc','stackok','is_queue','program'],
                 //       reds=['stacksize','storage','selected'])
                 register_trait_families: Vec::new(),
-                portal: Some(majit_translate::PortalSpec {
-                    name: "mainloop".to_string(),
+                jit_drivers: vec![majit_translate::JitDriverSpec {
+                    // `mainloop` is a crate-root (`lib.rs`) function, so its
+                    // module-qualified identity is the bare name.
+                    portal: majit_translate::CallPath::from_segments(["mainloop"]),
                     greens: vec![
                         "pc".to_string(),
                         "is_queue".to_string(),
@@ -121,7 +123,7 @@ fn main() {
                     ],
                     virtualizables: Vec::new(),
                     red_types: Vec::new(),
-                }),
+                }],
             },
         },
         None,
@@ -162,8 +164,8 @@ fn main() {
     std::fs::write(format!("{out_dir}/opcode_descrs.bin"), &descrs_bin).unwrap();
 
     eprintln!(
-        "[aheui-jit build.rs] canonical analysis: {} opcode arms, {} functions, {} blocks, {} flat ops, generated {} bytes",
-        pipeline.opcode_dispatch.len(),
+        "[aheui-jit build.rs] canonical analysis: {} jitcodes, {} functions, {} blocks, {} flat ops, generated {} bytes",
+        pipeline.jitcodes.len(),
         pipeline.functions.len(),
         pipeline.total_blocks,
         pipeline.total_ops,
