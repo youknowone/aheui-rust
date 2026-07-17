@@ -121,6 +121,7 @@ fn main() {
                         "storage".to_string(),
                         "selected".to_string(),
                     ],
+                    autoreds: false,
                     virtualizables: Vec::new(),
                     red_types: Vec::new(),
                 }],
