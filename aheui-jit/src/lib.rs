@@ -853,7 +853,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // (the macro compares segment-by-segment); use the `lj::*` alias
         // here since the mainloop arms call `lj::stack_push(...)` etc.
         lj::stack_push => residual_void,
-        lj::stack_pop => residual_int,
+        lj::stack_pop => inline_int,
         lj::stack_add => residual_void,
         lj::stack_sub => residual_void,
         lj::stack_mul => residual_void,
@@ -1338,12 +1338,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     if is_queue {
                         lj::queue_pop(state.selected_ref);
                     } else {
-                        // pop: read top, advance head, free node
-                        let top_node = state.selected_ref.head;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
-                        jit_free_node(top_node);
+                        lj::stack_pop(state.selected_ref);
                     }
                 }
             }

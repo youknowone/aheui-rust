@@ -17,6 +17,7 @@
 
 pub mod array;
 pub mod linkedlist;
+#[cfg(feature = "jit")]
 pub mod linkedlist_jit;
 
 pub use linkedlist::{
