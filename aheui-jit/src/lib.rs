@@ -860,7 +860,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::stack_div => residual_void,
         lj::stack_mod => residual_void,
         lj::stack_dup => residual_void,
-        lj::stack_swap => residual_void,
+        lj::stack_swap => inline_void,
         lj::stack_cmp => residual_void,
         lj::queue_push => residual_void,
         lj::queue_pop => residual_int,
@@ -1381,13 +1381,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     if is_queue {
                         lj::queue_swap(state.selected_ref);
                     } else {
-                        // swap: exchange head.value and head.next.value
-                        let node1 = state.selected_ref.head;
-                        let node2 = node1.next;
-                        let v1 = node1.value;
-                        let v2 = node2.value;
-                        node1.value = v2;
-                        node2.value = v1;
+                        lj::stack_swap(state.selected_ref);
                     }
                 }
             }
