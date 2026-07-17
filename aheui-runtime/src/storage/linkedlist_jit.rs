@@ -297,8 +297,26 @@ pub fn queue_push(queue: usize, value: Val) {
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+    },
+)]
 pub fn queue_pop(queue: usize) -> Val {
-    unsafe { (*(queue as *mut Queue)).pop() }
+    let top_node = queue.head;
+    let value = top_node.value;
+    let next = top_node.next;
+    queue.head = next;
+    queue.size = queue.size - 1usize;
+    free_node_jit(top_node);
+    value
 }
 
 #[inline(always)]
@@ -332,8 +350,22 @@ pub fn queue_dup(queue: usize) {
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+)]
 pub fn queue_swap(queue: usize) {
-    unsafe { (*(queue as *mut Queue)).swap() }
+    let node1 = queue.head;
+    let node2 = node1.next;
+    let v1 = node1.value;
+    let v2 = node2.value;
+    node1.value = v2;
+    node2.value = v1;
 }
 
 #[inline(always)]
