@@ -22,8 +22,25 @@ use crate::value::*;
 // ── Stack helpers ────────────────────────────────────────────────────
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
+    headerless_structs = { super::linkedlist::Node, },
+)]
 pub fn stack_push(stack: usize, value: Val) {
-    unsafe { (*(stack as *mut Stack)).push(value) }
+    let old_head = stack.head;
+    let new_node = super::linkedlist::Node {
+        value,
+        next: old_head,
+    };
+    stack.head = new_node;
+    stack.size = stack.size + 1usize;
 }
 
 #[inline(always)]
@@ -168,8 +185,26 @@ pub fn stack_mod(stack: usize) {
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
+    headerless_structs = { super::linkedlist::Node, },
+)]
 pub fn stack_dup(stack: usize) {
-    unsafe { (*(stack as *mut Stack)).dup() }
+    let head = stack.head;
+    let top_val = head.value;
+    let new_node = super::linkedlist::Node {
+        value: top_val,
+        next: head,
+    };
+    stack.head = new_node;
+    stack.size = stack.size + 1usize;
 }
 
 #[inline(always)]

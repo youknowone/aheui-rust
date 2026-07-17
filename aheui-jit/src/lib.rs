@@ -852,14 +852,14 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // The registered path segments must match the call site verbatim
         // (the macro compares segment-by-segment); use the `lj::*` alias
         // here since the mainloop arms call `lj::stack_push(...)` etc.
-        lj::stack_push => residual_void,
+        lj::stack_push => inline_void,
         lj::stack_pop => inline_int,
         lj::stack_add => inline_void,
         lj::stack_sub => inline_void,
         lj::stack_mul => inline_void,
         lj::stack_div => residual_void,
         lj::stack_mod => residual_void,
-        lj::stack_dup => residual_void,
+        lj::stack_dup => inline_void,
         lj::stack_swap => inline_void,
         lj::stack_cmp => inline_void,
         lj::queue_push => residual_void,
@@ -1299,14 +1299,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if is_queue {
                     lj::queue_push(state.selected_ref, v);
                 } else {
-                    // push: alloc node, link to current head
-                    let old_head = state.selected_ref.head;
-                    let new_node = NodeJit {
-                        value: v,
-                        next: old_head,
-                    };
-                    state.selected_ref.head = new_node;
-                    state.selected_ref.size = state.selected_ref.size + 1usize;
+                    lj::stack_push(state.selected_ref, v);
                 }
             }
             OP_DUP => {
@@ -1314,15 +1307,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     if is_queue {
                         lj::queue_dup(state.selected_ref);
                     } else {
-                        // dup: push(head.value) — rpaheui linkedlist.py
-                        let head = state.selected_ref.head;
-                        let top_val = head.value;
-                        let new_node = NodeJit {
-                            value: top_val,
-                            next: head,
-                        };
-                        state.selected_ref.head = new_node;
-                        state.selected_ref.size = state.selected_ref.size + 1usize;
+                        lj::stack_dup(state.selected_ref);
                     }
                 }
             }
