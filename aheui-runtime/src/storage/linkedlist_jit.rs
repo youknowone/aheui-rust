@@ -50,18 +50,111 @@ pub fn stack_pop(stack: usize) -> Val {
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_add => elidable_int,
+        val_retag_small => elidable_int_cannot_raise,
+    },
+    native_tag_small = { val_retag_small },
+)]
 pub fn stack_add(stack: usize) {
-    unsafe { (*(stack as *mut Stack)).add() }
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    let sum = (r2 >> 1) + (r1 >> 1);
+    next.value = if ((r1 & r2) & 1 != 0) & (((sum << 1) >> 1) == sum) {
+        val_retag_small(sum)
+    } else {
+        val_add(r2, r1)
+    };
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_sub => elidable_int,
+        val_retag_small => elidable_int_cannot_raise,
+    },
+    native_tag_small = { val_retag_small },
+)]
 pub fn stack_sub(stack: usize) {
-    unsafe { (*(stack as *mut Stack)).sub() }
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    let diff = (r2 >> 1) - (r1 >> 1);
+    next.value = if ((r1 & r2) & 1 != 0) & (((diff << 1) >> 1) == diff) {
+        val_retag_small(diff)
+    } else {
+        val_sub(r2, r1)
+    };
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_mul => elidable_int,
+        val_retag_small => elidable_int_cannot_raise,
+    },
+    native_tag_small = { val_retag_small },
+)]
 pub fn stack_mul(stack: usize) {
-    unsafe { (*(stack as *mut Stack)).mul() }
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    // Native smallint mul fast path: untag, sign-extend each operand to 32
+    // bits so the i64 product can never overflow, multiply, and re-tag —
+    // falling back to val_mul when an operand is a bigint or exceeds the
+    // ±2^31 fast range.
+    let av = r2 >> 1;
+    let bv = r1 >> 1;
+    let av32 = (av << 32) >> 32;
+    let bv32 = (bv << 32) >> 32;
+    let prod = av32 * bv32;
+    next.value = if ((r1 & r2) & 1 != 0)
+        & (av32 == av)
+        & (bv32 == bv)
+        & (((prod << 1) >> 1) == prod)
+    {
+        val_retag_small(prod)
+    } else {
+        val_mul(r2, r1)
+    };
 }
 
 #[inline(always)]
@@ -99,8 +192,34 @@ pub fn stack_swap(stack: usize) {
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_ge_jit => elidable_int,
+        val_retag_small => elidable_int_cannot_raise,
+    },
+    native_tag_small = { val_retag_small },
+)]
 pub fn stack_cmp(stack: usize) {
-    unsafe { (*(stack as *mut Stack)).cmp() }
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    next.value = if (r1 & r2) & 1 != 0 {
+        val_retag_small((r2 >= r1) as i64)
+    } else {
+        val_ge_jit(r2, r1)
+    };
 }
 
 // ── Node alloc/free + val arithmetic — JIT-callable wrappers ────────
