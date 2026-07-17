@@ -80,8 +80,22 @@ pub fn stack_dup(stack: usize) {
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+)]
 pub fn stack_swap(stack: usize) {
-    unsafe { (*(stack as *mut Stack)).swap() }
+    let node1 = stack.head;
+    let node2 = node1.next;
+    let v1 = node1.value;
+    let v2 = node2.value;
+    node1.value = v2;
+    node2.value = v1;
 }
 
 #[inline(always)]
