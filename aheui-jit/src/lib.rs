@@ -854,14 +854,14 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // here since the mainloop arms call `lj::stack_push(...)` etc.
         lj::stack_push => residual_void,
         lj::stack_pop => inline_int,
-        lj::stack_add => residual_void,
-        lj::stack_sub => residual_void,
-        lj::stack_mul => residual_void,
+        lj::stack_add => inline_void,
+        lj::stack_sub => inline_void,
+        lj::stack_mul => inline_void,
         lj::stack_div => residual_void,
         lj::stack_mod => residual_void,
         lj::stack_dup => residual_void,
         lj::stack_swap => inline_void,
-        lj::stack_cmp => residual_void,
+        lj::stack_cmp => inline_void,
         lj::queue_push => residual_void,
         lj::queue_pop => residual_int,
         lj::queue_add => residual_void,
@@ -1229,20 +1229,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     if is_queue {
                         lj::queue_add(state.selected_ref);
                     } else {
-                        // _get_2_values + _put_value (rpaheui linkedlist.py)
-                        let top_node = state.selected_ref.head;
-                        let r1 = top_node.value;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
-                        jit_free_node(top_node);
-                        let r2 = next.value;
-                        let sum = (r2 >> 1) + (r1 >> 1);
-                        next.value = if ((r1 & r2) & 1 != 0) & (((sum << 1) >> 1) == sum) {
-                            jit_retag_small(sum)
-                        } else {
-                            val_add(r2, r1)
-                        };
+                        lj::stack_add(state.selected_ref);
                     }
                 }
             }
@@ -1251,19 +1238,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     if is_queue {
                         lj::queue_sub(state.selected_ref);
                     } else {
-                        let top_node = state.selected_ref.head;
-                        let r1 = top_node.value;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
-                        jit_free_node(top_node);
-                        let r2 = next.value;
-                        let diff = (r2 >> 1) - (r1 >> 1);
-                        next.value = if ((r1 & r2) & 1 != 0) & (((diff << 1) >> 1) == diff) {
-                            jit_retag_small(diff)
-                        } else {
-                            val_sub(r2, r1)
-                        };
+                        lj::stack_sub(state.selected_ref);
                     }
                 }
             }
@@ -1272,32 +1247,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     if is_queue {
                         lj::queue_mul(state.selected_ref);
                     } else {
-                        let top_node = state.selected_ref.head;
-                        let r1 = top_node.value;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
-                        jit_free_node(top_node);
-                        let r2 = next.value;
-                        // D3-on-E1: native smallint mul fast path. Untag, sign-
-                        // extend each operand to 32 bits (so the i64 product can
-                        // never overflow), multiply, and re-tag natively via
-                        // native_tag_small — falling back to val_mul only when an
-                        // operand is a bigint or exceeds the ±2^31 fast range.
-                        let av = r2 >> 1;
-                        let bv = r1 >> 1;
-                        let av32 = (av << 32) >> 32;
-                        let bv32 = (bv << 32) >> 32;
-                        let prod = av32 * bv32;
-                        next.value = if ((r1 & r2) & 1 != 0)
-                            & (av32 == av)
-                            & (bv32 == bv)
-                            & (((prod << 1) >> 1) == prod)
-                        {
-                            jit_retag_small(prod)
-                        } else {
-                            val_mul(r2, r1)
-                        };
+                        lj::stack_mul(state.selected_ref);
                     }
                 }
             }
@@ -1444,19 +1394,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     if is_queue {
                         lj::queue_cmp(state.selected_ref);
                     } else {
-                        let top_node = state.selected_ref.head;
-                        let r1 = top_node.value;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
-                        jit_free_node(top_node);
-                        let r2 = next.value;
-                        next.value = if (r1 & r2) & 1 != 0 {
-                            // Both tagged smallints; the tag is order-preserving.
-                            jit_retag_small((r2 >= r1) as i64)
-                        } else {
-                            jit_val_ge(r2, r1)
-                        };
+                        lj::stack_cmp(state.selected_ref);
                     }
                 }
             }
