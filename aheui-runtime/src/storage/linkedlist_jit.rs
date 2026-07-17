@@ -12,12 +12,9 @@
 //! storage and not on the inner hot path.
 //!
 //! The arg type is `usize` (raw pointer reinterpreted as integer), not
-//! `*mut Stack` / `*mut Queue`. The `#[jit_interp]` lowerer accepts
-//! integer arguments fed from `int(usize)` state-fields directly, but
-//! it rejects `as *mut Stack` casts at the call site (it only knows
-//! `is_supported_int_cast`), so a typed-pointer signature would cause
-//! every call to silent-skip during trace recording — producing an
-//! empty trace that compiles to a `Label → Jump` infinite loop.
+//! `*mut Stack` / `*mut Queue`. The JIT macro carries stack handles in the
+//! ref register bank and uses explicit `ref(Stack)` metadata on inline helpers
+//! to lower field access without changing the concrete Rust ABI.
 
 use super::linkedlist::{LinkedList, Queue, Stack};
 use crate::value::*;
@@ -30,8 +27,26 @@ pub fn stack_push(stack: usize, value: Val) {
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+    },
+)]
 pub fn stack_pop(stack: usize) -> Val {
-    unsafe { (*(stack as *mut Stack)).pop() }
+    let top_node = stack.head;
+    let value = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    value
 }
 
 #[inline(always)]
