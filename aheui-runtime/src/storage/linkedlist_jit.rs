@@ -345,8 +345,30 @@ pub fn queue_mod(queue: usize) {
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
+    headerless_structs = { super::linkedlist::Node, },
+)]
 pub fn queue_dup(queue: usize) {
-    unsafe { (*(queue as *mut Queue)).dup() }
+    // linkedlist.py:112-116 Queue.dup — duplicate the head node (front). Same
+    // shape as `stack_dup`; the queue's `tail` is untouched. Inlined (not a
+    // residual call) so the head/size mutation is tracked by the optimizer and
+    // a following pop reads the post-dup values instead of a stale cache.
+    let head = queue.head;
+    let top_val = head.value;
+    let new_node = super::linkedlist::Node {
+        value: top_val,
+        next: head,
+    };
+    queue.head = new_node;
+    queue.size = queue.size + 1usize;
 }
 
 #[inline(always)]
