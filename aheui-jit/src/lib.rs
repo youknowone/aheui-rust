@@ -1287,11 +1287,21 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_POP => {
                 if stackok {
-                    if is_queue {
-                        lj::queue_pop(state.selected_ref);
+                    // Bind the popped value (discarded) so the `inline_int`
+                    // pop helpers lower in value position; a discarded
+                    // statement-position `inline_int` call has no lowering and
+                    // aborts the trace. Mirrors OP_POPNUM's pop shape.
+                    let _popped = if is_queue {
+                        lj::queue_pop(state.selected_ref)
                     } else {
-                        lj::stack_pop(state.selected_ref);
-                    }
+                        let top_node = state.selected_ref.head;
+                        let pop_val = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        jit_free_node(top_node);
+                        pop_val
+                    };
                 }
             }
             OP_PUSH => {
