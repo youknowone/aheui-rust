@@ -843,11 +843,12 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         Program::get_op => elidable_int_cannot_raise,
         Program::get_label => elidable_int_cannot_raise,
         Program::get_operand => elidable_int_cannot_raise,
-        // Phase D-1 monomorphic helpers — registered as residual calls
-        // so the lowerer emits a concrete `call_void_args` /
-        // `call_int_args` in the trace IR (function-pointer call) rather
-        // than silent-skipping the storage op. `#[jit_inline]` upgrade
-        // for IR-level body inlining is the next slice.
+        // Phase D-1 monomorphic storage helpers. The hot Stack ops and the
+        // cold queue_pop/queue_swap are `#[jit_inline]` (inline_int /
+        // inline_void), so the lowerer splices their field-level body into
+        // the trace; the remaining ops stay residual — a concrete
+        // `call_void_args` / `call_int_args` — rather than silent-skipping
+        // the storage op.
         //
         // The registered path segments must match the call site verbatim
         // (the macro compares segment-by-segment); use the `lj::*` alias
@@ -924,25 +925,26 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // push/pop are traced methods, so the `self.size` store is an in-trace
     // `setfield_gc` that the optimizer's heapcache uses to invalidate the
     // `len(selected)` getfield (`aheui.py:382 stacksize = len(selected)`).
-    // pyre lowers these mutators to opaque residual calls, which carry an
-    // empty write-set by default — so the `selected_ref.size` getfield that
-    // OP_SEL re-reads is CSE-folded to a single loop-invariant load and a
-    // loop whose exit derives from the stack length never observes the
-    // mutation (spins).  Declaring the `(Stack, size)` field write here
-    // restores that invalidation: `OptHeap::force_from_effectinfo` drops the
-    // cached getfield after each call, the residual analogue of the traced
-    // setfield barrier.  The list is a conservative superset of the
-    // size-changing ops (it includes zero-delta `swap` and the OP_MOV
-    // `storage[target]` family, whose target may alias `selected`); an extra
-    // reload is harmless, a missing invalidation is the spin.
+    // The inline_int / inline_void helpers (stack_push/pop/add/sub/mul/dup/
+    // swap/cmp and queue_pop/swap) splice that `self.size` setfield into the
+    // trace directly, so they reproduce the barrier and need no entry here.
+    // The remaining ops lower to opaque residual calls, which carry an empty
+    // write-set by default — so the `selected_ref.size` getfield that OP_SEL
+    // re-reads is CSE-folded to a single loop-invariant load and a loop whose
+    // exit derives from the stack length never observes the mutation (spins).
+    // Declaring the `(Stack, size)` field write here restores that
+    // invalidation: `OptHeap::force_from_effectinfo` drops the cached getfield
+    // after each call, the residual analogue of the traced setfield barrier.
+    // The list is a conservative superset of the residual size-changing ops
+    // (it includes the OP_MOV `storage[target]` family, whose target may alias
+    // `selected`); an extra reload is harmless, a missing invalidation is the
+    // spin.
     residual_writes = {
         selected_ref.size => [
-            lj::stack_push, lj::stack_pop, lj::stack_add, lj::stack_sub,
-            lj::stack_mul, lj::stack_div, lj::stack_mod, lj::stack_dup,
-            lj::stack_swap, lj::stack_cmp,
-            lj::queue_push, lj::queue_pop, lj::queue_add, lj::queue_sub,
+            lj::stack_div, lj::stack_mod,
+            lj::queue_push, lj::queue_add, lj::queue_sub,
             lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
-            lj::queue_swap, lj::queue_cmp,
+            lj::queue_cmp,
             jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
             jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
             jit_storage_swap, jit_storage_cmp,
