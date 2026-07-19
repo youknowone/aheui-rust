@@ -213,6 +213,57 @@ fn bh_debug_enabled() -> bool {
 /// so a cumulative cap on the node path would spuriously fail.
 const JIT_ALLOC_LIMIT: usize = 256 * 1024 * 1024;
 
+struct AheuiBlackholeAllocator;
+
+#[inline(always)]
+fn raw_store(struct_ptr: i64, offset: usize, value: i64) {
+    unsafe {
+        *((struct_ptr as usize + offset) as *mut i64) = value;
+    }
+}
+
+impl majit_metainterp::resume::BlackholeAllocator for AheuiBlackholeAllocator {
+    fn bh_new(&self, typedescr: &majit_ir::DescrRef) -> i64 {
+        let sd = typedescr
+            .as_size_descr()
+            .expect("aheui bh_new: not a SizeDescr");
+        let size = sd.size();
+        if size <= aheui_runtime::storage::NODE_SIZE {
+            aheui_runtime::storage::alloc_node_raw() as i64
+        } else {
+            let layout = std::alloc::Layout::from_size_align(size, 8).unwrap();
+            unsafe { std::alloc::alloc_zeroed(layout) as i64 }
+        }
+    }
+
+    fn bh_setfield_gc_i(
+        &self,
+        struct_ptr: i64,
+        value: i64,
+        descr_info: &majit_ir::FieldDescrInfo,
+    ) {
+        raw_store(struct_ptr, descr_info.offset, value);
+    }
+
+    fn bh_setfield_gc_r(
+        &self,
+        struct_ptr: i64,
+        value: i64,
+        descr_info: &majit_ir::FieldDescrInfo,
+    ) {
+        raw_store(struct_ptr, descr_info.offset, value);
+    }
+
+    fn bh_setfield_gc_f(
+        &self,
+        struct_ptr: i64,
+        value: i64,
+        descr_info: &majit_ir::FieldDescrInfo,
+    ) {
+        raw_store(struct_ptr, descr_info.offset, value);
+    }
+}
+
 struct NurseryGcAllocator {
     oversized_allocated: usize,
 }
@@ -985,6 +1036,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let gc = Box::new(NurseryGcAllocator::new());
     driver.meta_interp_mut().backend_mut().set_gc_allocator(gc);
     driver.meta_interp_mut().backend_mut().set_new_via_gc(true);
+    // resume.py:1367 — materializes virtual headerless NodeJit nodes on guard-fail deopt; otherwise NullAllocator leaves a NULL head and size/chain desync SIGSEGV.
+    driver.register_blackhole_allocator(AheuiBlackholeAllocator);
 
     // rpaheui/aheui/aheui.py:325: jit.set_param(driver, 'trace_limit', 30000).
     // Scaled for majit's denser IR: the sub-JitCode dispatch + pre-dispatch
