@@ -874,6 +874,8 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // ref(T) state scalar or a local ref binding.
     ref_fields = {
         aheui_runtime::storage::linkedlist::Stack::head => aheui_runtime::storage::linkedlist::Node,
+        aheui_runtime::storage::linkedlist::Queue::head => aheui_runtime::storage::linkedlist::Node,
+        aheui_runtime::storage::linkedlist::Port::head => aheui_runtime::storage::linkedlist::Node,
         aheui_runtime::storage::linkedlist::Node::next => aheui_runtime::storage::linkedlist::Node,
         NodeJit::next => aheui_runtime::storage::linkedlist::Node,
     },
@@ -972,26 +974,78 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_val_ge => elidable_int,
         val_from_i32 => elidable_int_cannot_raise,
     },
-    // Residual storage mutators that advance a `Stack.size`.  rpaheui's
-    // push/pop are traced methods, so the `self.size` store is an in-trace
-    // `setfield_gc` that the optimizer's heapcache uses to invalidate the
-    // `len(selected)` getfield (`aheui.py:382 stacksize = len(selected)`).
+    // Residual storage mutators that change `Stack.size` or its `head` chain
+    // pointer.  Traced push/pop methods emit in-trace `setfield_gc` stores,
+    // which invalidate the matching heapcache entries directly.
     // The inline_int / inline_void helpers (stack_push/pop/add/sub/mul/dup/
     // swap/cmp and queue_pop/swap) splice that `self.size` setfield into the
     // trace directly, so they reproduce the barrier and need no entry here.
     // The remaining ops lower to opaque residual calls, which carry an empty
-    // write-set by default — so the `selected_ref.size` getfield that OP_SEL
-    // re-reads is CSE-folded to a single loop-invariant load and a loop whose
-    // exit derives from the stack length never observes the mutation (spins).
-    // Declaring the `(Stack, size)` field write here restores that
-    // invalidation: `OptHeap::force_from_effectinfo` drops the cached getfield
-    // after each call, the residual analogue of the traced setfield barrier.
-    // The list is a conservative superset of the residual size-changing ops
-    // (it includes the OP_MOV `storage[target]` family, whose target may alias
-    // `selected`); an extra reload is harmless, a missing invalidation is the
-    // spin.
+    // write-set by default.  A size-only declaration caused the pi #29 spin;
+    // omitting `head` caused the fib #32 SIGSEGV when a cached pre-pop node was
+    // reused after the residual call.  Declaring both fields restores the
+    // invalidation performed by traced setfield barriers.  The lists are
+    // conservative supersets because an extra reload is harmless while a
+    // missing invalidation is not.
     residual_writes = {
         selected_ref.size => [
+            lj::stack_div, lj::stack_mod,
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
+            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
+            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
+            jit_storage_swap, jit_storage_cmp,
+            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+        ],
+        // `Storage::pools` type-puns its `*mut Stack` slots over Stack,
+        // Queue, and Port.  All three share size@8, but the JIT's field
+        // descr identity includes the nominal struct type.  Register every
+        // compatible layout so a residual mutation invalidates whichever
+        // getfield descriptor the specialized trace cached.
+        selected_ref.size @ aheui_runtime::storage::linkedlist::Queue => [
+            lj::stack_div, lj::stack_mod,
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
+            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
+            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
+            jit_storage_swap, jit_storage_cmp,
+            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+        ],
+        selected_ref.size @ aheui_runtime::storage::linkedlist::Port => [
+            lj::stack_div, lj::stack_mod,
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
+            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
+            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
+            jit_storage_swap, jit_storage_cmp,
+            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+        ],
+        selected_ref.head => [
+            lj::stack_div, lj::stack_mod,
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
+            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
+            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
+            jit_storage_swap, jit_storage_cmp,
+            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+        ],
+        // See the size aliases above.  Missing one of these nominal descrs
+        // lets a cached pre-call head survive an opaque Queue/Port mutation.
+        selected_ref.head @ aheui_runtime::storage::linkedlist::Queue => [
+            lj::stack_div, lj::stack_mod,
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
+            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
+            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
+            jit_storage_swap, jit_storage_cmp,
+            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+        ],
+        selected_ref.head @ aheui_runtime::storage::linkedlist::Port => [
             lj::stack_div, lj::stack_mod,
             lj::queue_push, lj::queue_add, lj::queue_sub,
             lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
