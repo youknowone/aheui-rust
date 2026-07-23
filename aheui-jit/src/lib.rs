@@ -916,7 +916,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::stack_dup => inline_void,
         lj::stack_swap => inline_void,
         lj::stack_cmp => inline_void,
-        lj::queue_push => residual_void,
+        lj::queue_push => inline_void,
         lj::queue_pop => inline_int,
         lj::queue_add => residual_void,
         lj::queue_sub => residual_void,

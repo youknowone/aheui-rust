@@ -292,8 +292,37 @@ pub fn val_ge_jit(a: Val, b: Val) -> Val {
 // ── Queue helpers ────────────────────────────────────────────────────
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        alloc_node_jit => nursery_alloc_ref,
+        val_from_i32 => elidable_int_cannot_raise,
+    },
+)]
 pub fn queue_push(queue: usize, value: Val) {
-    unsafe { (*(queue as *mut Queue)).push(value) }
+    // linkedlist.py:103-110 Queue.push — write the value into the current tail
+    // (dummy) node and append a fresh null-next sentinel as the new tail.
+    // Allocate the sentinel FIRST and read `tail` only AFTER, so no Node ref is
+    // held across the collecting alloc: `alloc_node_jit` can collect on the
+    // concrete path, and `collect` forwards the in-memory `queue.tail` slot, so
+    // a post-alloc read yields the forwarded pointer. Passing `next = 0` (null)
+    // lets the inline nursery bump init `next@8` from the arg, avoiding a
+    // null-ref store the IR cannot lower — do not restore an
+    // `alloc_node_jit(_, tail)` next-arg (that reintroduces the keep-root dance
+    // this ordering replaces).
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = value;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
 }
 
 #[inline(always)]
