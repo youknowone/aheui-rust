@@ -348,19 +348,157 @@ pub fn queue_pop(queue: usize) -> Val {
     value
 }
 
+// Queue arithmetic (linkedlist.py:99-127): _get_2_values pops two front values,
+// _put_value pushes the result at the tail. Inlined as queue_pop x2 + the native
+// smallint fast path (mirroring stack_add/sub/mul) + the queue_push tail-sentinel
+// append. The result Val is not a Node, so holding it across the sentinel alloc's
+// collect is safe (node-collect never moves values); the popped nodes are freed
+// before the alloc. `maybe_collect_bigints` is dropped, matching the inlined
+// stack arithmetic.
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_add => elidable_int,
+        val_retag_small => elidable_int_cannot_raise,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+    native_tag_small = { val_retag_small },
+)]
 pub fn queue_add(queue: usize) {
-    unsafe { (*(queue as *mut Queue)).add() }
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let sum = (r2 >> 1) + (r1 >> 1);
+    let result = if ((r1 & r2) & 1 != 0) & (((sum << 1) >> 1) == sum) {
+        val_retag_small(sum)
+    } else {
+        val_add(r2, r1)
+    };
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_sub => elidable_int,
+        val_retag_small => elidable_int_cannot_raise,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+    native_tag_small = { val_retag_small },
+)]
 pub fn queue_sub(queue: usize) {
-    unsafe { (*(queue as *mut Queue)).sub() }
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let diff = (r2 >> 1) - (r1 >> 1);
+    let result = if ((r1 & r2) & 1 != 0) & (((diff << 1) >> 1) == diff) {
+        val_retag_small(diff)
+    } else {
+        val_sub(r2, r1)
+    };
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_mul => elidable_int,
+        val_retag_small => elidable_int_cannot_raise,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+    native_tag_small = { val_retag_small },
+)]
 pub fn queue_mul(queue: usize) {
-    unsafe { (*(queue as *mut Queue)).mul() }
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let av = r2 >> 1;
+    let bv = r1 >> 1;
+    let av32 = (av << 32) >> 32;
+    let bv32 = (bv << 32) >> 32;
+    let prod = av32 * bv32;
+    let result = if ((r1 & r2) & 1 != 0)
+        & (av32 == av)
+        & (bv32 == bv)
+        & (((prod << 1) >> 1) == prod)
+    {
+        val_retag_small(prod)
+    } else {
+        val_mul(r2, r1)
+    };
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
 }
 
 #[inline(always)]
@@ -420,8 +558,48 @@ pub fn queue_swap(queue: usize) {
 }
 
 #[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_ge_jit => elidable_int,
+        val_retag_small => elidable_int_cannot_raise,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+    native_tag_small = { val_retag_small },
+)]
 pub fn queue_cmp(queue: usize) {
-    unsafe { (*(queue as *mut Queue)).cmp() }
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let result = if (r1 & r2) & 1 != 0 {
+        val_retag_small((r2 >= r1) as i64)
+    } else {
+        val_ge_jit(r2, r1)
+    };
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
 }
 
 #[cfg(test)]
