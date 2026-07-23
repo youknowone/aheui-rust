@@ -1055,6 +1055,20 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
             jit_storage_swap, jit_storage_cmp,
             jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
         ],
+        // `tail` exists only on Queue (the dummy-tail sentinel append target).
+        // An opaque residual push/arith that appends at the tail must invalidate
+        // a cached `queue.tail`, else a following inlined queue op reads the
+        // stale sentinel and appends off the live chain, orphaning nodes
+        // (chainlen < size + 1) until a later pop dereferences a null head.
+        selected_ref.tail @ aheui_runtime::storage::linkedlist::Queue => [
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
+            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
+            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
+            jit_storage_swap, jit_storage_cmp,
+            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+        ],
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
     //
