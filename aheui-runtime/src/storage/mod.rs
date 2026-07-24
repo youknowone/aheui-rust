@@ -42,6 +42,29 @@ const NURSERY_SIZE: usize = 256 * 1024;
 /// Max nursery chunks: 64 chunks × 4MB = 256MB.
 const MAX_NURSERY_CHUNKS: usize = 64;
 
+/// Chunk limit, overridable via `AHEUI_NURSERY_CHUNKS` (analog of
+/// `PYPY_GC_NURSERY` sizing) to run programs that outgrow the 256MB default.
+/// Read once; defaults to `MAX_NURSERY_CHUNKS`.
+fn max_nursery_chunks() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("AHEUI_NURSERY_CHUNKS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(MAX_NURSERY_CHUNKS)
+    })
+}
+
+/// When `AHEUI_GC_DISABLE` is set, the nursery grows monotonically instead of
+/// running the moving collection (analog of `gc.disable()`); the bump allocator
+/// never evacuates, so `Node` addresses stay stable for the whole run. Read
+/// once; defaults to collection enabled.
+fn gc_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| std::env::var_os("AHEUI_GC_DISABLE").is_some())
+}
+
 struct Nursery {
     free: *mut linkedlist::Node,      // bump pointer — next slot to allocate
     end: *mut linkedlist::Node,       // one past the last slot in current chunk
@@ -80,7 +103,9 @@ impl Nursery {
             // only in a register (its `setfield(head)` not yet committed to
             // memory), so pass it as an extra root so `collect` forwards it
             // and the chain hanging off it.
-            self.collect(&mut next);
+            if !gc_disabled() {
+                self.collect(&mut next);
+            }
             if self.free_list.is_null() && self.free >= self.end {
                 self.grow();
             }
@@ -123,14 +148,14 @@ impl Nursery {
     }
 
     fn allocate_chunk(&mut self) -> *mut linkedlist::Node {
+        let limit = max_nursery_chunks();
         self.chunk_count += 1;
-        if self.chunk_count > MAX_NURSERY_CHUNKS {
+        if self.chunk_count > limit {
             eprintln!(
                 "[nursery] allocation limit reached ({} chunks × {}KB = {}MB)",
-                MAX_NURSERY_CHUNKS,
+                limit,
                 NURSERY_SIZE * std::mem::size_of::<linkedlist::Node>() / 1024,
-                MAX_NURSERY_CHUNKS * NURSERY_SIZE * std::mem::size_of::<linkedlist::Node>()
-                    / (1024 * 1024),
+                limit * NURSERY_SIZE * std::mem::size_of::<linkedlist::Node>() / (1024 * 1024),
             );
             std::process::exit(99);
         }
