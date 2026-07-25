@@ -296,6 +296,22 @@ impl majit_gc::GcAllocator for NurseryGcAllocator {
         // copying node GC and handles raw 16B nodes without MiniMark headers.
         self.alloc_nursery(size)
     }
+    /// Serves the metainterp's jitcode tracer, which runs `BC_NEW` for a
+    /// `Node` while holding raw node pointers in its own register bank. That
+    /// bank is in no root set, so the nursery has to grow rather than evacuate.
+    fn alloc_nursery_headerless_no_collect(&mut self, size: usize) -> majit_ir::GcRef {
+        if size <= aheui_runtime::storage::NODE_SIZE {
+            let node = aheui_runtime::storage::alloc_node_raw_no_collect();
+            majit_ir::GcRef(node as usize)
+        } else {
+            // Oversized is a plain `alloc_zeroed`, which does not collect
+            // either. It is also outside the node nursery and therefore
+            // invisible to the copying collector, which is only sound while
+            // every headerless struct fits a `Node`; a larger one would have to
+            // grow the nursery's own allocator instead.
+            self.alloc_nursery(size)
+        }
+    }
     fn alloc_nursery_no_collect(&mut self, size: usize) -> majit_ir::GcRef {
         self.alloc_nursery(size)
     }

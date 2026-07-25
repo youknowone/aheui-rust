@@ -146,6 +146,34 @@ impl Nursery {
                 self.grow();
             }
         }
+        self.take_node(value, next)
+    }
+
+    /// [`Self::alloc`] for a caller that cannot survive a collection: grow
+    /// instead of evacuating.
+    ///
+    /// The metainterp's jitcode tracer runs `BC_NEW` for a `Node` while raw
+    /// node pointers sit in its own register bank — the chain head an earlier
+    /// `getfield` read, which the `setfield` after the `new` links up. That
+    /// bank is in no root set, and unlike [`Self::alloc`] there is no `next`
+    /// to pass as a keep root, so a moving collection here would leave the
+    /// tracer holding from-space addresses.
+    #[inline(always)]
+    fn alloc_no_collect(
+        &mut self,
+        value: Val,
+        next: *mut linkedlist::Node,
+    ) -> *mut linkedlist::Node {
+        if self.free_list.is_null() && self.free >= self.end {
+            self.grow();
+        }
+        self.take_node(value, next)
+    }
+
+    /// Hand out a node from the free list, else from the bump region. The
+    /// caller guarantees one of the two has room.
+    #[inline(always)]
+    fn take_node(&mut self, value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::Node {
         if !self.free_list.is_null() {
             let node = self.free_list;
             unsafe {
@@ -742,6 +770,17 @@ pub fn nursery_bump_addrs() -> (usize, usize) {
 #[inline(always)]
 pub fn alloc_node_raw() -> *mut linkedlist::Node {
     alloc_node(val_from_i32(0), std::ptr::null_mut())
+}
+
+/// [`alloc_node_raw`] for a caller that must not collect — the nursery grows
+/// instead of evacuating. Serves the metainterp's jitcode tracer, which holds
+/// raw node pointers outside every root set while it runs `BC_NEW`.
+#[inline(always)]
+pub fn alloc_node_raw_no_collect() -> *mut linkedlist::Node {
+    unsafe {
+        let p = std::ptr::addr_of_mut!(NURSERY);
+        (*p).alloc_no_collect(val_from_i32(0), std::ptr::null_mut())
+    }
 }
 
 fn init_nursery() {
