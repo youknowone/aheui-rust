@@ -416,6 +416,7 @@ mod tests {
 
     #[test]
     fn test_stack_basic() {
+        let _lock = crate::storage::nursery_test_lock();
         let mut s = Stack::new();
         s.push(val_from_i32(10));
         s.push(val_from_i32(20));
@@ -425,6 +426,7 @@ mod tests {
 
     #[test]
     fn test_stack_add() {
+        let _lock = crate::storage::nursery_test_lock();
         let mut s = Stack::new();
         s.push(val_from_i32(10));
         s.push(val_from_i32(3));
@@ -436,6 +438,7 @@ mod tests {
 
     #[test]
     fn test_stack_dup_swap() {
+        let _lock = crate::storage::nursery_test_lock();
         let mut s = Stack::new();
         s.push(val_from_i32(5));
         s.dup();
@@ -448,6 +451,7 @@ mod tests {
 
     #[test]
     fn test_queue_basic() {
+        let _lock = crate::storage::nursery_test_lock();
         let mut q = Queue::new();
         q.push(val_from_i32(1));
         q.push(val_from_i32(2));
@@ -458,6 +462,7 @@ mod tests {
 
     #[test]
     fn test_queue_add() {
+        let _lock = crate::storage::nursery_test_lock();
         let mut q = Queue::new();
         q.push(val_from_i32(10));
         q.push(val_from_i32(3));
@@ -469,6 +474,7 @@ mod tests {
 
     #[test]
     fn test_port_dup() {
+        let _lock = crate::storage::nursery_test_lock();
         let mut p = Port::new();
         p.push(val_from_i32(5));
         p.push(val_from_i32(10));

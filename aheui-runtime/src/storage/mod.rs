@@ -783,6 +783,20 @@ pub fn alloc_node_raw_no_collect() -> *mut linkedlist::Node {
     }
 }
 
+/// Serializes every test that touches the process-global `NURSERY`.
+///
+/// `Nursery::reset_for_test` frees every chunk, so a test holding this lock
+/// deallocates nodes any concurrently running test still points at. Tests run
+/// on parallel threads by default, so each one that allocates a `Node` — even
+/// indirectly through `Stack` / `Queue` / `Port` / `Storage` — has to hold it.
+#[cfg(test)]
+pub(crate) fn nursery_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn init_nursery() {
     unsafe {
         let p = std::ptr::addr_of_mut!(NURSERY);
@@ -1075,7 +1089,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::sync::MutexGuard;
 
     struct NurseryTestGuard {
         _lock: MutexGuard<'static, ()>,
@@ -1083,11 +1097,7 @@ mod tests {
 
     impl NurseryTestGuard {
         fn new() -> Self {
-            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-            let lock = LOCK
-                .get_or_init(|| Mutex::new(()))
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let lock = super::nursery_test_lock();
 
             GC_ROOTS.store(0, Ordering::Relaxed);
             NODE_ROOT_WALK_HOOK.store(0, Ordering::Relaxed);
@@ -1130,6 +1140,7 @@ mod tests {
 
     #[test]
     fn test_storage_init() {
+        let _lock = super::nursery_test_lock();
         let storage = Storage::new();
         assert_eq!(storage.stacks.len(), STORAGE_COUNT);
         assert_eq!(storage.stack(0).__len__(), 0);
@@ -1140,6 +1151,7 @@ mod tests {
     #[test]
     fn test_storage_queue_dispatch() {
         // Queue polymorphic dispatch goes through LinkedList trait.
+        let _lock = super::nursery_test_lock();
         let mut storage = Storage::new();
         let q = storage.dispatch_mut(VAL_QUEUE);
         q.push(val_from_i32(1));
