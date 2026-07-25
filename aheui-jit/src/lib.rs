@@ -91,10 +91,10 @@ mod bigint_gc {
     }
 
     fn register_bigint_type(gc: &mut dyn GcAllocator) -> u32 {
-        gc.register_type(
-            TypeInfo::with_destructor(BIGINT_PAYLOAD_SIZE, bigint_destructor)
-                .with_external_size(bigint_external_size),
-        )
+        gc.register_type(TypeInfo::with_destructor(
+            BIGINT_PAYLOAD_SIZE,
+            bigint_destructor,
+        ))
     }
 
     fn alloc_bigint_oldgen(value: AheuiBigInt) -> *mut AheuiBigInt {
@@ -119,7 +119,9 @@ mod bigint_gc {
         unsafe {
             std::ptr::write(raw.0 as *mut AheuiBigInt, value);
         }
-        majit_gc::gc_sync::gc_op(|gc| gc.charge_oldgen_external(raw.0, external));
+        // The limb `Vec` lives outside the GC heap, so it does not enter the
+        // collector's own major-collection threshold; `BIGINT_BYTES_SINCE_COLLECT`
+        // is what accounts for it and drives `maybe_collect_bigints`.
         BIGINT_BYTES_SINCE_COLLECT.fetch_add(BIGINT_PAYLOAD_SIZE + external, Ordering::Relaxed);
         raw.0 as *mut AheuiBigInt
     }
@@ -152,10 +154,6 @@ mod bigint_gc {
 
     unsafe fn bigint_destructor(addr: usize) {
         unsafe { std::ptr::drop_in_place(addr as *mut AheuiBigInt) }
-    }
-
-    unsafe fn bigint_external_size(addr: usize) -> usize {
-        bigint_external_bytes(unsafe { &*(addr as *const AheuiBigInt) })
     }
 
     fn bigint_external_bytes(value: &AheuiBigInt) -> usize {
