@@ -465,48 +465,35 @@ impl AheuiState {
         self.storage.dispatch(self.selected)
     }
 
-    #[cfg(debug_assertions)]
-    fn debug_assert_stack_chain_matches_size(&self, stack_index: usize) {
-        if stack_index == VAL_QUEUE || stack_index == VAL_PORT {
-            return;
-        }
-        let expected = self.storage.len_at(stack_index);
-        let mut actual = 0usize;
-        let mut node = self.storage.dispatch(stack_index).head();
-        while !node.is_null() {
-            actual += 1;
-            debug_assert!(
-                actual <= expected,
-                "stack node chain exceeds size: stack={} walked={} size={}",
-                stack_index,
-                actual,
-                expected,
-            );
-            node = unsafe { (*node).next };
-        }
-        debug_assert_eq!(
-            actual, expected,
-            "stack node chain length differs from size: stack={}",
-            stack_index,
-        );
-    }
-
     fn spdiag_dump_stacks(&self) -> String {
+        // The queue and the port are two of the three chains the collector
+        // forwards explicitly, so a dump that skips them cannot show whether a
+        // root moved. Print every storage, and cap the walk high enough that a
+        // one-node discrepancy is visible rather than truncated away.
+        let limit = std::env::var("MAJIT_SPDIAG_NODES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(64);
         let mut dump = String::new();
         for i in 0..STORAGE_COUNT {
-            if self.storage.len_at(i) == 0 {
-                continue;
-            }
             let mut p = self.storage.dispatch(i).head() as *const u8;
             let mut vals: Vec<i64> = Vec::new();
-            while !p.is_null() && vals.len() < 8 {
+            while !p.is_null() && vals.len() < limit {
                 let raw = unsafe { *(p as *const i64) };
                 // bigint Val: small = (v<<1)|1; smallint Val: raw == v.
                 vals.push(if raw & 1 != 0 { raw >> 1 } else { raw });
                 p = unsafe { *(p.add(8) as *const *const u8) };
             }
-            dump.push_str(&format!(" stack[{i}]={vals:?}"));
+            dump.push_str(&format!(
+                " stack[{i}](size={}){vals:?}",
+                self.storage.len_at(i)
+            ));
         }
+        dump.push_str(&format!(
+            " queue.tail={:?} port.head={:?}",
+            self.storage.queue.tail,
+            self.storage.port.head,
+        ));
         dump
     }
 
@@ -528,11 +515,15 @@ impl AheuiState {
         #[cfg(debug_assertions)]
         {
             // Recover does not receive the green pc/program, so it cannot name
-            // only the current OP_MOV operand. Walk every ordinary stack; this
-            // includes any OP_MOV target distinct from `selected`.
-            for stack_index in 0..STORAGE_COUNT {
-                self.debug_assert_stack_chain_matches_size(stack_index);
-            }
+            // only the current OP_MOV operand. Check every storage; this
+            // includes any OP_MOV target distinct from `selected`, and the
+            // queue and port, whose chains the collector forwards as roots of
+            // their own.
+            debug_assert!(
+                self.storage.check_chains().is_none(),
+                "{}",
+                self.storage.check_chains().unwrap_or_default(),
+            );
         }
         self.stacksize = self.storage.len_at(self.selected) as i64;
     }

@@ -56,6 +56,28 @@ fn max_nursery_chunks() -> usize {
     })
 }
 
+/// Whether the `AHEUI_GC_LOG` diagnostics are on. Read once: the allocation
+/// path consults this per node, and `std::env::var_os` scans the environment
+/// on every call.
+fn gc_log_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("AHEUI_GC_LOG").is_some())
+}
+
+/// Perform at most this many copying collections, then fall back to growing.
+/// Bisecting it names the first collection after which a run diverges, which
+/// separates "the collector corrupts state" from "collection timing exposes
+/// something else". Unset = unlimited.
+fn max_collects() -> usize {
+    static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("AHEUI_GC_MAX_COLLECTS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(usize::MAX)
+    })
+}
+
 /// When `AHEUI_GC_DISABLE` is set, the nursery grows monotonically instead of
 /// running the moving collection (analog of `gc.disable()`); the bump allocator
 /// never evacuates, so `Node` addresses stay stable for the whole run. Read
@@ -72,6 +94,14 @@ struct Nursery {
     chunk_count: usize,               // number of allocated chunks (safety limit)
     chunks: Vec<*mut linkedlist::Node>, // base pointer of every allocated chunk
     spare_chunk: *mut linkedlist::Node, // to-space for the next copying collect
+    quarantined: Vec<*mut linkedlist::Node>, // diagnostic: retained from-space
+    collected: bool,                    // a copying collection has run at least once
+    collect_count: usize,               // collections performed (see `max_collects`)
+    /// `chunks` as `(start, end)` byte ranges, sorted by start, so membership
+    /// is a binary search. `free_node` asks on every pop, and under
+    /// `--no-jit` / `AHEUI_GC_DISABLE` nothing is ever retired so `chunks`
+    /// grows to dozens — a linear scan there is a hot-path regression.
+    chunk_ranges: Vec<(usize, usize)>,
 }
 
 impl Nursery {
@@ -83,6 +113,10 @@ impl Nursery {
             chunk_count: 0,
             chunks: Vec::new(),
             spare_chunk: std::ptr::null_mut(),
+            quarantined: Vec::new(),
+            collected: false,
+            collect_count: 0,
+            chunk_ranges: Vec::new(),
         }
     }
 
@@ -104,7 +138,9 @@ impl Nursery {
             // memory), so pass it as an extra root so `collect` forwards it
             // and the chain hanging off it.
             if !gc_disabled() {
+                gc_log_check_chains("before");
                 self.collect(&mut next);
+                gc_log_check_chains("after");
             }
             if self.free_list.is_null() && self.free >= self.end {
                 self.grow();
@@ -117,6 +153,7 @@ impl Nursery {
                 (*node).value = value;
                 (*node).next = next;
             }
+            self.debug_check_allocated(node, "free_list");
             return node;
         }
         let node = self.free;
@@ -125,12 +162,65 @@ impl Nursery {
             (*node).next = next;
             self.free = node.add(1);
         }
+        self.debug_check_allocated(node, "bump");
         node
+    }
+
+    /// Report an allocation that fell outside every live chunk. The collector
+    /// only recognizes nodes inside `chunks`, so a node handed out from
+    /// anywhere else is invisible to it: `forward_root` refuses to trace
+    /// through it and the link past it survives a collection unforwarded.
+    #[inline(always)]
+    fn debug_check_allocated(&self, node: *mut linkedlist::Node, source: &str) {
+        if !gc_log_enabled() {
+            return;
+        }
+        if !self.owns(node) {
+            let spare = Self::chunk_byte_offset(std::slice::from_ref(&self.spare_chunk), node);
+            eprintln!(
+                "@@@GC   ALLOC-OUTSIDE-CHUNKS source={source} node={node:?} spare={}",
+                spare.is_some()
+            );
+        }
     }
 
     #[inline(always)]
     fn free_node(&mut self, node: *mut linkedlist::Node) {
         if node.is_null() {
+            return;
+        }
+        // Only a node in the live chunk set may be recycled. A collection
+        // evacuates every live node into to-space and retires from-space as
+        // `spare_chunk`, but a caller can still be holding the pre-collection
+        // address of a node it popped; freeing that puts a dead from-space
+        // address on the free list, and the next `alloc` hands it back as a
+        // live node. The collector then cannot see it — `forward_root`
+        // range-checks against the chunk set — so the link past it survives
+        // the next collection unforwarded, and if the address is in
+        // `spare_chunk` the following collection allocates its copies right on
+        // top of it. A node outside the chunk set is already dead, so dropping
+        // it here loses nothing.
+        //
+        // The test is unconditional. Nodes outside the chunk set also reach
+        // here before the first collection has run — the jitcode tracer's
+        // `BC_NEW` allocates a `Node` with a plain host `alloc_zeroed`
+        // (`pyjitpl/dispatch.rs` `BC_NEW`) rather than through the nursery —
+        // so gating it on having collected lets those through. Membership is a
+        // binary search over `chunk_ranges` because this runs on every pop,
+        // and with `--no-jit` or `AHEUI_GC_DISABLE` nothing is ever retired,
+        // so `chunks` grows to dozens.
+        if !self.owns(node) {
+            if gc_log_enabled() {
+                static ONCE: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !ONCE.swap(true, Ordering::Relaxed) {
+                    eprintln!(
+                        "@@@GC   FREE-OUTSIDE-CHUNKS node={node:?} collected={}\n{}",
+                        self.collected,
+                        std::backtrace::Backtrace::force_capture()
+                    );
+                }
+            }
             return;
         }
         unsafe {
@@ -139,10 +229,30 @@ impl Nursery {
         self.free_list = node;
     }
 
+    /// Re-derive [`Self::chunk_ranges`] after any change to `chunks`.
+    fn rebuild_chunk_ranges(&mut self) {
+        self.chunk_ranges.clear();
+        self.chunk_ranges.extend(
+            self.chunks
+                .iter()
+                .map(|&b| (b as usize, b as usize + NURSERY_SIZE * NODE_SIZE)),
+        );
+        self.chunk_ranges.sort_unstable();
+    }
+
+    /// Whether `node` lies in a chunk the collector currently owns.
+    #[inline(always)]
+    fn owns(&self, node: *mut linkedlist::Node) -> bool {
+        let addr = node as usize;
+        let at = self.chunk_ranges.partition_point(|&(start, _)| start <= addr);
+        at > 0 && addr < self.chunk_ranges[at - 1].1
+    }
+
     #[cold]
     fn grow(&mut self) {
         let base = self.allocate_chunk();
         self.chunks.push(base);
+        self.rebuild_chunk_ranges();
         self.free = base;
         self.end = unsafe { base.add(NURSERY_SIZE) };
     }
@@ -224,9 +334,25 @@ impl Nursery {
         #[cfg(test)]
         COPYING_COLLECT_COUNT_FOR_TESTS.fetch_add(1, Ordering::Relaxed);
 
+        if self.collect_count >= max_collects() {
+            return;
+        }
+        self.collect_count += 1;
+        self.collected = true;
         let storage = unsafe { &mut *(storage_addr as *mut Storage) };
         let from_chunks = self.chunks.clone();
         let mut copy = CopyState::new(from_chunks);
+        let gc_log = gc_log_enabled();
+        let mut jit_slots = 0usize;
+        let mut jit_node_slots = 0usize;
+        if gc_log {
+            static N: AtomicUsize = AtomicUsize::new(0);
+            eprintln!(
+                "@@@GC collect#{} chunks={}",
+                N.fetch_add(1, Ordering::Relaxed),
+                self.chunks.len()
+            );
+        }
 
         let first_to = if self.spare_chunk.is_null() {
             self.allocate_chunk()
@@ -251,18 +377,70 @@ impl Nursery {
         if hook_addr != 0 {
             let hook: NodeRootWalkHook = unsafe { std::mem::transmute(hook_addr) };
             let mut visit = |slot: *mut *mut linkedlist::Node| {
+                jit_slots += 1;
+                if gc_log && !slot.is_null() {
+                    let v = unsafe { *slot };
+                    if let Some(off) = Self::chunk_byte_offset(&copy.from_chunks, v) {
+                        jit_node_slots += 1;
+                        // `Node` is headerless, so a slot is treated as a node
+                        // purely because its address lands in a nursery chunk.
+                        // Report the offset: a value that is not a multiple of
+                        // `NODE_SIZE` is not a node start, and forwarding it
+                        // would write a forwarding pointer into the middle of
+                        // some other node.
+                        eprintln!(
+                            "@@@GC   jit_node_slot slot={slot:?} node={v:?} off={off} misalign={}",
+                            off % NODE_SIZE
+                        );
+                    }
+                }
                 self.forward_root(&mut copy, slot);
             };
             hook(&mut visit);
+        }
+        if gc_log {
+            eprintln!("@@@GC   jit_root_slots={jit_slots} of_which_nursery={jit_node_slots}");
         }
 
         self.trace_copied_nodes(&mut copy);
 
         let old_chunks = std::mem::replace(&mut self.chunks, copy.to_chunks);
+        self.rebuild_chunk_ranges();
         self.free = copy.to_free;
         self.end = copy.to_end;
         self.free_list = std::ptr::null_mut();
 
+        // Diagnostic: quarantine the N most recent from-space chunks instead of
+        // releasing/reusing them, so a stale pointer missed by the root walk
+        // reads its pre-copy contents rather than recycled memory. Separates
+        // "stale pointer into recycled memory" from other evacuation faults.
+        let quarantine = std::env::var("AHEUI_GC_QUARANTINE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        if quarantine > 0 {
+            self.spare_chunk = std::ptr::null_mut();
+            // Optional: stamp every evacuated node's `value` with a sentinel so a
+            // stale read of from-space is identifiable at its consumption point.
+            // `next` keeps its forwarding pointer (the bitmap is per-collect, so
+            // it is dead once this returns) to leave chain walks reachable.
+            let poison = std::env::var_os("AHEUI_GC_POISON").is_some();
+            for chunk in &old_chunks {
+                if poison {
+                    for i in 0..NURSERY_SIZE {
+                        unsafe { (*chunk.add(i)).value = crate::value::val_from_i32(0x5EEDDEA) };
+                    }
+                }
+            }
+            for chunk in old_chunks {
+                self.quarantined.push(chunk);
+            }
+            while self.quarantined.len() > quarantine {
+                let old = self.quarantined.remove(0);
+                self.release_chunk(old);
+            }
+            return;
+        }
         let mut spare = old_chunks.into_iter();
         self.spare_chunk = spare.next().unwrap_or(std::ptr::null_mut());
         for chunk in spare {
@@ -334,6 +512,27 @@ impl Nursery {
         let node = copy.to_free;
         copy.to_free = unsafe { copy.to_free.add(1) };
         node
+    }
+
+    /// Byte offset of `node` within whichever chunk contains it, or `None` if
+    /// it lies outside every chunk. Unlike [`Self::chunk_slot`] this does not
+    /// assume node alignment, so it can report a pointer into the middle of a
+    /// node.
+    fn chunk_byte_offset(
+        chunks: &[*mut linkedlist::Node],
+        node: *mut linkedlist::Node,
+    ) -> Option<usize> {
+        if node.is_null() {
+            return None;
+        }
+        let node_addr = node as usize;
+        for &base in chunks {
+            let base_addr = base as usize;
+            if node_addr >= base_addr && node_addr < base_addr + NURSERY_SIZE * NODE_SIZE {
+                return Some(node_addr - base_addr);
+            }
+        }
+        None
     }
 
     fn chunk_slot(
@@ -444,6 +643,65 @@ pub fn walk_bigint_root_values(visit: &mut dyn FnMut(&mut Val)) {
     crate::value::walk_bigint_transient_roots(visit);
 }
 
+/// Report any storage whose node chain disagrees with its recorded `size`,
+/// bracketing a collection so a malformed chain can be attributed to the
+/// collector or to the mutator that ran before it. Gated on `AHEUI_GC_LOG`
+/// so it is available in a release build.
+///
+/// `rpython/memory/gc/base.py` runs the analogous `debug_check_consistency`
+/// walk around each collection under `debug_gc`.
+#[cold]
+fn gc_log_check_chains(when: &str) {
+    if !gc_log_enabled() {
+        return;
+    }
+    let storage_addr = GC_ROOTS.load(Ordering::Relaxed);
+    if storage_addr == 0 {
+        return;
+    }
+    let storage = unsafe { &*(storage_addr as *const Storage) };
+    let digest = storage.chain_digest();
+    let violation = storage.check_chains();
+    let violation = violation.as_deref().unwrap_or("ok");
+    eprintln!("@@@GC chains {when} collect: {violation}");
+
+    // Node addresses change on every collection but the values they carry
+    // must not, so a storage whose digest moves across a collection has been
+    // altered by the collector itself.
+    thread_local! {
+        static BEFORE: std::cell::RefCell<([u64; STORAGE_COUNT], Vec<Vec<u64>>)> =
+            const { std::cell::RefCell::new(([0; STORAGE_COUNT], Vec::new())) };
+    }
+    if when == "before" {
+        let values = (0..STORAGE_COUNT)
+            .map(|i| storage.chain_values(i))
+            .collect();
+        BEFORE.with(|b| *b.borrow_mut() = (digest, values));
+        return;
+    }
+    BEFORE.with(|b| {
+        let (before_digest, before_values) = &*b.borrow();
+        for (i, before) in before_digest.iter().enumerate() {
+            if *before == digest[i] {
+                continue;
+            }
+            let after = storage.chain_values(i);
+            let before = &before_values[i];
+            let at = (0..before.len().max(after.len()))
+                .find(|&n| before.get(n) != after.get(n))
+                .unwrap_or(0);
+            let lo = at.saturating_sub(2);
+            eprintln!(
+                "@@@GC   CONTENT-CHANGED storage[{i}] len {} -> {} first differing index {at}",
+                before.len(),
+                after.len(),
+            );
+            eprintln!("@@@GC     before[{lo}..]: {:x?}", &before[lo..(lo + 5).min(before.len())]);
+            eprintln!("@@@GC     after [{lo}..]: {:x?}", &after[lo..(lo + 5).min(after.len())]);
+        }
+    });
+}
+
 #[inline(always)]
 pub fn alloc_node(value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::Node {
     unsafe {
@@ -480,6 +738,7 @@ pub fn nursery_bump_addrs() -> (usize, usize) {
 
 /// Allocate a zeroed `Node` without initializing fields.
 /// Used by JIT's GcAllocator to get a node from the shared nursery.
+
 #[inline(always)]
 pub fn alloc_node_raw() -> *mut linkedlist::Node {
     alloc_node(val_from_i32(0), std::ptr::null_mut())
@@ -577,6 +836,102 @@ impl Storage {
         }
         // VAL_QUEUE: alias &mut queue (head/size share `#[repr(C)]` layout with Stack).
         self.pools[VAL_QUEUE] = &mut self.queue as *mut Queue as *mut Stack;
+    }
+
+    /// Walk every storage's node chain and compare its length with the
+    /// recorded `size`, returning a description of the first storage that
+    /// disagrees.
+    ///
+    /// `linkedlist.py:98-110` keeps the queue exactly one node longer than
+    /// `size`: `__init__` seeds a dummy `tail` node and `push` appends a fresh
+    /// one, so `size` counts real elements and the chain ends at `tail`.
+    /// Stacks and the port hold exactly `size` nodes.
+    ///
+    /// The walk is bounded by the expected length, so a chain that loops back
+    /// on itself is reported rather than followed forever.
+    pub fn check_chains(&self) -> Option<String> {
+        for i in 0..STORAGE_COUNT {
+            let list = self.dispatch(i);
+            let size = list.size();
+            let expected = if i == VAL_QUEUE { size + 1 } else { size };
+            let mut node = list.head();
+            let mut walked = 0usize;
+            let mut last = std::ptr::null_mut();
+            while !node.is_null() {
+                walked += 1;
+                if walked > expected {
+                    return Some(format!(
+                        "storage[{i}] chain longer than size (size={size} expected={expected})"
+                    ));
+                }
+                last = node;
+                node = unsafe { (*node).next };
+            }
+            if walked != expected {
+                return Some(format!(
+                    "storage[{i}] chain length {walked} != expected {expected} (size={size})"
+                ));
+            }
+            if i == VAL_QUEUE && last != self.queue.tail {
+                return Some(format!(
+                    "queue chain ends at {:?}, but tail is {:?} (size={size})",
+                    last, self.queue.tail
+                ));
+            }
+        }
+        None
+    }
+
+    /// Order-sensitive digest of every storage's contents: the index, the
+    /// recorded size, and each node's raw `value` word, in chain order.
+    ///
+    /// Node addresses change on every collection but the values they carry
+    /// must not, so bracketing a collection with this digest asks whether the
+    /// collector is observably the identity on storage. A bigint `Val` is a
+    /// pointer into the majit heap, which the node collector does not move, so
+    /// hashing the raw word stays stable for those too.
+    pub fn chain_digest(&self) -> [u64; STORAGE_COUNT] {
+        std::array::from_fn(|i| {
+            let list = self.dispatch(i);
+            let mut hash = 0xcbf2_9ce4_8422_2325u64;
+            let mut mix = |word: u64| {
+                hash ^= word;
+                hash = hash.wrapping_mul(0x1000_0000_01b3);
+            };
+            mix(list.size() as u64);
+            let mut node = list.head();
+            // Digest only the live prefix. Nodes past `size` are stale tail
+            // left over from a pop whose `head` store the JIT has not yet
+            // committed; the collector is free to reuse them, so including
+            // them would report a change that is not observable.
+            let mut budget = if i == VAL_QUEUE {
+                list.size() + 1
+            } else {
+                list.size()
+            };
+            while !node.is_null() && budget > 0 {
+                mix(unsafe { *(node as *const u64) });
+                node = unsafe { (*node).next };
+                budget -= 1;
+            }
+            hash
+        })
+    }
+
+    /// The live prefix of one storage's values, in chain order — the same
+    /// range [`Self::chain_digest`] hashes, so a digest mismatch can be
+    /// resolved to the exact index that changed.
+    pub fn chain_values(&self, idx: usize) -> Vec<u64> {
+        let list = self.dispatch(idx);
+        let mut budget = list.size() + usize::from(idx == VAL_QUEUE);
+        let mut node = list.head();
+        let mut out = Vec::with_capacity(budget);
+        while !node.is_null() && budget > 0 {
+            out.push(unsafe { *(node as *const u64) });
+            node = unsafe { (*node).next };
+            budget -= 1;
+        }
+        out
     }
 
     // aheui.py:51-53
