@@ -427,7 +427,6 @@ struct AheuiState {
     storage: Storage,
     selected: usize,
     stacksize: i64,
-    pool_ptr: usize,
     /// `&mut state.storage.pools[selected]` packed as `usize`. Tracked as
     /// `ref(Stack)` in `state_fields` so it is carried in the ref register
     /// bank as a genuine `InputArgRef`: promoted with `ref_guard_value` and
@@ -441,7 +440,11 @@ struct AheuiState {
     /// `getarrayitem_gc_r` on this base instead of an opaque residual call;
     /// the loaded stack ref then re-derives from `selected` each loop entry
     /// rather than being carried as an independent, divergence-prone red.
-    /// Same value as `pool_ptr` (kept `int` for the residual storage helpers).
+    /// The sole carrier of the storage pointer: `aheui.py:27` carries
+    /// `storage` as one red, so the residual storage helpers take this same
+    /// ref-kind field rather than an aliased `int` copy (an int/ref pair for
+    /// one value makes the resume box kind of every `pools[N]` stack ref
+    /// ambiguous, seeding Ref-typed loop-header slots with Int boxes).
     storage_ref: usize,
 }
 
@@ -522,8 +525,7 @@ impl AheuiState {
             SK_SNAPSHOT.with(|s| eprintln!("@@@SPDIAG S_k-snapshot{}", s.borrow()));
             SPDIAG_TRACE_OPS.store(300, std::sync::atomic::Ordering::Relaxed);
         }
-        self.pool_ptr = &mut self.storage as *mut Storage as usize;
-        self.storage_ref = self.pool_ptr;
+        self.storage_ref = &mut self.storage as *mut Storage as usize;
         self.refresh_selected_ref();
         #[cfg(debug_assertions)]
         {
@@ -845,7 +847,6 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // `as i64` / `as <Type>` casts at the JIT boundary (identity for i64).
         selected: int(usize),
         stacksize: int(i64),
-        pool_ptr: int(usize),
         // The selected list's object reference (aheui.py:256
         // `selected = jit.promote(selected)`). Carried in the ref register
         // bank as a genuine `InputArgRef` so it can be promoted with
@@ -857,8 +858,12 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // Base of the `pools: [*mut Stack; N]` array (offset 0 of `Storage`).
         // Declared `ref(Storage)` + listed in `pool_arrays` so OP_SEL's
         // `selected_ref = jit_sel_get_ref(storage_ref, selected)` lowers to a
-        // re-producible `getarrayitem_gc_r` on this base. Same value as
-        // `pool_ptr`.
+        // re-producible `getarrayitem_gc_r` on this base. aheui.py:27 carries
+        // `storage` as ONE red, so this ref is also the storage argument of the
+        // residual `jit_storage_*` helpers: an aliased `int` copy of the same
+        // pointer would leave the resume box kind of every `pools[N]` stack ref
+        // ambiguous, seeding Ref-typed loop-header slots with Int boxes and
+        // making the bridge unmatchable (VirtualStatesCantMatch).
         storage_ref: ref(aheui_runtime::storage::Storage),
     },
     // `storage_ref` is a raw-pointer-array base: the registered getter
@@ -1121,14 +1126,12 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         storage: Storage::new(),
         selected: 0,
         stacksize: 0,
-        pool_ptr: 0,
         selected_ref: 0,
         storage_ref: 0,
     };
     // Storage was moved into state — refresh self-referencing pointers.
     state.storage.refresh_pools();
-    state.pool_ptr = &mut state.storage as *mut Storage as usize;
-    state.storage_ref = state.pool_ptr;
+    state.storage_ref = &mut state.storage as *mut Storage as usize;
     state.refresh_selected_ref();
     // Register the storage as the nursery collector's root set. `state` is a
     // stationary local for the rest of the mainloop, so the pointer stays
@@ -1489,7 +1492,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     let target = program.get_operand(pc - 1) as usize;
                     if target == VAL_QUEUE || target == VAL_PORT {
                         // Queue/Port keep the polymorphic residual (tail-append semantics).
-                        jit_storage_push(state.pool_ptr, target, r);
+                        jit_storage_push(state.storage_ref, target, r);
                     } else {
                         // Stack: orthodox inline push into pools[target],
                         // mirroring OP_PUSH into selected_ref.
