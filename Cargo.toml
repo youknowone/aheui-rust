@@ -7,9 +7,12 @@ edition = "2024"
 members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler", "aheui-wasm"]
 
 [features]
-default = ["jit", "malachite-bigint"]
+default = ["jit", "dynasm", "malachite-bigint"]
 naive = ["dep:aheuinterpreter"]
 jit = ["dep:aheui-jit"]
+# The JIT dependency has no default backend; exactly one root feature selects it.
+dynasm = ["aheui-jit?/dynasm"]
+cranelift = ["aheui-jit?/cranelift"]
 # `build --codegen cranelift`, compaheuiler's AOT backend. Separate from the JIT
 # selector above — they share a name and nothing else, and enabling `cranelift`
 # to reach this one would drag the JIT onto a second backend.
@@ -19,7 +22,7 @@ malachite-bigint = ["aheuinterpreter?/malachite-bigint", "aheui-jit?/malachite-b
 
 [dependencies]
 aheuinterpreter = { path = "aheuinterpreter", optional = true }
-aheui-jit = { path = "aheui-jit", optional = true }
+aheui-jit = { path = "aheui-jit", optional = true, default-features = false }
 ahsembler = { path = "ahsembler" }
 compaheuiler = { path = "compaheuiler", default-features = false }
 clap = { version = "4.5.32", features = ["derive"] }
