@@ -881,14 +881,22 @@ impl Storage {
     }
 
     /// Sync the `pools` indirection array to point at `stacks[i]` /
-    /// `queue`. Must be called after `Storage` is moved, because the
-    /// pointers are self-referencing.
+    /// `queue` / `port`. Must be called after `Storage` is moved, because
+    /// the pointers are self-referencing.
+    ///
+    /// Every slot `aheui.py:40-49` fills with a non-`Stack` instance has to
+    /// be aliased here, or `get_stack_ptr` hands the JIT a decoy
+    /// `stacks[idx]` that no other path ever writes: `dispatch_mut` reaches
+    /// the real object, so the two views of one storage index drift apart
+    /// silently and `OP_SEL`'s `stacksize = len(selected)` reads 0.
     pub fn refresh_pools(&mut self) {
         for i in 0..STORAGE_COUNT {
             self.pools[i] = &mut self.stacks[i] as *mut Stack;
         }
-        // VAL_QUEUE: alias &mut queue (head/size share `#[repr(C)]` layout with Stack).
+        // VAL_QUEUE / VAL_PORT: alias &mut queue / &mut port (head/size share
+        // `#[repr(C)]` layout with Stack).
         self.pools[VAL_QUEUE] = &mut self.queue as *mut Queue as *mut Stack;
+        self.pools[VAL_PORT] = &mut self.port as *mut Port as *mut Stack;
     }
 
     /// Walk every storage's node chain and compare its length with the
