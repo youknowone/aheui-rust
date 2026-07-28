@@ -1439,6 +1439,18 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 let v = jit_tag_val(value);
                 if is_queue {
                     lj::queue_push(state.selected_ref, v);
+                } else if state.selected == VAL_PORT {
+                    // linkedlist.py:134-139 `Port.push` also records
+                    // `last_push`, and linkedlist.py:141-142 `Port.dup`
+                    // pushes that instead of the head value. `selected_ref`
+                    // is typed `Stack`, so the inline push/dup below write
+                    // head/size only and a `push; pop; dup` on the port
+                    // duplicates the wrong value. The port takes the
+                    // polymorphic residual, matching aheui.py:260-389
+                    // `selected.METHOD()`. Only push and dup diverge —
+                    // `pop`, `swap`, `_get_2_values` and `_put_value` are
+                    // the shared `LinkedList` implementations.
+                    jit_storage_push(state.storage_ref, state.selected, v);
                 } else {
                     lj::stack_push(state.selected_ref, v);
                 }
@@ -1447,6 +1459,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if stackok {
                     if is_queue {
                         lj::queue_dup(state.selected_ref);
+                    } else if state.selected == VAL_PORT {
+                        jit_storage_dup(state.storage_ref, state.selected);
                     } else {
                         lj::stack_dup(state.selected_ref);
                     }
@@ -1564,6 +1578,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 let v = jit_tag_val(num);
                 if is_queue {
                     lj::queue_push(state.selected_ref, v);
+                } else if state.selected == VAL_PORT {
+                    jit_storage_push(state.storage_ref, state.selected, v);
                 } else {
                     let old_head = state.selected_ref.head;
                     let new_node = jit_alloc_node(v, old_head);
@@ -1578,6 +1594,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 let v = jit_tag_val(ch);
                 if is_queue {
                     lj::queue_push(state.selected_ref, v);
+                } else if state.selected == VAL_PORT {
+                    jit_storage_push(state.storage_ref, state.selected, v);
                 } else {
                     let old_head = state.selected_ref.head;
                     let new_node = jit_alloc_node(v, old_head);
