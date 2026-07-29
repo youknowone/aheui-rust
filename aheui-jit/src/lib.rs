@@ -194,6 +194,11 @@ fn spdiag_enabled() -> bool {
     *FLAG.get_or_init(|| std::env::var_os("MAJIT_SPDIAG").is_some())
 }
 
+fn check_chains_enabled() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("AHEUI_CHECK_CHAINS").is_some())
+}
+
 fn bh_debug_enabled() -> bool {
     static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *FLAG.get_or_init(|| std::env::var_os("MAJIT_BH_DEBUG").is_some())
@@ -513,6 +518,24 @@ impl AheuiState {
         dump
     }
 
+    /// Every storage's `size` and its `head` chain as raw addresses, so a
+    /// chain/size mismatch can be read as "which node is extra/missing"
+    /// rather than just a count. `spdiag_dump_stacks` prints values only.
+    fn dump_chain_addrs(&self) -> String {
+        let mut dump = String::new();
+        for i in 0..STORAGE_COUNT {
+            let list = self.storage.dispatch(i);
+            let mut node = list.head();
+            let mut addrs: Vec<String> = Vec::new();
+            while !node.is_null() && addrs.len() < 8 {
+                addrs.push(format!("{node:?}"));
+                node = unsafe { (*node).next };
+            }
+            dump.push_str(&format!(" storage[{i}](size={}){addrs:?}\n", list.size()));
+        }
+        dump
+    }
+
     fn refresh_state_from_storage(&mut self) {
         if spdiag_enabled() {
             eprintln!(
@@ -528,18 +551,20 @@ impl AheuiState {
         }
         self.storage_ref = &mut self.storage as *mut Storage as usize;
         self.refresh_selected_ref();
-        #[cfg(debug_assertions)]
-        {
-            // Recover does not receive the green pc/program, so it cannot name
-            // only the current OP_MOV operand. Check every storage; this
-            // includes any OP_MOV target distinct from `selected`, and the
-            // queue and port, whose chains the collector forwards as roots of
-            // their own.
-            debug_assert!(
-                self.storage.check_chains().is_none(),
-                "{}",
-                self.storage.check_chains().unwrap_or_default(),
-            );
+        // Recover does not receive the green pc/program, so it cannot name
+        // only the current OP_MOV operand. Check every storage; this
+        // includes any OP_MOV target distinct from `selected`, and the
+        // queue and port, whose chains the collector forwards as roots of
+        // their own.
+        //
+        // A release build runs the same walk under `AHEUI_CHECK_CHAINS`: the
+        // chains that break under the compiled path hold thousands of nodes,
+        // which `spdiag_dump_stacks` truncates away, and a debug build is too
+        // slow to reach the failure.
+        if cfg!(debug_assertions) || check_chains_enabled() {
+            if let Some(err) = self.storage.check_chains() {
+                panic!("check_chains: {err}\n{}", self.dump_chain_addrs());
+            }
         }
         self.stacksize = self.storage.len_at(self.selected) as i64;
     }
