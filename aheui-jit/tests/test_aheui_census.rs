@@ -16,7 +16,7 @@
 //!     --test test_aheui_census -- --nocapture
 //! ```
 
-use majit_translate::{AnalyzeConfig, HostStaticAddrs, PipelineConfig, PortalSpec};
+use majit_translate::{AnalyzeConfig, CallPath, HostStaticAddrs, JitDriverSpec, PipelineConfig};
 
 /// Resolve the named aheui LLBC artefacts and export `PYRE_MIR_FRONTEND_LLBC`.
 /// Returns `false` (skip cleanly) when any is absent. Tests sharing this
@@ -64,7 +64,7 @@ fn aheui_census_m0_val_helpers() {
         );
         return;
     }
-    run_census_with_portal(val_add_portal());
+    run_census_with_driver(val_add_driver(["value", "bigint", "val_add"]));
 }
 
 /// Same probe against the smallint build (`Val = i64`,
@@ -82,14 +82,18 @@ fn aheui_census_m0_val_helpers_smallint() {
         );
         return;
     }
-    run_census_with_portal(val_add_portal());
+    run_census_with_driver(val_add_driver(["value", "smallint", "val_add"]));
 }
 
-fn val_add_portal() -> PortalSpec {
-    PortalSpec {
-        name: "val_add".to_string(),
+/// `val_add` as the portal. The path is module-qualified because portal
+/// resolution is exact — the two builds carry their own `val_add`
+/// (`value::bigint` / `value::smallint`), so the leaf alone does not name one.
+fn val_add_driver(portal: [&str; 3]) -> JitDriverSpec {
+    JitDriverSpec {
+        portal: CallPath::from_segments(portal),
         greens: Vec::new(),
         reds: Vec::new(),
+        autoreds: false,
         virtualizables: Vec::new(),
         red_types: Vec::new(),
     }
@@ -103,11 +107,12 @@ fn panic_message(err: &Box<dyn std::any::Any + Send>) -> &str {
         .unwrap_or("<non-string panic>")
 }
 
-fn run_census_with_portal(portal: PortalSpec) {
+fn run_census_with_driver(driver: JitDriverSpec) {
     let config = AnalyzeConfig {
         pipeline: PipelineConfig {
-            portal: Some(portal),
-            ..Default::default()
+            transform: Default::default(),
+            jit_drivers: vec![driver],
+            register_trait_families: Vec::new(),
         },
     };
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -158,21 +163,23 @@ fn aheui_census_m0() {
 
     let config = AnalyzeConfig {
         pipeline: PipelineConfig {
+            transform: Default::default(),
             // Portal + green/red layout documented in
             // `aheui/aheuinterpreter/src/interp.rs` (mirrors
             // rpaheui/aheui/aheui.py greens/reds).
-            portal: Some(PortalSpec {
-                name: "mainloop".to_string(),
+            jit_drivers: vec![JitDriverSpec {
+                portal: CallPath::from_segments(["interp", "mainloop"]),
                 greens: ["pc", "stackok", "is_queue", "program"]
                     .map(String::from)
                     .to_vec(),
                 reds: ["stacksize", "storage", "selected"]
                     .map(String::from)
                     .to_vec(),
+                autoreds: false,
                 virtualizables: Vec::new(),
                 red_types: Vec::new(),
-            }),
-            ..Default::default()
+            }],
+            register_trait_families: Vec::new(),
         },
     };
 
