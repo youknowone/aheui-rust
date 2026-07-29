@@ -531,7 +531,11 @@ impl AheuiState {
                 addrs.push(format!("{node:?}"));
                 node = unsafe { (*node).next };
             }
-            dump.push_str(&format!(" storage[{i}](size={}){addrs:?}\n", list.size()));
+            dump.push_str(&format!(
+                " storage[{i}]@{:#x}(size={}){addrs:?}\n",
+                list as *const _ as *const u8 as usize,
+                list.size()
+            ));
         }
         dump
     }
