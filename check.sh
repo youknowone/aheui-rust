@@ -162,6 +162,28 @@ else
 fi
 
 echo ""
+echo -e "${CYAN}══ MAJIT JIT ══${RESET}"
+# ════════════════════════════════════════════════════
+
+echo ""
+echo "═══ 5. JIT stats floor ═══"
+# The other four sections are all compaheuiler (rgen/cranelift AOT); this is
+# the only one that runs the majit-driven interpreter. Fixtures are the in-tree
+# `aheui-wasm/web/samples/` programs, so the gate does not depend on the
+# unpinned rpaheui corpus the sections above resolve.
+cargo build -p aheui --release 2>/tmp/aheui_jit_build.log
+if [ ! -x target/release/aheui ]; then
+    fail "aheui (majit) build failed (see /tmp/aheui_jit_build.log)"
+else
+    if python3 scripts/jitstats.py check; then
+        pass "jit-stats floor + un-compiled A/B"
+    else
+        fail "jit-stats floor (record with scripts/jitstats.py record)"
+    fi
+fi
+
+# ════════════════════════════════════════════════════
+echo ""
 echo "════════════════════════════════"
 TOTAL=$((PASS + FAIL))
 if [ "$FAIL" -eq 0 ]; then

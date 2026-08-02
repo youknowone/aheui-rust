@@ -136,6 +136,40 @@ fn exit_code_to_i32(exit_code: aheuinterpreter::Val) -> i32 {
     aheuinterpreter::value::val_to_i32_saturating(&exit_code)
 }
 
+/// Print the one-line JIT statistics summary to stderr when `MAJIT_STATS` is
+/// set, in the same `[jit-stats]` shape `pyre/pyrex` emits so one recorder and
+/// one regression floor can read both.
+///
+/// `internal_compile_panics > 0` means an internal JIT bug silently disabled
+/// compilation for some traces (graceful degradation in release). Must be
+/// called before any `process::exit`, since exits skip destructors.
+///
+/// The descr-universe lines pyre also prints have no aheui counterpart — they
+/// read the pyre descr tables — and a baseline simply carries no entry for
+/// them, which the floor reads as 0 on both sides.
+#[cfg(feature = "jit")]
+fn maybe_print_jit_stats() {
+    if std::env::var_os("MAJIT_STATS").is_none() {
+        return;
+    }
+    let Some(stats) = aheui_jit::last_jit_stats() else {
+        return;
+    };
+    eprintln!(
+        "[jit-stats] mc_diag {}",
+        aheui_jit::majit_metainterp::mc_diag_summary()
+    );
+    eprintln!(
+        "[jit-stats] loops_compiled={} bridges_compiled={} loops_aborted={} \
+         guard_failures={} internal_compile_panics={}",
+        stats.loops_compiled,
+        stats.bridges_compiled,
+        stats.loops_aborted,
+        stats.guard_failures,
+        stats.internal_compile_panics,
+    );
+}
+
 fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "jit")]
     aheui_jit::init_gc_subsystem();
@@ -165,6 +199,7 @@ fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
             let elapsed = start.elapsed();
             eprintln!("result = {result}");
             eprintln!("time   = {elapsed:?}");
+            maybe_print_jit_stats();
         }
 
         return Ok(());
@@ -173,6 +208,7 @@ fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "jit")]
     if args.use_jit() {
         let exitcode = aheui_jit::mainloop(&program, aheui_jit::jit_threshold());
+        maybe_print_jit_stats();
         std::process::exit(exit_code_to_i32(exitcode));
     }
 

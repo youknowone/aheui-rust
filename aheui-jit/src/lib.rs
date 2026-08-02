@@ -14,6 +14,9 @@
 
 extern crate majit_ir;
 extern crate majit_metainterp as majit_meta;
+/// The metainterp crate, re-exported so the binary can reach `mc_diag_summary`
+/// and the [`majit_meta::JitStats`] fields without its own dependency edge.
+pub use majit_metainterp;
 
 use majit_meta::jit::promote;
 
@@ -37,6 +40,26 @@ pub fn jit_threshold() -> u32 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(JIT_THRESHOLD)
+}
+
+/// The last [`mainloop`] run's cumulative JIT counters.
+///
+/// `mainloop` owns its `JitDriver` for the length of the run and drops it on
+/// return, and the binary `process::exit`s on the value `mainloop` returns —
+/// so a caller that wants the counters has no live driver to ask. `mainloop`
+/// publishes a snapshot here just before it returns, and
+/// [`last_jit_stats`] reads it back.
+static LAST_JIT_STATS: std::sync::Mutex<Option<majit_meta::JitStats>> =
+    std::sync::Mutex::new(None);
+
+/// The counters the most recent [`mainloop`] finished with, or `None` if the
+/// JIT interpreter has not run in this process.
+pub fn last_jit_stats() -> Option<majit_meta::JitStats> {
+    LAST_JIT_STATS.lock().unwrap().clone()
+}
+
+fn publish_jit_stats(stats: majit_meta::JitStats) {
+    *LAST_JIT_STATS.lock().unwrap() = Some(stats);
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -65,7 +88,9 @@ mod bigint_gc {
     pub fn init() {
         GC_GLOBAL_INIT.call_once(|| {
             let tid = if majit_gc::gc_sync::is_initialized() {
-                majit_gc::gc_sync::gc_op(register_bigint_type)
+                // `gc_op` hands the closure a concrete `&mut MiniMarkGC`; the
+                // unsizing to `&mut dyn GcAllocator` happens at the call.
+                majit_gc::gc_sync::gc_op(|gc| register_bigint_type(gc))
             } else {
                 let mut gc = MiniMarkGC::new();
                 let tid = register_bigint_type(&mut gc);
@@ -1644,6 +1669,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     }
 
     aheui_io::output_flush();
+
+    // The driver dies with this frame and the caller `process::exit`s on the
+    // returned value, so hand the counters over before either happens.
+    publish_jit_stats(driver.get_stats());
 
     // rpaheui/aheui/aheui.py:363-366
     if state.selected_dispatch().__len__() > 0 {
