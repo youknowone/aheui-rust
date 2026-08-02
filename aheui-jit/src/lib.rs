@@ -42,6 +42,24 @@ pub fn jit_threshold() -> u32 {
         .unwrap_or(JIT_THRESHOLD)
 }
 
+/// `rpaheui/aheui/aheui.py:325 jit.set_param(driver, 'trace_limit', 30000)`,
+/// scaled for majit's denser IR: the sub-JitCode dispatch + pre-dispatch branch
+/// match emit ~17 IR ops per aheui opcode (measured on logo: ~3751 opcodes ->
+/// ~64675 IR ops) against rpaheui's ~8, so rpaheui's 30000 maps to ~64500 here.
+/// 70000 keeps logo's whole-program trace compilable, matching rpaheui, which
+/// compiles logo's loop rather than aborting it.
+pub const TRACE_LIMIT: u32 = 70000;
+
+/// [`TRACE_LIMIT`] honoring a `MAJIT_TRACE_LIMIT` override. `trace_limit` is a
+/// configurable jitdriver param upstream too (`warmspot.py`); this is the same
+/// knob, read once at startup, so the budget can be swept without a rebuild.
+pub fn trace_limit() -> u32 {
+    std::env::var("MAJIT_TRACE_LIMIT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(TRACE_LIMIT)
+}
+
 /// The last [`mainloop`] run's cumulative JIT counters.
 ///
 /// `mainloop` owns its `JitDriver` for the length of the run and drops it on
@@ -1191,13 +1209,9 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // resume.py:1367 — materializes virtual headerless NodeJit nodes on guard-fail deopt; otherwise NullAllocator leaves a NULL head and size/chain desync SIGSEGV.
     driver.register_blackhole_allocator(AheuiBlackholeAllocator);
 
-    // rpaheui/aheui/aheui.py:325: jit.set_param(driver, 'trace_limit', 30000).
-    // Scaled for majit's denser IR: the sub-JitCode dispatch + pre-dispatch
-    // branch match emit ~17 IR ops per aheui opcode (measured: logo's ~3751
-    // opcodes -> ~64675 IR ops) vs rpaheui's ~8, so rpaheui's 30000 budget
-    // maps to ~64500 here. 70000 keeps logo's whole-program trace compilable,
-    // matching rpaheui (which compiles logo's loop rather than aborting it).
-    driver.set_param("trace_limit", 70000);
+    // rpaheui/aheui/aheui.py:325 `jit.set_param(driver, 'trace_limit', 30000)`
+    // — see [`TRACE_LIMIT`] for the scaling.
+    driver.set_param("trace_limit", trace_limit() as i64);
 
     let mut pc: usize = 0;
     // rpaheui/aheui/aheui.py:30: reds=['stacksize','storage','selected']
