@@ -19,7 +19,37 @@ cargo build -p aheui --release
 python3 scripts/jitstats.py record        # rewrite every baseline
 python3 scripts/jitstats.py check         # what check.sh section 5 runs
 python3 scripts/jitstats.py record logo   # one fixture
+python3 scripts/jitstats.py survey        # the whole rpaheui corpus, ungated
 ```
+
+`check` prints the counters for every fixture, not just pass/fail — a run that
+only says PASS says nothing about what the JIT did. Any gated counter that moved
+is listed with the headroom left before its gate, so a number sitting one step
+below the threshold is visible before the run that trips it.
+
+A fixture that aborted also gets its `Counters.ABORT_*` breakdown. Those are
+diagnosis, not part of the recorded surface: pinning them would gate the same
+event twice through `loops_aborted`. They exist because `JitStats` carries only
+the total and the profiler's own `print_stats` is behind `MAJIT_LOG`, which is
+far too slow to enable on a workload big enough to abort interestingly.
+
+## survey
+
+`survey` runs every rpaheui corpus program that has a reference output and
+prints its counters, gating nothing — the corpus is an unpinned sibling
+checkout, so nothing there can hold a baseline. It answers the question the gate
+cannot: which programs does the JIT engage with at all.
+
+At the production 1039 back-edge threshold, **3 of 55** do:
+
+| program | loops | aborted | note |
+|---|---|---|---|
+| `logo` | 1 | 0 | the gated fixture |
+| `standard/loop` | 1 | 0 | 92 bytes, sub-10ms |
+| `pi/pi.jinseo` | 12 | 814 | `too_long=784 bad_loop=30`, ~40s |
+
+Everything else compiles nothing — they never reach the threshold, so their
+baselines are all-zero and gate only the badness fields.
 
 Fixtures are the in-tree programs under `aheui-wasm/web/samples/`, not the
 rpaheui snippet corpus: the corpus is an unpinned sibling checkout, so a

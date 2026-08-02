@@ -52,14 +52,34 @@ pub fn jit_threshold() -> u32 {
 static LAST_JIT_STATS: std::sync::Mutex<Option<majit_meta::JitStats>> =
     std::sync::Mutex::new(None);
 
+/// The `Counters.ABORT_*` breakdown behind [`last_jit_stats`]'s
+/// `loops_aborted`.
+///
+/// `JitStats` carries only the total, and the profiler's own
+/// `print_stats` is behind `MAJIT_LOG` — which on a workload like
+/// `pi.jinseo` (35s, 814 aborts) is unusably slow, so the counts it holds were
+/// unreachable in practice. They are the statistic that says *why* a trace was
+/// given up, so the snapshot rides along with the totals.
+static LAST_ABORT_REASONS: std::sync::Mutex<Option<majit_meta::jitprof::JitProfilerSnapshot>> =
+    std::sync::Mutex::new(None);
+
 /// The counters the most recent [`mainloop`] finished with, or `None` if the
 /// JIT interpreter has not run in this process.
 pub fn last_jit_stats() -> Option<majit_meta::JitStats> {
     LAST_JIT_STATS.lock().unwrap().clone()
 }
 
-fn publish_jit_stats(stats: majit_meta::JitStats) {
+/// The profiler snapshot the most recent [`mainloop`] finished with.
+pub fn last_abort_reasons() -> Option<majit_meta::jitprof::JitProfilerSnapshot> {
+    LAST_ABORT_REASONS.lock().unwrap().clone()
+}
+
+fn publish_jit_stats(
+    stats: majit_meta::JitStats,
+    profiler: majit_meta::jitprof::JitProfilerSnapshot,
+) {
     *LAST_JIT_STATS.lock().unwrap() = Some(stats);
+    *LAST_ABORT_REASONS.lock().unwrap() = Some(profiler);
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -1672,7 +1692,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
 
     // The driver dies with this frame and the caller `process::exit`s on the
     // returned value, so hand the counters over before either happens.
-    publish_jit_stats(driver.get_stats());
+    publish_jit_stats(
+        driver.get_stats(),
+        driver.meta_interp().staticdata.profiler.snapshot(),
+    );
 
     // rpaheui/aheui/aheui.py:363-366
     if state.selected_dispatch().__len__() > 0 {

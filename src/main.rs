@@ -168,6 +168,21 @@ fn maybe_print_jit_stats() {
         stats.guard_failures,
         stats.internal_compile_panics,
     );
+    // Why those traces were given up. `JitStats` carries only the total, and
+    // the profiler's own `print_stats` is behind `MAJIT_LOG`, which is far too
+    // slow to enable on a workload big enough to abort interestingly.
+    if let Some(p) = aheui_jit::last_abort_reasons() {
+        eprintln!(
+            "[jit-stats] abort_too_long={} abort_bridge={} abort_bad_loop={} \
+             abort_escape={} abort_force_quasiimmut={} abort_segmented_trace={}",
+            p.abort_too_long,
+            p.abort_bridge,
+            p.abort_bad_loop,
+            p.abort_escape,
+            p.abort_force_quasiimmut,
+            p.abort_segmented_trace,
+        );
+    }
 }
 
 fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
