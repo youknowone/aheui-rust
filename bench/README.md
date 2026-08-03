@@ -46,7 +46,7 @@ At the production 1039 back-edge threshold, **3 of 55** do:
 |---|---|---|---|
 | `logo` | 1 | 0 | the gated fixture |
 | `standard/loop` | 1 | 0 | 92 bytes, sub-10ms |
-| `pi/pi.jinseo` | 12 | 814 | `too_long=784 bad_loop=30`, ~40s |
+| `pi/pi.jinseo` | 11 | 39 | `too_long=7 bad_loop=31 segmented=1`, ~3.4s |
 
 Everything else compiles nothing — they never reach the threshold, so their
 baselines are all-zero and gate only the badness fields.
