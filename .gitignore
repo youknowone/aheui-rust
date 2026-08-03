@@ -1,3 +1,6 @@
 target/
 Cargo.lock
 build/
+# scripts/jitstats.py's ledger: machine-local timings, appended on every run,
+# and four worktrees of this repo would conflict on it every time.
+bench/history.jsonl

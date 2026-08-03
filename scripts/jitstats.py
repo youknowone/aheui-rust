@@ -13,18 +13,33 @@ go green on a run that miscompiled.
     scripts/jitstats.py record [fixture ...]
     scripts/jitstats.py check  [fixture ...]
     scripts/jitstats.py survey
+    scripts/jitstats.py dump  [-m NOTE]
+    scripts/jitstats.py trend [program ...] [--all]
 
 With no fixture arguments both modes cover the whole committed set. `survey`
 prints the counters for every rpaheui corpus program that has a reference
 output, gating nothing — it answers which programs the JIT engages with at all.
+
+`check` and `survey` each append one row per program run to a local ledger
+(`bench/history.jsonl`; `AHEUI_JITSTATS_HISTORY` moves it), and `dump` is the
+two of them in one command. `trend` reads the ledger back and prints, per
+program, only the runs where a counter actually moved.
+
+That is the whole methodology: a baseline states what the JIT does *today* and
+says nothing about the run before it, so without a ledger every "did that
+change help?" costs a rebuild of the old tree. Here the record accumulates as
+a side effect of running the gate, and `--no-log` is the way to opt out.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -63,6 +78,16 @@ SNAPSHOT_FIELDS = (
 # interpreter (aheuinterpreter), and it only exists on a `naive` build.
 NO_COMPILE_THRESHOLD = "1000000000"
 
+# Local by default, and not committed: the timings in it are machine-specific,
+# and four worktrees of this repo appending to one tracked file would conflict
+# on every run. Point `AHEUI_JITSTATS_HISTORY` at a shared path to pool them.
+HISTORY = Path(os.environ.get("AHEUI_JITSTATS_HISTORY", BENCH / "history.jsonl"))
+
+# `aheui-jit` path-depends on `../../majit/*`, i.e. on the pyre working tree.
+# A row that names only the aheui commit cannot be attributed afterwards —
+# most of what moves these counters is a majit change, not an aheui one.
+MAJIT_REPO = REPO.parent
+
 
 def fixture_path(name: str) -> Path:
     return SAMPLES / f"{name}.aheui"
@@ -82,14 +107,14 @@ class Run:
         self.secs = secs
 
 
-def run(name: str, *, compile_: bool) -> Run:
-    """Run one fixture; capture its stdout, exit code and `[jit-stats]` fields."""
+def run_path(path: Path, *, compile_: bool) -> Run:
+    """Run one program; capture its stdout, exit code and `[jit-stats]` fields."""
     env = dict(os.environ, MAJIT_STATS="1")
     if not compile_:
         env["MAJIT_THRESHOLD"] = NO_COMPILE_THRESHOLD
     start = time.monotonic()
     proc = subprocess.run(
-        [str(BINARY), str(fixture_path(name))],
+        [str(BINARY), str(path)],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         env=env,
@@ -107,6 +132,10 @@ def run(name: str, *, compile_: bool) -> Run:
             if sep:
                 fields[key] = value
     return Run(proc.stdout, proc.returncode, fields, elapsed)
+
+
+def run(name: str, *, compile_: bool) -> Run:
+    return run_path(fixture_path(name), compile_=compile_)
 
 
 def snapshot(fields: dict[str, str]) -> str:
@@ -215,29 +244,133 @@ def movement(old: dict[str, str], new: dict[str, str]) -> list[str]:
     return moved
 
 
-def check_one(name: str, *, record: bool) -> bool:
-    """Run the A/B, then either record or gate. True on success."""
+def git_head(repo: Path) -> str:
+    """`repo`'s short HEAD, suffixed `-dirty` when tracked files are modified."""
+
+    def git(*args: str) -> str | None:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.decode("utf-8", "replace").strip()
+
+    head = git("rev-parse", "--short", "HEAD")
+    if head is None:
+        return "?"
+    return f"{head}-dirty" if git("status", "--porcelain", "-uno") else head
+
+
+def tuning_env() -> dict[str, str]:
+    """The `MAJIT_*` / `AHEUI_*` knobs in effect, minus the one we set ourselves.
+
+    A row produced under `MAJIT_TRACE_LIMIT=5000` is not comparable with one
+    produced at the production limit, and nothing else in the row would say so.
+    """
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if (k.startswith("MAJIT_") or k.startswith("AHEUI_")) and k != "MAJIT_STATS"
+    }
+
+
+def out_match(stdout: bytes, reference: bytes) -> str:
+    """`ok` / `+nl` / `≠` — how stdout compares with a reference.
+
+    Three states rather than a bool with a tolerance. Most of the rpaheui
+    corpus's `.out` files carry a trailing newline this interpreter does not
+    emit, and folding that into `ok` would also hide a real newline change;
+    calling it `+nl` keeps it visible AND keeps it distinct from a program
+    whose output genuinely differs. What the ledger watches for is a state
+    that *changes*, so a program sitting at `+nl` or `≠` from its first run is
+    not noise.
+    """
+    if stdout == reference:
+        return "ok"
+    if reference == stdout + b"\n":
+        return "+nl"
+    return "≠"
+
+
+def ledger_row(
+    kind: str, program: str, jit: Run, control: Run | None, out_ok: str
+) -> dict:
+    return {
+        "kind": kind,
+        "program": program,
+        "exit": jit.code,
+        "out_bytes": len(jit.stdout),
+        "out_sha": hashlib.sha256(jit.stdout).hexdigest()[:12],
+        "out_ok": out_ok,
+        "secs": round(jit.secs, 3),
+        "nojit_secs": round(control.secs, 3) if control is not None else None,
+        # Every `[jit-stats]` field verbatim, `mc_diag` included: the decline
+        # census is what says WHY a program compiled nothing, and a ledger that
+        # kept only the totals could not answer that after the fact.
+        "stats": jit.fields,
+    }
+
+
+def append_rows(mode: str, note: str, rows: list[dict]) -> None:
+    """Stamp `rows` with their provenance and append them to the ledger."""
+    if not rows:
+        return
+    stamp = {
+        "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "mode": mode,
+        "note": note,
+        "aheui": git_head(REPO),
+        "majit": git_head(MAJIT_REPO),
+        "env": tuning_env(),
+    }
+    HISTORY.parent.mkdir(parents=True, exist_ok=True)
+    with HISTORY.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps({**stamp, **row}, sort_keys=True) + "\n")
+    print(f"  logged {len(rows)} row(s) to {HISTORY}  [{stamp['aheui']}/{stamp['majit']}]")
+
+
+def load_history() -> list[dict]:
+    if not HISTORY.exists():
+        return []
+    rows = []
+    for line in HISTORY.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
+
+
+def check_one(name: str, *, record: bool) -> tuple[bool, dict | None]:
+    """Run the A/B, then either record or gate. True on success, plus its row."""
     if not fixture_path(name).exists():
         print(f"  FAIL: {name}: no such fixture ({fixture_path(name)})")
-        return False
+        return False, None
 
     jit = run(name, compile_=True)
     control = run(name, compile_=False)
+    # Exact, deliberately: this A/B is one interpreter against itself, so even
+    # a trailing-newline difference is a miscompile, not a file convention.
+    out_ok = "ok" if jit.stdout == control.stdout and jit.code == control.code else "≠"
+    # Built before the verdict, and returned on every path: a run that
+    # miscompiled is precisely the row the ledger must not be missing.
+    row = ledger_row("fixture", name, jit, control, out_ok)
 
     if jit.stdout != control.stdout:
         print(
             f"  FAIL: {name}: JIT stdout differs from the un-compiled run "
             f"({len(jit.stdout)} vs {len(control.stdout)} bytes)"
         )
-        return False
+        return False, row
     if jit.code != control.code:
         print(
             f"  FAIL: {name}: JIT exit {jit.code} != un-compiled exit {control.code}"
         )
-        return False
+        return False, row
     if not jit.fields:
         print(f"  FAIL: {name}: no [jit-stats] line (is MAJIT_STATS honored?)")
-        return False
+        return False, row
 
     # The counters themselves, always — a run that only says PASS tells you
     # nothing about what the JIT actually did, and the numbers are the point.
@@ -251,14 +384,14 @@ def check_one(name: str, *, record: bool) -> bool:
         BENCH.mkdir(exist_ok=True)
         path.write_text(current)
         print(f"      recorded {path.relative_to(REPO)}")
-        return True
+        return True, row
 
     if not path.exists():
         print(
             f"      FAIL: no committed baseline ({path.relative_to(REPO)})"
             f" — record it with scripts/jitstats.py record {name}"
         )
-        return False
+        return False, row
     baseline = parse(path.read_text())
     parsed = parse(current)
     for line in movement(baseline, parsed):
@@ -266,8 +399,8 @@ def check_one(name: str, *, record: bool) -> bool:
     failures = floor_regression(baseline, parsed)
     if failures:
         print(f"      FAIL: jit-stats regression: {', '.join(failures)}")
-        return False
-    return True
+        return False, row
+    return True, row
 
 
 def find_snippets() -> Path | None:
@@ -282,76 +415,261 @@ def find_snippets() -> Path | None:
     return None
 
 
-def survey(paths: list[Path]) -> None:
-    """Print counters for programs that are NOT gated.
+SURVEY_HEADER = (
+    f"  {'program':<22}{'loops':>6}{'aborted':>8}{'guards':>8}"
+    f"{'out':>10}{'exit':>5}{'ref':>6}{'time':>8}"
+)
+
+
+def survey(paths: list[Path]) -> list[dict]:
+    """Print, and return ledger rows for, programs that are NOT gated.
 
     The committed fixture set is in-tree and reproducible; the rpaheui corpus is
     an unpinned sibling checkout, so nothing here can hold a baseline. Printing
     it anyway answers the question the gate cannot: which programs does the JIT
     engage with at all, and which are candidates worth vendoring.
+
+    Correctness here is the committed `.out` beside each program, which costs
+    nothing and catches what the counters cannot: a row whose numbers improved
+    while stdout changed is visibly disqualified. Two things make a corpus
+    program sit at a non-`ok` state permanently — most `.out` files carry a
+    trailing newline this interpreter does not emit (`+nl`), and a program
+    that reads stdin gets EOF here because the run has none (`≠`, e.g.
+    `bahmanghui` prints -1 for the integer it cannot read). Neither is a
+    defect, which is why what the ledger watches is a state that *changes*.
     """
+    rows = []
     for path in paths:
-        env = dict(os.environ, MAJIT_STATS="1")
-        start = time.monotonic()
-        proc = subprocess.run(
-            [str(BINARY), str(path)],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            env=env,
-        )
-        elapsed = time.monotonic() - start
-        fields: dict[str, str] = {}
-        for line in proc.stderr.decode("utf-8", "replace").splitlines():
-            if line.startswith("[jit-stats]"):
-                for token in line[len("[jit-stats]") :].split():
-                    key, sep, value = token.partition("=")
-                    if sep:
-                        fields[key] = value
-        compiled = fields.get("loops_compiled", "0")
-        aborted = fields.get("loops_aborted", "0")
-        guards = fields.get("guard_failures", "0")
-        mark = " *" if compiled != "0" or aborted != "0" else ""
+        # `<dir>/<stem>`, the way bench/README.md's survey table names them —
+        # a bare stem collides across the corpus's subdirectories.
+        name = f"{path.parent.name}/{path.stem}"
+        jit = run_path(path, compile_=True)
+        out_ok = out_match(jit.stdout, path.with_suffix(".out").read_bytes())
+        compiled = jit.fields.get("loops_compiled", "0")
+        aborted = jit.fields.get("loops_aborted", "0")
+        guards = jit.fields.get("guard_failures", "0")
+        engaged = compiled != "0" or aborted != "0"
+        # The un-compiled control run only where a ratio would mean something.
+        # On a program the tracer never fires for it is a duplicate run.
+        control = run_path(path, compile_=False) if engaged else None
         print(
-            f"  {path.stem[:20]:<22}{compiled:>6}{aborted:>8}{guards:>8}"
-            f"{len(proc.stdout):>10}{proc.returncode:>5}{elapsed:>7.2f}s{mark}"
+            f"  {name[:20]:<22}{compiled:>6}{aborted:>8}{guards:>8}"
+            f"{len(jit.stdout):>10}{jit.code:>5}{out_ok:>6}"
+            f"{jit.secs:>7.2f}s{' *' if engaged else ''}"
         )
-        for line in abort_breakdown(fields):
+        for line in abort_breakdown(jit.fields):
             print(f"      {line}")
+        rows.append(ledger_row("corpus", name, jit, control, out_ok))
+    return rows
+
+
+# ── the history view ────────────────────────────────────────────────────────
+
+# What counts as a change. Timings are deliberately excluded: they are noise on
+# a shared machine, and a history that treats every run as a change point is a
+# log, not a history. The `ABORT_*` breakdown IS included even though nothing
+# gates it — `abort_too_long 784 -> 7` is the shape of a fix, while the
+# `loops_aborted` total it rolls up into can move for unrelated reasons.
+TREND_FIELDS = (*SNAPSHOT_FIELDS, *ABORT_REASONS)
+
+
+def trend_key(row: dict) -> tuple:
+    stats = row.get("stats", {})
+    return (
+        *(stats.get(field, "0") for field in TREND_FIELDS),
+        row.get("out_sha"),
+        row.get("exit"),
+        row.get("out_ok"),
+    )
+
+
+def trend_deltas(old: dict, new: dict) -> list[str]:
+    moved = [
+        f"{field} {old.get('stats', {}).get(field, '0')}"
+        f"->{new.get('stats', {}).get(field, '0')}"
+        for field in TREND_FIELDS
+        if old.get("stats", {}).get(field, "0") != new.get("stats", {}).get(field, "0")
+    ]
+    for key, label in (("out_sha", "stdout"), ("exit", "exit"), ("out_ok", "out_ok")):
+        if old.get(key) != new.get(key):
+            moved.append(f"{label} {old.get(key)}->{new.get(key)}")
+    return moved
+
+
+TREND_HEADER = (
+    f"    {'when':<18}{'aheui/majit':<28}{'loops':>6}{'brdg':>6}"
+    f"{'abrtd':>7}{'guards':>8}{'out':>5}{'secs':>8}"
+)
+
+
+def trend_line(row: dict) -> str:
+    stats = row.get("stats", {})
+    who = f"{row.get('aheui', '?')}/{row.get('majit', '?')}"
+    out = row.get("out_ok") or "-"
+    return (
+        # UTC, and said so: a bare `09:03` on a KST machine reads as local.
+        f"    {row.get('at', '?')[:16] + 'Z':<18}{who[:27]:<28}"
+        f"{stats.get('loops_compiled', '-'):>6}{stats.get('bridges_compiled', '-'):>6}"
+        f"{stats.get('loops_aborted', '-'):>7}{stats.get('guard_failures', '-'):>8}"
+        f"{out:>5}{row.get('secs') or 0.0:>8.2f}"
+    )
+
+
+def trend(programs: list[str], *, show_all: bool) -> int:
+    """Per program, the runs where something moved — and what moved."""
+    rows = load_history()
+    if not rows:
+        print(f"  ledger is empty ({HISTORY}) — run scripts/jitstats.py dump")
+        return 1
+
+    by_program: dict[str, list[dict]] = {}
+    for row in rows:
+        if programs and row["program"] not in programs:
+            continue
+        by_program.setdefault(row["program"], []).append(row)
+    if not by_program:
+        print(f"  no ledger rows for {', '.join(programs)}")
+        return 1
+
+    for program, history in by_program.items():
+        print(f"\n  {program}  ({len(history)} run(s))")
+        print(TREND_HEADER)
+        previous = None
+        unchanged = 0
+        for row in history:
+            if not show_all and previous is not None and trend_key(row) == trend_key(previous):
+                unchanged += 1
+                continue
+            if unchanged:
+                print(f"      … {unchanged} run(s) with nothing moved")
+                unchanged = 0
+            print(trend_line(row))
+            if previous is not None:
+                deltas = trend_deltas(previous, row)
+                if deltas:
+                    print(f"      Δ {', '.join(deltas)}")
+            if row.get("note"):
+                print(f"      note: {row['note']}")
+            if row.get("env"):
+                knobs = " ".join(f"{k}={v}" for k, v in sorted(row["env"].items()))
+                print(f"      ⚠ tuned run, not comparable with the rest: {knobs}")
+            previous = row
+        if unchanged:
+            print(f"      … {unchanged} run(s) with nothing moved")
+    return 0
+
+
+def corpus_paths() -> list[Path] | None:
+    corpus = find_snippets()
+    if corpus is None:
+        return None
+    # Only programs with a committed reference output — the rest are
+    # unverifiable, and an unverified number is worse than no number.
+    return sorted(
+        p for p in corpus.rglob("*.aheui") if p.with_suffix(".out").exists()
+    )
+
+
+def dump(note: str, *, log: bool) -> int:
+    """Gate the fixtures, sweep the corpus, append every row.
+
+    The one command to run after a change: it reaches the same verdict `check`
+    does, and leaves behind the row that makes the NEXT change measurable.
+    """
+    print(HEADER)
+    rows: list[dict] = []
+    failed = 0
+    for name in FIXTURES:
+        ok, row = check_one(name, record=False)
+        failed += 0 if ok else 1
+        if row is not None:
+            rows.append(row)
+    print(f"  {len(FIXTURES)} checked, {failed} failed")
+
+    paths = corpus_paths()
+    if paths is None:
+        print("\n  rpaheui corpus not found (set AHEUI_SNIPPETS) — fixtures only")
+    else:
+        print(f"\n  corpus survey ({len(paths)} programs, informational — nothing gated)")
+        print(SURVEY_HEADER)
+        rows.extend(survey(paths))
+        print("  * = the JIT engaged")
+
+    if log:
+        print()
+        append_rows("dump", note, rows)
+    return 1 if failed else 0
+
+
+MODES = ("record", "check", "survey", "dump", "trend")
+
+
+def take_option(args: list[str], *names: str) -> str | None:
+    """Pull `--opt VALUE` out of `args` in place; None when it is absent."""
+    for name in names:
+        if name in args:
+            index = args.index(name)
+            del args[index]
+            return args.pop(index) if index < len(args) else ""
+    return None
+
+
+def take_flag(args: list[str], *names: str) -> bool:
+    found = False
+    for name in names:
+        while name in args:
+            args.remove(name)
+            found = True
+    return found
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in ("record", "check", "survey"):
+    args = list(argv[1:])
+    if not args or args[0] not in MODES:
         print(__doc__)
         return 2
+    mode = args.pop(0)
+    note = take_option(args, "-m", "--note") or ""
+    show_all = take_flag(args, "--all")
+    log = not take_flag(args, "--no-log")
+
+    if mode == "trend":
+        return trend(args, show_all=show_all)
+
     if not BINARY.exists():
         print(f"aheui binary not built: {BINARY}", file=sys.stderr)
         return 1
 
-    if argv[1] == "survey":
-        corpus = find_snippets()
-        if corpus is None:
+    if mode == "dump":
+        return dump(note, log=log)
+
+    if mode == "survey":
+        paths = corpus_paths()
+        if paths is None:
             print("rpaheui snippet corpus not found; set AHEUI_SNIPPETS")
             return 1
-        # Only programs with a committed reference output — the rest are
-        # unverifiable, and an unverified number is worse than no number.
-        paths = sorted(
-            p for p in corpus.rglob("*.aheui") if p.with_suffix(".out").exists()
-        )
         print(f"  corpus survey ({len(paths)} programs, informational — nothing gated)")
-        print(
-            f"  {'program':<22}{'loops':>6}{'aborted':>8}{'guards':>8}"
-            f"{'out':>10}{'exit':>5}{'time':>8}"
-        )
-        survey(paths)
+        print(SURVEY_HEADER)
+        rows = survey(paths)
         print("  * = the JIT engaged")
+        if log:
+            append_rows(mode, note, rows)
         return 0
 
-    record = argv[1] == "record"
-    names = argv[2:] or FIXTURES
+    record = mode == "record"
+    names = args or FIXTURES
     print(HEADER)
-    failed = sum(0 if check_one(n, record=record) else 1 for n in names)
+    rows = []
+    failed = 0
+    for name in names:
+        ok, row = check_one(name, record=record)
+        failed += 0 if ok else 1
+        if row is not None:
+            rows.append(row)
     verb = "recorded" if record else "checked"
     print(f"  {len(names)} {verb}, {failed} failed")
+    if log:
+        append_rows(mode, note, rows)
     return 1 if failed else 0
 
 

@@ -20,6 +20,8 @@ python3 scripts/jitstats.py record        # rewrite every baseline
 python3 scripts/jitstats.py check         # what check.sh section 5 runs
 python3 scripts/jitstats.py record logo   # one fixture
 python3 scripts/jitstats.py survey        # the whole rpaheui corpus, ungated
+python3 scripts/jitstats.py dump          # check + survey, appended to the ledger
+python3 scripts/jitstats.py trend         # what moved between runs, per program
 ```
 
 `check` prints the counters for every fixture, not just pass/fail — a run that
@@ -54,6 +56,60 @@ baselines are all-zero and gate only the badness fields.
 Fixtures are the in-tree programs under `aheui-wasm/web/samples/`, not the
 rpaheui snippet corpus: the corpus is an unpinned sibling checkout, so a
 baseline keyed to it is not reproducible on another machine.
+
+## The ledger — `dump` and `trend`
+
+A baseline states what the JIT does *today*. It says nothing about the run
+before it, so without a record every "did that change help?" costs a rebuild of
+the old tree. The ledger is that record, and it fills itself: `check` and
+`survey` each append one row per program they run.
+
+```sh
+python3 scripts/jitstats.py dump -m "merge-point segmenting trigger"
+python3 scripts/jitstats.py trend                 # every program, change points only
+python3 scripts/jitstats.py trend pi/pi.jinseo    # one program
+python3 scripts/jitstats.py trend logo --all      # every row, not just the changes
+python3 scripts/jitstats.py check --no-log        # opt out for one run
+```
+
+`dump` is the command to run after a change: it reaches the same verdict
+`check` does — the gated fixtures, with the un-compiled A/B — and then sweeps
+the whole corpus, so the programs that actually stress the JIT (`pi/pi.jinseo`)
+are in the record even though nothing can gate them.
+
+Corpus rows are checked against the `.out` committed beside each program, in
+three states rather than a pass/fail with a tolerance: `ok`, `+nl` when the
+only difference is the trailing newline most of those files carry and this
+interpreter does not emit, and `≠` otherwise — which for a handful of programs
+just means they read stdin and the survey gives them none (`bahmanghui` prints
+`-1` for the integer it cannot read). Folding `+nl` into `ok` would also hide a
+real newline change, so it stays its own state; what disqualifies a row is a
+state that *changes*, not one that has always been `≠`. The fixtures' own A/B
+is exact by contrast — it compares one interpreter against itself, so even a
+newline difference there is a miscompile.
+
+Each row carries the counters, the full `ABORT_*` breakdown, the `mc_diag`
+decline census, stdout's length/sha/exit, the wall times, and the `-m` note —
+plus **both** commits: the aheui HEAD and the majit one. `aheui-jit`
+path-depends on `../../majit/*`, so most of what moves these numbers is a majit
+change; a row naming only one of the two cannot be attributed afterwards. A
+`-dirty` suffix means that tree had uncommitted changes, and any `MAJIT_*` /
+`AHEUI_*` knob in the environment is recorded too — a row taken under
+`MAJIT_TRACE_LIMIT=5000` is not comparable with one at the production limit,
+and nothing else in the row would say so.
+
+`trend` prints only the runs where something moved, with a `Δ` naming what.
+Timings are deliberately not part of that test — they are noise on a shared
+machine, and a history where every run is a change point is a log, not a
+history. The `ABORT_*` fields *are*, even though nothing gates them:
+`abort_too_long 784 -> 7` is the shape of a fix, while the `loops_aborted`
+total it rolls up into moves for unrelated reasons too.
+
+The file is `bench/history.jsonl`, gitignored — the timings are
+machine-specific and four worktrees of this repo would conflict on it every
+run. `AHEUI_JITSTATS_HISTORY` points it somewhere shared. When a run is worth
+keeping for good, promote it by hand into the survey table above; the ledger is
+the raw high-frequency record, the table is the curated one.
 
 ## What each counter gates
 
