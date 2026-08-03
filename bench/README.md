@@ -98,6 +98,14 @@ change; a row naming only one of the two cannot be attributed afterwards. A
 `MAJIT_TRACE_LIMIT=5000` is not comparable with one at the production limit,
 and nothing else in the row would say so.
 
+A row names the trees' commits *as of the run*, but the binary was built from
+whatever they held earlier. When the majit tree moves in between — a peer
+rebasing it is enough — the numbers get attributed to a commit that never
+produced them, which is the one failure this ledger exists to prevent. So the
+binary's mtime is compared against both HEAD commit times and the row carries
+`stale_build`; `dump` says so loudly and `trend` marks the row. Rebuild and
+re-run rather than reading a flagged row.
+
 `trend` prints only the runs where something moved, with a `Δ` naming what.
 Timings are deliberately not part of that test — they are noise on a shared
 machine, and a history where every run is a change point is a log, not a

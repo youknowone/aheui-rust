@@ -53,9 +53,14 @@ BENCH = REPO / "bench"
 # only sample that reaches the 1039 back-edge threshold and actually compiles;
 # the rest are carried anyway because their badness counters start at 0, and a
 # rise off 0 is exactly what the floor exists to catch.
+#
+# This is EVERY `.aheui` under that directory. Keep it that way — a sample
+# present in the tree and absent here is a file that looks covered and is not.
 FIXTURES = [
     "logo",
     "99bottles",
+    "factorial",
+    "fibonacci",
     "hello",
     "hello-world",
 ]
@@ -244,23 +249,43 @@ def movement(old: dict[str, str], new: dict[str, str]) -> list[str]:
     return moved
 
 
+def git(repo: Path, *args: str) -> str | None:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode("utf-8", "replace").strip()
+
+
 def git_head(repo: Path) -> str:
     """`repo`'s short HEAD, suffixed `-dirty` when tracked files are modified."""
-
-    def git(*args: str) -> str | None:
-        proc = subprocess.run(
-            ["git", "-C", str(repo), *args],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            return None
-        return proc.stdout.decode("utf-8", "replace").strip()
-
-    head = git("rev-parse", "--short", "HEAD")
+    head = git(repo, "rev-parse", "--short", "HEAD")
     if head is None:
         return "?"
-    return f"{head}-dirty" if git("status", "--porcelain", "-uno") else head
+    return f"{head}-dirty" if git(repo, "status", "--porcelain", "-uno") else head
+
+
+def head_committed_at(repo: Path) -> float | None:
+    stamp = git(repo, "log", "-1", "--format=%ct")
+    return float(stamp) if stamp else None
+
+
+def build_is_stale() -> bool:
+    """Whether the binary predates the commits the row is about to name.
+
+    A row is stamped with the trees' CURRENT commits, but the binary was built
+    from whatever they held at build time. A peer rebasing the majit tree in
+    between silently misattributes the numbers to a commit that never produced
+    them — the exact failure this ledger exists to prevent — so detect it and
+    say so rather than record a confident lie.
+    """
+    if not BINARY.exists():
+        return False
+    heads = [t for t in (head_committed_at(REPO), head_committed_at(MAJIT_REPO)) if t]
+    return bool(heads) and BINARY.stat().st_mtime < max(heads)
 
 
 def tuning_env() -> dict[str, str]:
@@ -324,12 +349,18 @@ def append_rows(mode: str, note: str, rows: list[dict]) -> None:
         "aheui": git_head(REPO),
         "majit": git_head(MAJIT_REPO),
         "env": tuning_env(),
+        "stale_build": build_is_stale(),
     }
     HISTORY.parent.mkdir(parents=True, exist_ok=True)
     with HISTORY.open("a", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps({**stamp, **row}, sort_keys=True) + "\n")
     print(f"  logged {len(rows)} row(s) to {HISTORY}  [{stamp['aheui']}/{stamp['majit']}]")
+    if stamp["stale_build"]:
+        print(
+            "  ⚠ the binary is older than one of those commits — these rows are\n"
+            "    attributed to a tree that did not build them. Rebuild and re-run."
+        )
 
 
 def load_history() -> list[dict]:
@@ -553,6 +584,8 @@ def trend(programs: list[str], *, show_all: bool) -> int:
             if row.get("env"):
                 knobs = " ".join(f"{k}={v}" for k, v in sorted(row["env"].items()))
                 print(f"      ⚠ tuned run, not comparable with the rest: {knobs}")
+            if row.get("stale_build"):
+                print("      ⚠ binary older than these commits — misattributed")
             previous = row
         if unchanged:
             print(f"      … {unchanged} run(s) with nothing moved")
