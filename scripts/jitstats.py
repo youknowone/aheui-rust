@@ -2,23 +2,25 @@
 """Record and gate the aheui JIT's `[jit-stats]` counters.
 
 Same file format and the same regression floor as `pyre/check.py`, so one
-reading applies to both: a sorted `key=value` text file per fixture, compared
+reading applies to both: a sorted `key=value` text file per program, compared
 field-by-field with a per-field direction.
 
-Each fixture is also run twice — once with the JIT and once with the threshold
-raised out of reach — and the two runs must agree byte-for-byte on stdout and
-on the exit code. That A/B is the correctness half: without it a baseline can
-go green on a run that miscompiled.
+Each gated program is also run twice — once with the JIT and once with the
+threshold raised out of reach — and the two runs must agree byte-for-byte on
+stdout and on the exit code. That A/B is the correctness half: without it a
+baseline can go green on a run that miscompiled.
 
-    scripts/jitstats.py record [fixture ...]
-    scripts/jitstats.py check  [fixture ...]
+    scripts/jitstats.py record [fixture | corpus/program ...]
+    scripts/jitstats.py check  [fixture | corpus/program ...]
     scripts/jitstats.py survey
     scripts/jitstats.py dump  [-m NOTE]
     scripts/jitstats.py trend [program ...] [--all]
 
-With no fixture arguments both modes cover the whole committed set. `survey`
-prints the counters for every rpaheui corpus program that has a reference
-output, gating nothing — it answers which programs the JIT engages with at all.
+With no arguments both modes cover the whole committed set: in-tree fixtures,
+plus corpus programs when `snippets/` is present as this repo's pinned
+submodule. `survey` is the ungated view for every rpaheui corpus program with a
+reference output; it is also what `check` falls back to when the corpus came
+from `$AHEUI_SNIPPETS` or a sibling checkout instead of the submodule.
 
 `check` and `survey` each append one row per program run to a local ledger
 (`bench/history.jsonl`; `AHEUI_JITSTATS_HISTORY` moves it), and `dump` is the
@@ -47,9 +49,9 @@ BINARY = REPO / "target" / "release" / "aheui"
 SAMPLES = REPO / "aheui-wasm" / "web" / "samples"
 BENCH = REPO / "bench"
 
-# The fixtures live in-tree (`aheui-wasm/web/samples/`) rather than in the
-# rpaheui snippet corpus: the corpus is an unpinned sibling checkout, and a
-# baseline keyed to a fixture nobody can reproduce gates nothing. `logo` is the
+# The fixtures live in-tree (`aheui-wasm/web/samples/`). The rpaheui corpus is
+# gated only when it comes from `snippets/`, this repo's pinned submodule; the
+# fallback sources stay survey-only because they name no commit. `logo` is the
 # only sample that reaches the 1039 back-edge threshold and actually compiles;
 # the rest are carried anyway because their badness counters start at 0, and a
 # rise off 0 is exactly what the floor exists to catch.
@@ -102,6 +104,10 @@ def baseline_path(name: str) -> Path:
     return BENCH / f"{name}.jitstats"
 
 
+def corpus_baseline_path(name: str) -> Path:
+    return BENCH / "corpus" / f"{name}.jitstats"
+
+
 class Run:
     """One execution of a fixture."""
 
@@ -147,6 +153,12 @@ def snapshot(fields: dict[str, str]) -> str:
     return "".join(
         f"{k}={fields[k]}\n" for k in sorted(SNAPSHOT_FIELDS) if k in fields
     )
+
+
+def corpus_snapshot(jit: "Run") -> str:
+    fields = {**jit.fields, "exit": str(jit.code), "out_sha": stdout_sha(jit.stdout)}
+    keys = sorted((*SNAPSHOT_FIELDS, "exit", "out_sha"))
+    return "".join(f"{k}={fields[k]}\n" for k in keys if k in fields)
 
 
 def parse(text: str) -> dict[str, str]:
@@ -319,6 +331,10 @@ def out_match(stdout: bytes, reference: bytes) -> str:
     return "≠"
 
 
+def stdout_sha(stdout: bytes) -> str:
+    return hashlib.sha256(stdout).hexdigest()[:12]
+
+
 def ledger_row(
     kind: str, program: str, jit: Run, control: Run | None, out_ok: str
 ) -> dict:
@@ -327,7 +343,7 @@ def ledger_row(
         "program": program,
         "exit": jit.code,
         "out_bytes": len(jit.stdout),
-        "out_sha": hashlib.sha256(jit.stdout).hexdigest()[:12],
+        "out_sha": stdout_sha(jit.stdout),
         "out_ok": out_ok,
         "secs": round(jit.secs, 3),
         "nojit_secs": round(control.secs, 3) if control is not None else None,
@@ -434,15 +450,91 @@ def check_one(name: str, *, record: bool) -> tuple[bool, dict | None]:
     return True, row
 
 
-def find_snippets() -> Path | None:
-    """`check.sh find_snippets`: `$AHEUI_SNIPPETS`, else walk up for the corpus."""
+def check_corpus_one(
+    name: str, path: Path, *, record: bool, gated: bool
+) -> tuple[bool, dict | None]:
+    """Run the corpus A/B, then either record, gate, or survey it."""
+    jit = run_path(path, compile_=True)
+    control = run_path(path, compile_=False)
+    reference = path.with_suffix(".out").read_bytes()
+    out_ok = out_match(jit.stdout, reference)
+    row = ledger_row("corpus", name, jit, control, out_ok)
+
+    print(counter_row(name, jit.fields, jit, control))
+    for line in abort_breakdown(jit.fields):
+        print(f"      {line}")
+
+    if not gated:
+        return True, row
+
+    ok = True
+    if jit.stdout != control.stdout:
+        print(
+            f"      FAIL: JIT stdout differs from the un-compiled run "
+            f"({len(jit.stdout)} vs {len(control.stdout)} bytes)"
+        )
+        ok = False
+    if jit.code != control.code:
+        print(f"      FAIL: JIT exit {jit.code} != un-compiled exit {control.code}")
+        ok = False
+    if not jit.fields:
+        print(f"      FAIL: no [jit-stats] line (is MAJIT_STATS honored?)")
+        ok = False
+    if not ok:
+        return False, row
+
+    current = corpus_snapshot(jit)
+    path = corpus_baseline_path(name)
+    if record:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(current)
+        print(f"      recorded {path.relative_to(REPO)}")
+        return ok, row
+
+    if not path.exists():
+        print(
+            f"      FAIL: no committed baseline ({path.relative_to(REPO)})"
+            f" — record it with scripts/jitstats.py record {name}"
+        )
+        return False, row
+
+    baseline = parse(path.read_text())
+    parsed = parse(current)
+    for line in movement(baseline, parsed):
+        print(f"      moved: {line}")
+    failures = floor_regression(baseline, parsed)
+    for field in ("out_sha", "exit"):
+        if baseline.get(field) != parsed.get(field):
+            failures.append(f"{field} {baseline.get(field)} -> {parsed.get(field)}")
+    if failures:
+        print(f"      FAIL: jit-stats regression: {', '.join(failures)}")
+        return False, row
+    return ok, row
+
+
+def find_snippets() -> tuple[Path, str] | None:
+    """`check.sh find_snippets`: the `snippets/` submodule, `$AHEUI_SNIPPETS`,
+    else walk up for a sibling checkout.
+
+    The submodule comes first because it is the only one of the three that
+    names a commit: `github.com/aheui/snippets` pinned by this repo's gitlink.
+    A sibling checkout is whatever that machine last pulled, and the two are
+    not interchangeable — `pi/pi.jinseo` alone differs between the canonical
+    repo and one fork by a digit count that moves its output from 1006 bytes to
+    15001 and its uncompiled run from 0.5s to two minutes. The fallbacks stay
+    for a tree checked out without `--recurse-submodules`, and `survey` says
+    which one it used.
+    """
+    submodule = REPO / "snippets"
+    if (submodule / ".git").exists():
+        return submodule, "submodule"
     env = os.environ.get("AHEUI_SNIPPETS")
     if env and Path(env).is_dir():
-        return Path(env)
+        return Path(env), "env"
     for parent in [REPO, *REPO.parents]:
         candidate = parent / "rpaheui" / "snippets"
         if candidate.is_dir():
-            return candidate
+            return candidate, "sibling"
     return None
 
 
@@ -455,10 +547,11 @@ SURVEY_HEADER = (
 def survey(paths: list[Path]) -> list[dict]:
     """Print, and return ledger rows for, programs that are NOT gated.
 
-    The committed fixture set is in-tree and reproducible; the rpaheui corpus is
-    an unpinned sibling checkout, so nothing here can hold a baseline. Printing
-    it anyway answers the question the gate cannot: which programs does the JIT
-    engage with at all, and which are candidates worth vendoring.
+    The pinned `snippets/` submodule can hold baselines. `$AHEUI_SNIPPETS` and
+    the sibling-checkout fallback cannot: they name whatever that machine last
+    pulled, and `pi/pi.jinseo` is known to differ enough between repos to turn
+    one baseline into nonsense for the other. This view stays useful for those
+    unpinned sources and for exploring which programs the JIT engages with.
 
     Correctness here is the committed `.out` beside each program, which costs
     nothing and catches what the counters cannot: a row whose numbers improved
@@ -471,9 +564,7 @@ def survey(paths: list[Path]) -> list[dict]:
     """
     rows = []
     for path in paths:
-        # `<dir>/<stem>`, the way bench/README.md's survey table names them —
-        # a bare stem collides across the corpus's subdirectories.
-        name = f"{path.parent.name}/{path.stem}"
+        name = corpus_name(path)
         jit = run_path(path, compile_=True)
         out_ok = out_match(jit.stdout, path.with_suffix(".out").read_bytes())
         compiled = jit.fields.get("loops_compiled", "0")
@@ -592,22 +683,61 @@ def trend(programs: list[str], *, show_all: bool) -> int:
     return 0
 
 
-def corpus_paths() -> list[Path] | None:
-    corpus = find_snippets()
-    if corpus is None:
+def corpus_name(path: Path) -> str:
+    # `<dir>/<stem>`, the way bench/README.md's survey table names them —
+    # a bare stem collides across the corpus's subdirectories.
+    return f"{path.parent.name}/{path.stem}"
+
+
+def corpus_paths() -> tuple[list[Path], str, Path] | None:
+    found = find_snippets()
+    if found is None:
         return None
+    corpus, source = found
     # Only programs with a committed reference output — the rest are
     # unverifiable, and an unverified number is worse than no number.
-    return sorted(
-        p for p in corpus.rglob("*.aheui") if p.with_suffix(".out").exists()
-    )
+    paths = sorted(p for p in corpus.rglob("*.aheui") if p.with_suffix(".out").exists())
+    return paths, source, corpus
+
+
+def corpus_map(paths: list[Path]) -> dict[str, Path]:
+    return {corpus_name(path): path for path in paths}
+
+
+def run_corpus_checks(
+    items: list[tuple[str, Path]], *, source: str, record: bool
+) -> tuple[int, list[dict]]:
+    gated = source == "submodule"
+    unpinned = f"  corpus is unpinned — surveyed, not gated ({source} source)"
+    if not gated:
+        print(unpinned)
+    print(HEADER)
+    rows: list[dict] = []
+    failed = 0
+    for name, path in items:
+        ok, row = check_corpus_one(name, path, record=record, gated=gated)
+        failed += 0 if ok else 1
+        if row is not None:
+            rows.append(row)
+    if not gated:
+        print(unpinned)
+    return failed if gated else 0, rows
+
+
+def fixture_or_corpus(name: str, corpus: dict[str, Path]) -> tuple[str, Path | None]:
+    if name in FIXTURES:
+        return "fixture", None
+    if name in corpus:
+        return "corpus", corpus[name]
+    return "missing", None
 
 
 def dump(note: str, *, log: bool) -> int:
-    """Gate the fixtures, sweep the corpus, append every row.
+    """Gate the fixtures, survey the corpus, append every row.
 
-    The one command to run after a change: it reaches the same verdict `check`
-    does, and leaves behind the row that makes the NEXT change measurable.
+    The exploratory command to run after a change: it leaves behind the corpus
+    rows that make the NEXT change measurable, without turning that sweep into
+    a verdict.
     """
     print(HEADER)
     rows: list[dict] = []
@@ -619,10 +749,11 @@ def dump(note: str, *, log: bool) -> int:
             rows.append(row)
     print(f"  {len(FIXTURES)} checked, {failed} failed")
 
-    paths = corpus_paths()
-    if paths is None:
+    found = corpus_paths()
+    if found is None:
         print("\n  rpaheui corpus not found (set AHEUI_SNIPPETS) — fixtures only")
     else:
+        paths, _, _ = found
         print(f"\n  corpus survey ({len(paths)} programs, informational — nothing gated)")
         print(SURVEY_HEADER)
         rows.extend(survey(paths))
@@ -677,11 +808,13 @@ def main(argv: list[str]) -> int:
         return dump(note, log=log)
 
     if mode == "survey":
-        paths = corpus_paths()
-        if paths is None:
+        found = corpus_paths()
+        if found is None:
             print("rpaheui snippet corpus not found; set AHEUI_SNIPPETS")
             return 1
+        paths, source, _ = found
         print(f"  corpus survey ({len(paths)} programs, informational — nothing gated)")
+        print(f"  source: {source}")
         print(SURVEY_HEADER)
         rows = survey(paths)
         print("  * = the JIT engaged")
@@ -690,17 +823,60 @@ def main(argv: list[str]) -> int:
         return 0
 
     record = mode == "record"
-    names = args or FIXTURES
+    found = corpus_paths()
+    paths: list[Path] = []
+    source = ""
+    corpus: dict[str, Path] = {}
+    if found is not None:
+        paths, source, _ = found
+        corpus = corpus_map(paths)
+
     print(HEADER)
     rows = []
     failed = 0
-    for name in names:
-        ok, row = check_one(name, record=record)
-        failed += 0 if ok else 1
-        if row is not None:
-            rows.append(row)
+    fixture_count = 0
+    corpus_items: list[tuple[str, Path]] = []
+
+    if args:
+        for name in args:
+            kind, path = fixture_or_corpus(name, corpus)
+            if kind == "fixture":
+                ok, row = check_one(name, record=record)
+                fixture_count += 1
+                failed += 0 if ok else 1
+                if row is not None:
+                    rows.append(row)
+            elif kind == "corpus" and path is not None:
+                corpus_items.append((name, path))
+            else:
+                fixture = fixture_path(name)
+                corpus_hint = " or corpus program" if found is not None else ""
+                print(f"  FAIL: {name}: no such fixture{corpus_hint} ({fixture})")
+                failed += 1
+    else:
+        for name in FIXTURES:
+            ok, row = check_one(name, record=record)
+            fixture_count += 1
+            failed += 0 if ok else 1
+            if row is not None:
+                rows.append(row)
+        if paths:
+            corpus_items = [(corpus_name(path), path) for path in paths]
+
+    corpus_failed = 0
+    if corpus_items:
+        print()
+        corpus_failed, corpus_rows = run_corpus_checks(
+            corpus_items, source=source, record=record
+        )
+        failed += corpus_failed
+        rows.extend(corpus_rows)
     verb = "recorded" if record else "checked"
-    print(f"  {len(names)} {verb}, {failed} failed")
+    corpus_verb = verb if source == "submodule" else "surveyed"
+    if corpus_items:
+        print(f"  {fixture_count} fixtures + {len(corpus_items)} corpus {corpus_verb}, {failed} failed")
+    else:
+        print(f"  {fixture_count} fixtures {verb}, {failed} failed")
     if log:
         append_rows(mode, note, rows)
     return 1 if failed else 0

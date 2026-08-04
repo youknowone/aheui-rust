@@ -1,6 +1,6 @@
 # aheui JIT stats baselines
 
-One `<fixture>.jitstats` per gated program, in the same format
+One `.jitstats` per gated program, in the same format
 `pyre/bench/synth/*.jitstats` uses: sorted `key=value` lines holding the
 counters `majit_metainterp::JitStats` exposes.
 
@@ -19,12 +19,13 @@ cargo build -p aheui --release
 python3 scripts/jitstats.py record        # rewrite every baseline
 python3 scripts/jitstats.py check         # what check.sh section 5 runs
 python3 scripts/jitstats.py record logo   # one fixture
-python3 scripts/jitstats.py survey        # the whole rpaheui corpus, ungated
+python3 scripts/jitstats.py record pi/pi.jinseo  # one corpus program
+python3 scripts/jitstats.py survey        # the rpaheui corpus, ungated
 python3 scripts/jitstats.py dump          # check + survey, appended to the ledger
 python3 scripts/jitstats.py trend         # what moved between runs, per program
 ```
 
-`check` prints the counters for every fixture, not just pass/fail — a run that
+`check` prints the counters for every gated program, not just pass/fail — a run that
 only says PASS says nothing about what the JIT did. Any gated counter that moved
 is listed with the headroom left before its gate, so a number sitting one step
 below the threshold is visible before the run that trips it.
@@ -38,24 +39,41 @@ far too slow to enable on a workload big enough to abort interestingly.
 ## survey
 
 `survey` runs every rpaheui corpus program that has a reference output and
-prints its counters, gating nothing — the corpus is an unpinned sibling
-checkout, so nothing there can hold a baseline. It answers the question the gate
-cannot: which programs does the JIT engage with at all.
+prints its counters, gating nothing. That is the right mode for `$AHEUI_SNIPPETS`
+or a sibling `rpaheui/snippets` checkout: those sources name whatever that
+machine last pulled, so a baseline keyed to them is not reproducible elsewhere.
+When the corpus comes from this repo's pinned `snippets/` submodule, `check`
+and `record` gate it under `bench/corpus/<dir>/<stem>.jitstats`.
 
-At the production 1039 back-edge threshold, **3 of 55** do:
+At the production 1039 back-edge threshold, **3 of the 62 pinned programs**
+reach it (submodule `4961b05`, majit `2674bdcb06b`, aheui `13e4eb9`):
 
-| program | loops | aborted | note |
-|---|---|---|---|
-| `logo` | 1 | 0 | the gated fixture |
-| `standard/loop` | 1 | 0 | 92 bytes, sub-10ms |
-| `pi/pi.jinseo` | 11 | 39 | `too_long=7 bad_loop=31 segmented=1`, ~3.4s |
+| program | loops | bridges | aborted | guards | jit / uncompiled | out |
+|---|---|---|---|---|---|---|
+| `logo` | 1 | 1 | 0 | 201 | 0.46s / 4.56s | 996310, `ok` |
+| `pi/pi.jinseo` | 3 | 1 | 0 | 674 | 0.04s / 0.63s | 1005, `+nl` |
+| `standard/loop` | 1 | 0 | 0 | 1 | 0.006s / 0.14s | 1, `ok` |
 
 Everything else compiles nothing — they never reach the threshold, so their
 baselines are all-zero and gate only the badness fields.
 
-Fixtures are the in-tree programs under `aheui-wasm/web/samples/`, not the
-rpaheui snippet corpus: the corpus is an unpinned sibling checkout, so a
-baseline keyed to it is not reproducible on another machine.
+`pi/pi.jinseo` is the program that exercises the merge-point machinery, and it
+is also the one place where which corpus you point at decides what you measure.
+The pinned `aheui/snippets` version prints 1006 bytes; a fork carries the same
+algorithm with a larger digit count that prints 15001 and takes 123s
+uncompiled. Only the larger one reaches the `compile_trace` JUMP into an
+existing procedure token — 4 times, against 0 for the pinned one — so **the
+gate does not cover that path**. The larger variant's history, kept here
+because nothing in the tree records it: `11 loops / 39 aborted` when this table
+was first written, then no termination at all, and `4 loops / 5 bridges / 0
+aborted` in 2.3s against 75s uncompiled only with the closed-at-merge-point
+compile key, the entry-key unification of the procedure-token lookups, and that
+JUMP. Closing the gap means getting a longer-running program into the pinned
+corpus, not pointing the harness at an unpinned checkout.
+
+Fixtures are the in-tree programs under `aheui-wasm/web/samples/`. Corpus
+programs are the pinned `snippets/` submodule when it is present, and are
+fallback survey rows otherwise.
 
 ## The ledger — `dump` and `trend`
 
@@ -72,21 +90,22 @@ python3 scripts/jitstats.py trend logo --all      # every row, not just the chan
 python3 scripts/jitstats.py check --no-log        # opt out for one run
 ```
 
-`dump` is the command to run after a change: it reaches the same verdict
-`check` does — the gated fixtures, with the un-compiled A/B — and then sweeps
-the whole corpus, so the programs that actually stress the JIT (`pi/pi.jinseo`)
-are in the record even though nothing can gate them.
+`dump` is the exploratory command to run after a change: it gates the fixtures
+and then sweeps the whole corpus, so the programs that actually stress the JIT
+(`pi/pi.jinseo`) are in the record even when a fallback source means they
+cannot be gated.
 
-Corpus rows are checked against the `.out` committed beside each program, in
-three states rather than a pass/fail with a tolerance: `ok`, `+nl` when the
+Corpus survey rows are checked against the `.out` committed beside each
+program, in three states rather than a pass/fail with a tolerance: `ok`, `+nl` when the
 only difference is the trailing newline most of those files carry and this
 interpreter does not emit, and `≠` otherwise — which for a handful of programs
 just means they read stdin and the survey gives them none (`bahmanghui` prints
 `-1` for the integer it cannot read). Folding `+nl` into `ok` would also hide a
-real newline change, so it stays its own state; what disqualifies a row is a
-state that *changes*, not one that has always been `≠`. The fixtures' own A/B
-is exact by contrast — it compares one interpreter against itself, so even a
-newline difference there is a miscompile.
+real newline change, so it stays its own state. Pinned corpus gating is
+stricter: the baseline records stdout's SHA prefix and the exit code, and any
+change in either fails. The fixtures' and pinned corpus' own A/B is exact by
+contrast — it compares one interpreter against itself, so even a newline
+difference there is a miscompile.
 
 Each row carries the counters, the full `ABORT_*` breakdown, the `mc_diag`
 decline census, stdout's length/sha/exit, the wall times, and the `-m` note —
@@ -138,10 +157,10 @@ number is understood and intended.
 
 ## The correctness half
 
-Before comparing counters, every fixture runs twice — once normally and once
-with `MAJIT_THRESHOLD` raised out of reach so the tracer never fires — and the
-two runs must agree byte-for-byte on stdout and on the exit code. Without that,
-a baseline can go green on a run that miscompiled.
+Before comparing counters, every fixture and pinned corpus program runs twice
+— once normally and once with `MAJIT_THRESHOLD` raised out of reach so the
+tracer never fires — and the two runs must agree byte-for-byte on stdout and on
+the exit code. Without that, a baseline can go green on a run that miscompiled.
 
 `MAJIT_THRESHOLD` is the right control rather than `--no-jit`: the flag selects
 a *different* interpreter (`aheuinterpreter`), and it only exists on a `naive`
