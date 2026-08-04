@@ -10,17 +10,19 @@ threshold raised out of reach — and the two runs must agree byte-for-byte on
 stdout and on the exit code. That A/B is the correctness half: without it a
 baseline can go green on a run that miscompiled.
 
-    scripts/jitstats.py record [fixture | corpus/program ...]
-    scripts/jitstats.py check  [fixture | corpus/program ...]
+    scripts/jitstats.py record [--stress] [fixture | corpus/program ...]
+    scripts/jitstats.py check  [--stress] [fixture | corpus/program ...]
     scripts/jitstats.py survey
     scripts/jitstats.py dump  [-m NOTE]
     scripts/jitstats.py trend [program ...] [--all]
 
 With no arguments both modes cover the whole committed set: in-tree fixtures,
 plus corpus programs when `snippets/` is present as this repo's pinned
-submodule. `survey` is the ungated view for every rpaheui corpus program with a
-reference output; it is also what `check` falls back to when the corpus came
-from `$AHEUI_SNIPPETS` or a sibling checkout instead of the submodule.
+submodule, plus a stressed copy of that pinned corpus at the same threshold
+`pyre/check.py` uses for its `*_jitstress` axis. `survey` is the ungated view
+for every rpaheui corpus program with a reference output; it is also what
+`check` falls back to when the corpus came from `$AHEUI_SNIPPETS` or a sibling
+checkout instead of the submodule.
 
 `check` and `survey` each append one row per program run to a local ledger
 (`bench/history.jsonl`; `AHEUI_JITSTATS_HISTORY` moves it), and `dump` is the
@@ -85,6 +87,16 @@ SNAPSHOT_FIELDS = (
 # interpreter (aheuinterpreter), and it only exists on a `naive` build.
 NO_COMPILE_THRESHOLD = "1000000000"
 
+# `pyre/check.py`'s `*_jitstress` axis: the same programs under a threshold
+# low enough that the merge-point machinery is actually reached. At the
+# production threshold only 3 of the 62 pinned programs compile anything and
+# none of them exercises `compile_trace`'s JUMP into an existing procedure
+# token, so that path is uncovered by a green production gate. Measured over
+# the corpus: 1039 -> 3 programs engaged, 200 -> 7, 50 -> 10, and 50 is also
+# the best sampled value for that JUMP path (10 is worse). Zero aborts and
+# zero A/B mismatches at 50, so it is a floor to hold, not a known-bad state.
+STRESS_THRESHOLD = "50"
+
 # Local by default, and not committed: the timings in it are machine-specific,
 # and four worktrees of this repo appending to one tracked file would conflict
 # on every run. Point `AHEUI_JITSTATS_HISTORY` at a shared path to pool them.
@@ -108,21 +120,49 @@ def corpus_baseline_path(name: str) -> Path:
     return BENCH / "corpus" / f"{name}.jitstats"
 
 
+def stress_baseline_path(name: str) -> Path:
+    return BENCH / "stress" / f"{name}.jitstats"
+
+
 class Run:
     """One execution of a fixture."""
 
-    def __init__(self, stdout: bytes, code: int, fields: dict[str, str], secs: float):
+    def __init__(
+        self,
+        stdout: bytes,
+        code: int,
+        fields: dict[str, str],
+        secs: float,
+        env: dict[str, str],
+    ):
         self.stdout = stdout
         self.code = code
         self.fields = fields
         self.secs = secs
+        self.env = env
 
 
-def run_path(path: Path, *, compile_: bool) -> Run:
-    """Run one program; capture its stdout, exit code and `[jit-stats]` fields."""
+def run_env(*, compile_: bool, threshold: str | None = None) -> dict[str, str]:
     env = dict(os.environ, MAJIT_STATS="1")
-    if not compile_:
+    if threshold is not None:
+        env["MAJIT_THRESHOLD"] = threshold
+    elif not compile_:
         env["MAJIT_THRESHOLD"] = NO_COMPILE_THRESHOLD
+    return env
+
+
+def comparable_env(env: dict[str, str]) -> dict[str, str]:
+    """The tuning knobs that made this JIT row, including harness-set knobs."""
+    return {
+        k: v
+        for k, v in env.items()
+        if (k.startswith("MAJIT_") or k.startswith("AHEUI_")) and k != "MAJIT_STATS"
+    }
+
+
+def run_path(path: Path, *, compile_: bool, threshold: str | None = None) -> Run:
+    """Run one program; capture its stdout, exit code and `[jit-stats]` fields."""
+    env = run_env(compile_=compile_, threshold=threshold)
     start = time.monotonic()
     proc = subprocess.run(
         [str(BINARY), str(path)],
@@ -142,7 +182,7 @@ def run_path(path: Path, *, compile_: bool) -> Run:
             key, sep, value = token.partition("=")
             if sep:
                 fields[key] = value
-    return Run(proc.stdout, proc.returncode, fields, elapsed)
+    return Run(proc.stdout, proc.returncode, fields, elapsed, comparable_env(env))
 
 
 def run(name: str, *, compile_: bool) -> Run:
@@ -301,7 +341,7 @@ def build_is_stale() -> bool:
 
 
 def tuning_env() -> dict[str, str]:
-    """The `MAJIT_*` / `AHEUI_*` knobs in effect, minus the one we set ourselves.
+    """The `MAJIT_*` / `AHEUI_*` knobs inherited by the harness.
 
     A row produced under `MAJIT_TRACE_LIMIT=5000` is not comparable with one
     produced at the production limit, and nothing else in the row would say so.
@@ -347,6 +387,7 @@ def ledger_row(
         "out_ok": out_ok,
         "secs": round(jit.secs, 3),
         "nojit_secs": round(control.secs, 3) if control is not None else None,
+        "env": jit.env,
         # Every `[jit-stats]` field verbatim, `mc_diag` included: the decline
         # census is what says WHY a program compiled nothing, and a ledger that
         # kept only the totals could not answer that after the fact.
@@ -451,16 +492,23 @@ def check_one(name: str, *, record: bool) -> tuple[bool, dict | None]:
 
 
 def check_corpus_one(
-    name: str, path: Path, *, record: bool, gated: bool
+    name: str,
+    source_path: Path,
+    *,
+    record: bool,
+    gated: bool,
+    kind: str = "corpus",
+    threshold: str | None = None,
 ) -> tuple[bool, dict | None]:
     """Run the corpus A/B, then either record, gate, or survey it."""
-    jit = run_path(path, compile_=True)
-    control = run_path(path, compile_=False)
-    reference = path.with_suffix(".out").read_bytes()
+    jit = run_path(source_path, compile_=True, threshold=threshold)
+    control = run_path(source_path, compile_=False)
+    reference = source_path.with_suffix(".out").read_bytes()
     out_ok = out_match(jit.stdout, reference)
-    row = ledger_row("corpus", name, jit, control, out_ok)
+    row_name = stress_name(name) if kind == "stress" else name
+    row = ledger_row(kind, row_name, jit, control, out_ok)
 
-    print(counter_row(name, jit.fields, jit, control))
+    print(counter_row(row_name, jit.fields, jit, control))
     for line in abort_breakdown(jit.fields):
         print(f"      {line}")
 
@@ -484,21 +532,22 @@ def check_corpus_one(
         return False, row
 
     current = corpus_snapshot(jit)
-    path = corpus_baseline_path(name)
+    baseline_file = stress_baseline_path(name) if kind == "stress" else corpus_baseline_path(name)
     if record:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(current)
-        print(f"      recorded {path.relative_to(REPO)}")
+        baseline_file.parent.mkdir(parents=True, exist_ok=True)
+        baseline_file.write_text(current)
+        print(f"      recorded {baseline_file.relative_to(REPO)}")
         return ok, row
 
-    if not path.exists():
+    if not baseline_file.exists():
+        stress_flag = " --stress" if kind == "stress" else ""
         print(
-            f"      FAIL: no committed baseline ({path.relative_to(REPO)})"
-            f" — record it with scripts/jitstats.py record {name}"
+            f"      FAIL: no committed baseline ({baseline_file.relative_to(REPO)})"
+            f" — record it with scripts/jitstats.py record{stress_flag} {name}"
         )
         return False, row
 
-    baseline = parse(path.read_text())
+    baseline = parse(baseline_file.read_text())
     parsed = parse(current)
     for line in movement(baseline, parsed):
         print(f"      moved: {line}")
@@ -646,7 +695,7 @@ def trend(programs: list[str], *, show_all: bool) -> int:
 
     by_program: dict[str, list[dict]] = {}
     for row in rows:
-        if programs and row["program"] not in programs:
+        if programs and not any(trend_program_matches(row["program"], p) for p in programs):
             continue
         by_program.setdefault(row["program"], []).append(row)
     if not by_program:
@@ -683,6 +732,14 @@ def trend(programs: list[str], *, show_all: bool) -> int:
     return 0
 
 
+def stress_name(name: str) -> str:
+    return f"{name} [stress]"
+
+
+def trend_program_matches(row_program: str, requested: str) -> bool:
+    return row_program == requested or row_program == stress_name(requested)
+
+
 def corpus_name(path: Path) -> str:
     # `<dir>/<stem>`, the way bench/README.md's survey table names them —
     # a bare stem collides across the corpus's subdirectories.
@@ -705,7 +762,11 @@ def corpus_map(paths: list[Path]) -> dict[str, Path]:
 
 
 def run_corpus_checks(
-    items: list[tuple[str, Path]], *, source: str, record: bool
+    items: list[tuple[str, Path]],
+    *,
+    source: str,
+    record: bool,
+    kind: str = "corpus",
 ) -> tuple[int, list[dict]]:
     gated = source == "submodule"
     unpinned = f"  corpus is unpinned — surveyed, not gated ({source} source)"
@@ -715,7 +776,14 @@ def run_corpus_checks(
     rows: list[dict] = []
     failed = 0
     for name, path in items:
-        ok, row = check_corpus_one(name, path, record=record, gated=gated)
+        ok, row = check_corpus_one(
+            name,
+            path,
+            record=record,
+            gated=gated,
+            kind=kind,
+            threshold=STRESS_THRESHOLD if kind == "stress" else None,
+        )
         failed += 0 if ok else 1
         if row is not None:
             rows.append(row)
@@ -730,6 +798,10 @@ def fixture_or_corpus(name: str, corpus: dict[str, Path]) -> tuple[str, Path | N
     if name in corpus:
         return "corpus", corpus[name]
     return "missing", None
+
+
+def stress_requested(name: str) -> str:
+    return name.removesuffix(" [stress]")
 
 
 def dump(note: str, *, log: bool) -> int:
@@ -795,6 +867,7 @@ def main(argv: list[str]) -> int:
     mode = args.pop(0)
     note = take_option(args, "-m", "--note") or ""
     show_all = take_flag(args, "--all")
+    stress_only = take_flag(args, "--stress")
     log = not take_flag(args, "--no-log")
 
     if mode == "trend":
@@ -836,9 +909,20 @@ def main(argv: list[str]) -> int:
     failed = 0
     fixture_count = 0
     corpus_items: list[tuple[str, Path]] = []
+    stress_items: list[tuple[str, Path]] = []
 
     if args:
         for name in args:
+            if stress_only:
+                stress_target = stress_requested(name)
+                path = corpus.get(stress_target)
+                if path is None:
+                    corpus_hint = "corpus program" if found is not None else "fixture"
+                    print(f"  FAIL: {name}: no such stress {corpus_hint}")
+                    failed += 1
+                else:
+                    stress_items.append((stress_target, path))
+                continue
             kind, path = fixture_or_corpus(name, corpus)
             if kind == "fixture":
                 ok, row = check_one(name, record=record)
@@ -854,14 +938,19 @@ def main(argv: list[str]) -> int:
                 print(f"  FAIL: {name}: no such fixture{corpus_hint} ({fixture})")
                 failed += 1
     else:
-        for name in FIXTURES:
-            ok, row = check_one(name, record=record)
-            fixture_count += 1
-            failed += 0 if ok else 1
-            if row is not None:
-                rows.append(row)
         if paths:
-            corpus_items = [(corpus_name(path), path) for path in paths]
+            all_corpus_items = [(corpus_name(path), path) for path in paths]
+            if source == "submodule":
+                stress_items = all_corpus_items
+            if not stress_only:
+                corpus_items = all_corpus_items
+        if not stress_only:
+            for name in FIXTURES:
+                ok, row = check_one(name, record=record)
+                fixture_count += 1
+                failed += 0 if ok else 1
+                if row is not None:
+                    rows.append(row)
 
     corpus_failed = 0
     if corpus_items:
@@ -871,10 +960,29 @@ def main(argv: list[str]) -> int:
         )
         failed += corpus_failed
         rows.extend(corpus_rows)
+    stress_failed = 0
+    if stress_items:
+        if source != "submodule":
+            print(f"\n  stress corpus is unpinned — not gated ({source} source)")
+        else:
+            print()
+            stress_failed, stress_rows = run_corpus_checks(
+                stress_items, source=source, record=record, kind="stress"
+            )
+            failed += stress_failed
+            rows.extend(stress_rows)
     verb = "recorded" if record else "checked"
     corpus_verb = verb if source == "submodule" else "surveyed"
-    if corpus_items:
+    stress_verb = verb if source == "submodule" else "skipped"
+    if corpus_items and stress_items and source == "submodule":
+        print(
+            f"  {fixture_count} fixtures + {len(corpus_items)} corpus"
+            f" + {len(stress_items)} stress {verb}, {failed} failed"
+        )
+    elif corpus_items:
         print(f"  {fixture_count} fixtures + {len(corpus_items)} corpus {corpus_verb}, {failed} failed")
+    elif stress_items:
+        print(f"  {len(stress_items)} stress {stress_verb}, {failed} failed")
     else:
         print(f"  {fixture_count} fixtures {verb}, {failed} failed")
     if log:

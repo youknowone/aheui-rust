@@ -20,6 +20,7 @@ python3 scripts/jitstats.py record        # rewrite every baseline
 python3 scripts/jitstats.py check         # what check.sh section 5 runs
 python3 scripts/jitstats.py record logo   # one fixture
 python3 scripts/jitstats.py record pi/pi.jinseo  # one corpus program
+python3 scripts/jitstats.py record --stress pi/pi.jinseo  # its jitstress row
 python3 scripts/jitstats.py survey        # the rpaheui corpus, ungated
 python3 scripts/jitstats.py dump          # check + survey, appended to the ledger
 python3 scripts/jitstats.py trend         # what moved between runs, per program
@@ -54,25 +55,29 @@ reach it (submodule `4961b05`, majit `2674bdcb06b`, aheui `13e4eb9`):
 | `pi/pi.jinseo` | 3 | 1 | 0 | 674 | 0.04s / 0.63s | 1005, `+nl` |
 | `standard/loop` | 1 | 0 | 0 | 1 | 0.006s / 0.14s | 1, `ok` |
 
-Everything else compiles nothing — they never reach the threshold, so their
-baselines are all-zero and gate only the badness fields.
+Everything else compiles nothing at the production threshold — they never reach
+it, so their production baselines are all-zero and gate only the badness fields.
 
 `pi/pi.jinseo` is the program that exercises the merge-point machinery, and it
 is also the one place where which corpus you point at decides what you measure.
 The pinned `aheui/snippets` version prints 1006 bytes; a fork carries the same
 algorithm with a larger digit count that prints 15001 and takes 123s
-uncompiled. Only the larger one reaches the `compile_trace` JUMP into an
-existing procedure token — 4 times, against 0 for the pinned one — so **the
-gate does not cover that path**. The larger variant's history, kept here
-because nothing in the tree records it: `11 loops / 39 aborted` when this table
-was first written, then no termination at all, and `4 loops / 5 bridges / 0
-aborted` in 2.3s against 75s uncompiled only with the closed-at-merge-point
-compile key, the entry-key unification of the procedure-token lookups, and that
-JUMP. Closing the gap means getting a longer-running program into the pinned
-corpus, not pointing the harness at an unpinned checkout.
+uncompiled. The larger fork is not gated because it is not pinned, but it is
+why the canonical `pi/pi.jinseo` row matters.
 
-Fixtures are the in-tree programs under `aheui-wasm/web/samples/`. Corpus
-programs are the pinned `snippets/` submodule when it is present, and are
+The pinned corpus therefore has a second gated axis under
+`bench/stress/<dir>/<stem>.jitstats`, run with `MAJIT_THRESHOLD=50`. This
+mirrors `pyre/check.py`'s `*_jitstress` rows: the same program under a lower
+threshold, with its own baseline and the same byte-exact JIT-vs-uncompiled A/B.
+Measured over the pinned corpus, production `1039` engaged 3 programs and hit
+`compile_trace`'s JUMP into an existing procedure token 0 times for
+`pi/pi.jinseo`; `200` engaged 7 and hit it 5 times; `50` engaged 10 and hit it
+8 times. `10` was worse for that JUMP path at 7. The `50` sweep had zero aborts
+and zero A/B mismatches, so the stress axis closes the coverage gap without
+turning the unpinned fork into a gate.
+
+Fixtures are the in-tree programs under `aheui-wasm/web/samples/`. Corpus and
+stress programs are the pinned `snippets/` submodule when it is present, and
 fallback survey rows otherwise.
 
 ## The ledger — `dump` and `trend`
@@ -101,11 +106,11 @@ only difference is the trailing newline most of those files carry and this
 interpreter does not emit, and `≠` otherwise — which for a handful of programs
 just means they read stdin and the survey gives them none (`bahmanghui` prints
 `-1` for the integer it cannot read). Folding `+nl` into `ok` would also hide a
-real newline change, so it stays its own state. Pinned corpus gating is
-stricter: the baseline records stdout's SHA prefix and the exit code, and any
-change in either fails. The fixtures' and pinned corpus' own A/B is exact by
-contrast — it compares one interpreter against itself, so even a newline
-difference there is a miscompile.
+real newline change, so it stays its own state. Pinned corpus and stress
+gating are stricter: the baseline records stdout's SHA prefix and the exit
+code, and any change in either fails. The fixtures' and pinned corpus/stress
+own A/B is exact by contrast — it compares one interpreter against itself, so
+even a newline difference there is a miscompile.
 
 Each row carries the counters, the full `ABORT_*` breakdown, the `mc_diag`
 decline census, stdout's length/sha/exit, the wall times, and the `-m` note —
@@ -141,7 +146,9 @@ the raw high-frequency record, the table is the curated one.
 ## What each counter gates
 
 Copied from `pyre/check.py`'s `_jit_stats_regression_floor` so the two suites
-read the same way:
+read the same way. The production corpus and stress corpus use the same field
+directions; stress only changes the JIT threshold and keeps a separate
+baseline identity.
 
 | counter | fails on |
 |---|---|
