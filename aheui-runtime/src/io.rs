@@ -293,3 +293,25 @@ impl InputBuffer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::encode_decimal_i64;
+
+    #[test]
+    fn encode_decimal_i64_handles_full_range_and_common_values() {
+        let cases = [
+            (i64::MIN, "-9223372036854775808"),
+            (i64::MAX, "9223372036854775807"),
+            (0, "0"),
+            (-1, "-1"),
+            (1, "1"),
+            (-10, "-10"),
+        ];
+
+        for (value, expected) in cases {
+            let mut buf = [0u8; 20];
+            assert_eq!(encode_decimal_i64(value, &mut buf), expected.as_bytes());
+        }
+    }
+}
