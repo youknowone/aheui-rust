@@ -66,6 +66,7 @@ pub fn stack_pop(stack: usize) -> Val {
     value
 }
 
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -98,6 +99,34 @@ pub fn stack_add(stack: usize) {
     };
 }
 
+#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_add => elidable_int,
+    },
+    native_int_binops = { val_add => IntAdd },
+)]
+pub fn stack_add(stack: usize) {
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    next.value = val_add(r2, r1);
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -130,6 +159,34 @@ pub fn stack_sub(stack: usize) {
     };
 }
 
+#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_sub => elidable_int,
+    },
+    native_int_binops = { val_sub => IntSub },
+)]
+pub fn stack_sub(stack: usize) {
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    next.value = val_sub(r2, r1);
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -169,6 +226,33 @@ pub fn stack_mul(stack: usize) {
         } else {
             val_mul(r2, r1)
         };
+}
+
+#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_mul => elidable_int,
+    },
+    native_int_binops = { val_mul => IntMul },
+)]
+pub fn stack_mul(stack: usize) {
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    next.value = val_mul(r2, r1);
 }
 
 #[inline(always)]
@@ -223,6 +307,7 @@ pub fn stack_swap(stack: usize) {
     node2.value = v1;
 }
 
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -252,6 +337,31 @@ pub fn stack_cmp(stack: usize) {
     } else {
         val_ge_jit(r2, r1)
     };
+}
+
+#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+    },
+)]
+pub fn stack_cmp(stack: usize) {
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    next.value = (r2 >= r1) as i64;
 }
 
 // ── Node alloc/free + val arithmetic — JIT-callable wrappers ────────
@@ -352,6 +462,7 @@ pub fn queue_pop(queue: usize) -> Val {
 // collect is safe (node-collect never moves values); the popped nodes are freed
 // before the alloc. `maybe_collect_bigints` is dropped, matching the inlined
 // stack arithmetic.
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -398,6 +509,48 @@ pub fn queue_add(queue: usize) {
     queue.size = queue.size + 1usize;
 }
 
+#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_add => elidable_int,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+    native_int_binops = { val_add => IntAdd },
+)]
+pub fn queue_add(queue: usize) {
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let result = val_add(r2, r1);
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -444,6 +597,48 @@ pub fn queue_sub(queue: usize) {
     queue.size = queue.size + 1usize;
 }
 
+#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_sub => elidable_int,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+    native_int_binops = { val_sub => IntSub },
+)]
+pub fn queue_sub(queue: usize) {
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let result = val_sub(r2, r1);
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -486,6 +681,47 @@ pub fn queue_mul(queue: usize) {
         } else {
             val_mul(r2, r1)
         };
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
+}
+
+#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_mul => elidable_int,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+    native_int_binops = { val_mul => IntMul },
+)]
+pub fn queue_mul(queue: usize) {
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let result = val_mul(r2, r1);
     let sentinel_val = val_from_i32(0);
     let new_sentinel = alloc_node_jit(sentinel_val, 0);
     let tail = queue.tail;
@@ -551,6 +787,7 @@ pub fn queue_swap(queue: usize) {
     node2.value = v1;
 }
 
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -587,6 +824,45 @@ pub fn queue_cmp(queue: usize) {
     } else {
         val_ge_jit(r2, r1)
     };
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
+}
+
+#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+)]
+pub fn queue_cmp(queue: usize) {
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let result = (r2 >= r1) as i64;
     let sentinel_val = val_from_i32(0);
     let new_sentinel = alloc_node_jit(sentinel_val, 0);
     let tail = queue.tail;

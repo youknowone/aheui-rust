@@ -21,7 +21,7 @@ num-bigint = ["aheuinterpreter?/num-bigint", "aheui-jit?/num-bigint", "compaheui
 malachite-bigint = ["aheuinterpreter?/malachite-bigint", "aheui-jit?/malachite-bigint", "compaheuiler/malachite-bigint"]
 
 [dependencies]
-aheuinterpreter = { path = "aheuinterpreter", optional = true }
+aheuinterpreter = { path = "aheuinterpreter", optional = true, default-features = false }
 aheui-jit = { path = "aheui-jit", optional = true, default-features = false }
 ahsembler = { path = "ahsembler" }
 compaheuiler = { path = "compaheuiler", default-features = false }

@@ -230,6 +230,7 @@ mod bigint_gc {
         }
     }
 
+    #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
     fn walk_aheui_bigint_roots(visit: &mut dyn FnMut(&mut GcRef)) {
         aheui_runtime::storage::walk_bigint_root_values(&mut |value| {
             if let Some(addr) = aheui_runtime::value::val_bigint_addr(value) {
@@ -753,6 +754,7 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
 }
 
 #[inline(always)]
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 fn jit_retag_small(untagged: i64) -> Val {
     aheui_runtime::value::val_retag_small(untagged)
 }

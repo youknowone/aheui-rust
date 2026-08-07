@@ -11,7 +11,7 @@ cranelift = ["dep:majit-backend-cranelift", "majit-metainterp/cranelift"]
 dynasm = ["dep:majit-backend-dynasm", "majit-metainterp/dynasm"]
 
 [dependencies]
-aheui-runtime = { path = "../aheui-runtime", features = ["jit"] }
+aheui-runtime = { path = "../aheui-runtime", features = ["jit"], default-features = false }
 ahsembler = { path = "../ahsembler" }
 majit-ir = { path = "../../majit/majit-ir" }
 majit-macros = { path = "../../majit/majit-macros" }

@@ -9,4 +9,4 @@ num-bigint = ["aheui-runtime/num-bigint"]
 malachite-bigint = ["aheui-runtime/malachite-bigint"]
 
 [dependencies]
-aheui-runtime = { path = "../aheui-runtime" }
+aheui-runtime = { path = "../aheui-runtime", default-features = false }
