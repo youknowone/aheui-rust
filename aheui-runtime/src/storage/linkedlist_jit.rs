@@ -163,15 +163,12 @@ pub fn stack_mul(stack: usize) {
     let av32 = (av << 32) >> 32;
     let bv32 = (bv << 32) >> 32;
     let prod = av32 * bv32;
-    next.value = if ((r1 & r2) & 1 != 0)
-        & (av32 == av)
-        & (bv32 == bv)
-        & (((prod << 1) >> 1) == prod)
-    {
-        val_retag_small(prod)
-    } else {
-        val_mul(r2, r1)
-    };
+    next.value =
+        if ((r1 & r2) & 1 != 0) & (av32 == av) & (bv32 == bv) & (((prod << 1) >> 1) == prod) {
+            val_retag_small(prod)
+        } else {
+            val_mul(r2, r1)
+        };
 }
 
 #[inline(always)]
@@ -483,15 +480,12 @@ pub fn queue_mul(queue: usize) {
     let av32 = (av << 32) >> 32;
     let bv32 = (bv << 32) >> 32;
     let prod = av32 * bv32;
-    let result = if ((r1 & r2) & 1 != 0)
-        & (av32 == av)
-        & (bv32 == bv)
-        & (((prod << 1) >> 1) == prod)
-    {
-        val_retag_small(prod)
-    } else {
-        val_mul(r2, r1)
-    };
+    let result =
+        if ((r1 & r2) & 1 != 0) & (av32 == av) & (bv32 == bv) & (((prod << 1) >> 1) == prod) {
+            val_retag_small(prod)
+        } else {
+            val_mul(r2, r1)
+        };
     let sentinel_val = val_from_i32(0);
     let new_sentinel = alloc_node_jit(sentinel_val, 0);
     let tail = queue.tail;

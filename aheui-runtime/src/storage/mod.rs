@@ -95,8 +95,8 @@ struct Nursery {
     chunks: Vec<*mut linkedlist::Node>, // base pointer of every allocated chunk
     spare_chunk: *mut linkedlist::Node, // to-space for the next copying collect
     quarantined: Vec<*mut linkedlist::Node>, // diagnostic: retained from-space
-    collected: bool,                    // a copying collection has run at least once
-    collect_count: usize,               // collections performed (see `max_collects`)
+    collected: bool,                  // a copying collection has run at least once
+    collect_count: usize,             // collections performed (see `max_collects`)
     /// `chunks` as `(start, end)` byte ranges, sorted by start, so membership
     /// is a binary search. `free_node` asks on every pop, and under
     /// `--no-jit` / `AHEUI_GC_DISABLE` nothing is ever retired so `chunks`
@@ -272,7 +272,9 @@ impl Nursery {
     #[inline(always)]
     fn owns(&self, node: *mut linkedlist::Node) -> bool {
         let addr = node as usize;
-        let at = self.chunk_ranges.partition_point(|&(start, _)| start <= addr);
+        let at = self
+            .chunk_ranges
+            .partition_point(|&(start, _)| start <= addr);
         at > 0 && addr < self.chunk_ranges[at - 1].1
     }
 
@@ -724,8 +726,14 @@ fn gc_log_check_chains(when: &str) {
                 before.len(),
                 after.len(),
             );
-            eprintln!("@@@GC     before[{lo}..]: {:x?}", &before[lo..(lo + 5).min(before.len())]);
-            eprintln!("@@@GC     after [{lo}..]: {:x?}", &after[lo..(lo + 5).min(after.len())]);
+            eprintln!(
+                "@@@GC     before[{lo}..]: {:x?}",
+                &before[lo..(lo + 5).min(before.len())]
+            );
+            eprintln!(
+                "@@@GC     after [{lo}..]: {:x?}",
+                &after[lo..(lo + 5).min(after.len())]
+            );
         }
     });
 }

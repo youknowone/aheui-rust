@@ -67,8 +67,7 @@ pub fn trace_limit() -> u32 {
 /// so a caller that wants the counters has no live driver to ask. `mainloop`
 /// publishes a snapshot here just before it returns, and
 /// [`last_jit_stats`] reads it back.
-static LAST_JIT_STATS: std::sync::Mutex<Option<majit_meta::JitStats>> =
-    std::sync::Mutex::new(None);
+static LAST_JIT_STATS: std::sync::Mutex<Option<majit_meta::JitStats>> = std::sync::Mutex::new(None);
 
 /// The `Counters.ABORT_*` breakdown behind [`last_jit_stats`]'s
 /// `loops_aborted`.
@@ -302,30 +301,15 @@ impl majit_metainterp::resume::BlackholeAllocator for AheuiBlackholeAllocator {
         }
     }
 
-    fn bh_setfield_gc_i(
-        &self,
-        struct_ptr: i64,
-        value: i64,
-        descr_info: &majit_ir::FieldDescrInfo,
-    ) {
+    fn bh_setfield_gc_i(&self, struct_ptr: i64, value: i64, descr_info: &majit_ir::FieldDescrInfo) {
         raw_store(struct_ptr, descr_info.offset, value);
     }
 
-    fn bh_setfield_gc_r(
-        &self,
-        struct_ptr: i64,
-        value: i64,
-        descr_info: &majit_ir::FieldDescrInfo,
-    ) {
+    fn bh_setfield_gc_r(&self, struct_ptr: i64, value: i64, descr_info: &majit_ir::FieldDescrInfo) {
         raw_store(struct_ptr, descr_info.offset, value);
     }
 
-    fn bh_setfield_gc_f(
-        &self,
-        struct_ptr: i64,
-        value: i64,
-        descr_info: &majit_ir::FieldDescrInfo,
-    ) {
+    fn bh_setfield_gc_f(&self, struct_ptr: i64, value: i64, descr_info: &majit_ir::FieldDescrInfo) {
         raw_store(struct_ptr, descr_info.offset, value);
     }
 }
@@ -575,8 +559,7 @@ impl AheuiState {
         }
         dump.push_str(&format!(
             " queue.tail={:?} port.head={:?}",
-            self.storage.queue.tail,
-            self.storage.port.head,
+            self.storage.queue.tail, self.storage.port.head,
         ));
         dump
     }
