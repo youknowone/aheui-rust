@@ -42,12 +42,37 @@ pub fn jit_threshold() -> u32 {
         .unwrap_or(JIT_THRESHOLD)
 }
 
-/// `rpaheui/aheui/aheui.py:325 jit.set_param(driver, 'trace_limit', 30000)`,
-/// scaled for majit's denser IR: the sub-JitCode dispatch + pre-dispatch branch
-/// match emit ~17 IR ops per aheui opcode (measured on logo: ~3751 opcodes ->
-/// ~64675 IR ops) against rpaheui's ~8, so rpaheui's 30000 maps to ~64500 here.
-/// 70000 keeps logo's whole-program trace compilable, matching rpaheui, which
-/// compiles logo's loop rather than aborting it.
+/// The JIT trace budget, chosen by measurement.
+///
+/// rpaheui does not set one: `option.py:186` defaults `--trace-limit` /
+/// `RPAHEUI_TRACE_LIMIT` to `-1`, and `aheui.py:360` calls
+/// `jit.set_param(driver, 'trace_limit', ...)` only when it is `>= 0`, so the
+/// RPython default is what runs. Its `jit-summary` on logo with no override is
+/// identical to `RPAHEUI_TRACE_LIMIT=6000` (1 loop, 6 bridges, 2 too-long and 5
+/// segmenting aborts, 37839 recorded ops) and differs from 30000 (1 loop, 1
+/// bridge, no aborts, 25713 ops) — so the limit in force there is 6000, the
+/// same default majit carries in `trace_ctx.rs` `DEFAULT_TRACE_LIMIT`.
+///
+/// 70000 keeps logo's whole-program trace — 33177 recorded ops — under the
+/// budget, so it compiles one loop with no abort. That is not the fastest
+/// setting. logo, min of 9 interleaved runs, CPU time, via the
+/// `MAJIT_TRACE_LIMIT` override:
+///
+/// | limit  | CPU     | bridges | aborts | guard failures |
+/// |--------|---------|---------|--------|----------------|
+/// |   6000 | 0.430 s |       7 |      8 |           1601 |
+/// |  10000 | 0.410 s |       5 |      6 |           1201 |
+/// |  20000 | 0.410 s |       2 |      2 |            401 |
+/// |  30000 | 0.390 s |       2 |      2 |            401 |
+/// |  70000 | 0.470 s |       1 |      0 |            201 |
+///
+/// The single 33177-op loop costs 172ms to optimize plus 26ms to assemble,
+/// which the run does not earn back; at 30000 that drops to 42ms plus 10ms and
+/// the whole corpus stays byte-identical (75 programs; the 3 that differ are
+/// non-terminating and match on any fixed output prefix). Lowering it is left
+/// for after the remaining trace-quality work, since the trade shows up in the
+/// `jitstats` gate as logo's `loops_aborted` 0 -> 2 and `guard_failures`
+/// 201 -> 401.
 pub const TRACE_LIMIT: u32 = 70000;
 
 /// [`TRACE_LIMIT`] honoring a `MAJIT_TRACE_LIMIT` override. `trace_limit` is a
