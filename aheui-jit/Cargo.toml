@@ -15,7 +15,12 @@ aheui-runtime = { path = "../aheui-runtime", features = ["jit"], default-feature
 ahsembler = { path = "../ahsembler" }
 majit-ir = { path = "../../majit/majit-ir" }
 majit-macros = { path = "../../majit/majit-macros" }
-majit-gc = { path = "../../majit/majit-gc" }
+# `gc_box`: the compiled `New` op has to allocate Nodes out of the interpreter's
+# shared nursery, so this crate installs a `NurseryGcAllocator` box through
+# `set_gc_allocator` instead of taking the `install_gc_standalone` path that
+# allocates from the `gc_sync` singleton. Without the feature every box query
+# answers a constant `false` and installing one panics.
+majit-gc = { path = "../../majit/majit-gc", features = ["gc_box"] }
 majit-metainterp = { path = "../../majit/majit-metainterp" }
 majit-translate = { path = "../../majit/majit-translate" }
 majit-backend = { path = "../../majit/majit-backend" }
