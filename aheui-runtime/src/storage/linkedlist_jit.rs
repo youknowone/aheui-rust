@@ -26,6 +26,14 @@ use crate::value::*;
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
@@ -40,13 +48,21 @@ pub fn stack_push(stack: usize, value: Val) {
         next: old_head,
     };
     stack.head = new_node;
-    stack.size = stack.size + 1usize;
+    stack.size = stack.size + 1u32;
 }
 
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -61,7 +77,7 @@ pub fn stack_pop(stack: usize) -> Val {
     let value = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     value
 }
@@ -71,6 +87,14 @@ pub fn stack_pop(stack: usize) -> Val {
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -88,7 +112,7 @@ pub fn stack_add(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     let sum = (r2 >> 1) + (r1 >> 1);
@@ -106,6 +130,14 @@ pub fn stack_add(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
@@ -121,7 +153,7 @@ pub fn stack_add(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     next.value = val_add(r2, r1);
@@ -132,6 +164,14 @@ pub fn stack_add(stack: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -149,7 +189,7 @@ pub fn stack_sub(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     let diff = (r2 >> 1) - (r1 >> 1);
@@ -166,6 +206,14 @@ pub fn stack_sub(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
@@ -181,7 +229,7 @@ pub fn stack_sub(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     next.value = val_sub(r2, r1);
@@ -192,6 +240,14 @@ pub fn stack_sub(stack: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -209,7 +265,7 @@ pub fn stack_mul(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     // Native smallint mul fast path: untag, sign-extend each operand to 32
@@ -235,6 +291,14 @@ pub fn stack_mul(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
@@ -250,7 +314,7 @@ pub fn stack_mul(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     next.value = val_mul(r2, r1);
@@ -271,6 +335,14 @@ pub fn stack_mod(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
@@ -286,13 +358,21 @@ pub fn stack_dup(stack: usize) {
         next: head,
     };
     stack.head = new_node;
-    stack.size = stack.size + 1usize;
+    stack.size = stack.size + 1u32;
 }
 
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -314,6 +394,14 @@ pub fn stack_swap(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
@@ -330,7 +418,7 @@ pub fn stack_cmp(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     next.value = if (r1 & r2) & 1 != 0 {
@@ -346,6 +434,14 @@ pub fn stack_cmp(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
@@ -359,7 +455,7 @@ pub fn stack_cmp(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     next.value = (r2 >= r1) as i64;
@@ -404,6 +500,14 @@ pub fn val_ge_jit(a: Val, b: Val) -> Val {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
@@ -430,13 +534,21 @@ pub fn queue_push(queue: usize, value: Val) {
     tail.value = value;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -451,7 +563,7 @@ pub fn queue_pop(queue: usize) -> Val {
     let value = top_node.value;
     let next = top_node.next;
     queue.head = next;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(top_node);
     value
 }
@@ -468,6 +580,14 @@ pub fn queue_pop(queue: usize) -> Val {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -488,12 +608,12 @@ pub fn queue_add(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let sum = (r2 >> 1) + (r1 >> 1);
     let result = if ((r1 & r2) & 1 != 0) & (((sum << 1) >> 1) == sum) {
@@ -507,7 +627,7 @@ pub fn queue_add(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
@@ -515,6 +635,14 @@ pub fn queue_add(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -534,12 +662,12 @@ pub fn queue_add(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let result = val_add(r2, r1);
     let sentinel_val = val_from_i32(0);
@@ -548,7 +676,7 @@ pub fn queue_add(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -556,6 +684,14 @@ pub fn queue_add(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -576,12 +712,12 @@ pub fn queue_sub(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let diff = (r2 >> 1) - (r1 >> 1);
     let result = if ((r1 & r2) & 1 != 0) & (((diff << 1) >> 1) == diff) {
@@ -595,7 +731,7 @@ pub fn queue_sub(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
@@ -603,6 +739,14 @@ pub fn queue_sub(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -622,12 +766,12 @@ pub fn queue_sub(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let result = val_sub(r2, r1);
     let sentinel_val = val_from_i32(0);
@@ -636,7 +780,7 @@ pub fn queue_sub(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -644,6 +788,14 @@ pub fn queue_sub(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -664,12 +816,12 @@ pub fn queue_mul(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let av = r2 >> 1;
     let bv = r1 >> 1;
@@ -688,7 +840,7 @@ pub fn queue_mul(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
@@ -696,6 +848,14 @@ pub fn queue_mul(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -715,12 +875,12 @@ pub fn queue_mul(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let result = val_mul(r2, r1);
     let sentinel_val = val_from_i32(0);
@@ -729,7 +889,7 @@ pub fn queue_mul(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[inline(always)]
@@ -746,6 +906,14 @@ pub fn queue_mod(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -766,13 +934,21 @@ pub fn queue_dup(queue: usize) {
         next: head,
     };
     queue.head = new_node;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -794,6 +970,14 @@ pub fn queue_swap(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
@@ -813,12 +997,12 @@ pub fn queue_cmp(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let result = if (r1 & r2) & 1 != 0 {
         val_retag_small((r2 >= r1) as i64)
@@ -831,7 +1015,7 @@ pub fn queue_cmp(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
@@ -839,6 +1023,14 @@ pub fn queue_cmp(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -856,12 +1048,12 @@ pub fn queue_cmp(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let result = (r2 >= r1) as i64;
     let sentinel_val = val_from_i32(0);
@@ -870,7 +1062,7 @@ pub fn queue_cmp(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 // ── Mode-0 twins ─────────────────────────────────────────────────────
@@ -903,6 +1095,14 @@ pub fn queue_cmp(queue: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
@@ -917,7 +1117,7 @@ pub fn stack_add_raw(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     next.value = match r2.checked_add(r1) {
@@ -931,6 +1131,14 @@ pub fn stack_add_raw(stack: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -946,7 +1154,7 @@ pub fn stack_sub_raw(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     next.value = match r2.checked_sub(r1) {
@@ -960,6 +1168,14 @@ pub fn stack_sub_raw(stack: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -975,7 +1191,7 @@ pub fn stack_mul_raw(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     next.value = match r2.checked_mul(r1) {
@@ -989,6 +1205,14 @@ pub fn stack_mul_raw(stack: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -1005,7 +1229,7 @@ pub fn stack_cmp_raw(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     next.value = val_ge_raw(r2, r1);
@@ -1016,6 +1240,14 @@ pub fn stack_cmp_raw(stack: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -1032,7 +1264,7 @@ pub fn stack_div_raw(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     // Divisor −1 is guarded out wholesale: it is the only divisor for which a
@@ -1053,6 +1285,14 @@ pub fn stack_div_raw(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
+    },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
@@ -1067,7 +1307,7 @@ pub fn stack_mod_raw(stack: usize) {
     let r1 = top_node.value;
     let next = top_node.next;
     stack.head = next;
-    stack.size = stack.size - 1usize;
+    stack.size = stack.size - 1u32;
     free_node_jit(top_node);
     let r2 = next.value;
     // No guard: every remainder fits the word, `i64::MIN % -1` included.
@@ -1079,6 +1319,14 @@ pub fn stack_mod_raw(stack: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1097,12 +1345,12 @@ pub fn queue_add_raw(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let result = match r2.checked_add(r1) {
         Some(sum) => sum,
@@ -1114,7 +1362,7 @@ pub fn queue_add_raw(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -1122,6 +1370,14 @@ pub fn queue_add_raw(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1140,12 +1396,12 @@ pub fn queue_sub_raw(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let result = match r2.checked_sub(r1) {
         Some(diff) => diff,
@@ -1157,7 +1413,7 @@ pub fn queue_sub_raw(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -1165,6 +1421,14 @@ pub fn queue_sub_raw(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1183,12 +1447,12 @@ pub fn queue_mul_raw(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let result = match r2.checked_mul(r1) {
         Some(prod) => prod,
@@ -1200,7 +1464,7 @@ pub fn queue_mul_raw(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -1208,6 +1472,14 @@ pub fn queue_mul_raw(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1227,12 +1499,12 @@ pub fn queue_cmp_raw(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let result = val_ge_raw(r2, r1);
     let sentinel_val = val_from_i32(0);
@@ -1241,7 +1513,7 @@ pub fn queue_cmp_raw(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -1249,6 +1521,14 @@ pub fn queue_cmp_raw(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1268,12 +1548,12 @@ pub fn queue_div_raw(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     // Divisor −1 guarded out, as in `stack_div_raw`.
     let result = if (r1 >> 0) == -1 {
@@ -1287,7 +1567,7 @@ pub fn queue_div_raw(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -1295,6 +1575,14 @@ pub fn queue_div_raw(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
+    },
+    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
+    // reaches all three through the `Stack` tag, so the width is declared for
+    // every name the layout can be registered under.
+    int_fields = {
+        super::linkedlist::Stack::size => u32,
+        super::linkedlist::Queue::size => u32,
+        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1313,12 +1601,12 @@ pub fn queue_mod_raw(queue: usize) {
     let r1 = n1.value;
     let n2 = n1.next;
     queue.head = n2;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n1);
     let r2 = n2.value;
     let n3 = n2.next;
     queue.head = n3;
-    queue.size = queue.size - 1usize;
+    queue.size = queue.size - 1u32;
     free_node_jit(n2);
     let result = val_mod_raw(r2, r1);
     let sentinel_val = val_from_i32(0);
@@ -1327,7 +1615,7 @@ pub fn queue_mod_raw(queue: usize) {
     tail.value = result;
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
-    queue.size = queue.size + 1usize;
+    queue.size = queue.size + 1u32;
 }
 
 #[cfg(test)]

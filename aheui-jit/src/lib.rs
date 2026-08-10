@@ -1028,6 +1028,17 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         aheui_runtime::storage::linkedlist::Node::next => aheui_runtime::storage::linkedlist::Node,
         NodeJit::next => aheui_runtime::storage::linkedlist::Node,
     },
+    // The element count is `u32`, so the field descr is sub-word and
+    // `intbounds` can bound a load of it. Without a bound the depth's `+ 1`
+    // may overflow, the sum goes rangeless, and the `stackok` check has to be
+    // guarded again at every opcode instead of following from the last one.
+    // All three lists share the `head`/`size` prefix and the JIT reaches them
+    // through the `Stack` tag, so every name is declared.
+    int_fields = {
+        aheui_runtime::storage::linkedlist::Stack::size => u32,
+        aheui_runtime::storage::linkedlist::Queue::size => u32,
+        aheui_runtime::storage::linkedlist::Port::size => u32,
+    },
     struct_allocs = { NodeJit => jit_alloc_node },
     headerless_structs = { NodeJit },
     io_shims = {
@@ -1489,7 +1500,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     let pop_val = top_node.value;
                     let next = top_node.next;
                     state.selected_ref.head = next;
-                    state.selected_ref.size = state.selected_ref.size - 1usize;
+                    state.selected_ref.size = state.selected_ref.size - 1u32;
                     jit_free_node(top_node);
                     // pop_val is Val (= i64 repr-transparent). val_is_zero
                     // checks `*v == 0` for smallint, or the tagged form
@@ -1581,7 +1592,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         let r1 = top_node.value;
                         let next = top_node.next;
                         state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        state.selected_ref.size = state.selected_ref.size - 1u32;
                         jit_free_node(top_node);
                         let r2 = next.value;
                         next.value = val_div(r2, r1);
@@ -1603,7 +1614,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         let r1 = top_node.value;
                         let next = top_node.next;
                         state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        state.selected_ref.size = state.selected_ref.size - 1u32;
                         jit_free_node(top_node);
                         let r2 = next.value;
                         next.value = val_mod(r2, r1);
@@ -1625,7 +1636,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         let pop_val = top_node.value;
                         let next = top_node.next;
                         state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        state.selected_ref.size = state.selected_ref.size - 1u32;
                         jit_free_node(top_node);
                         pop_val
                     };
@@ -1706,7 +1717,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         let pop_val = top_node.value;
                         let next = top_node.next;
                         state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        state.selected_ref.size = state.selected_ref.size - 1u32;
                         jit_free_node(top_node);
                         pop_val
                     };
@@ -1724,7 +1735,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             next: old_head,
                         };
                         target_ref.head = new_node;
-                        target_ref.size = target_ref.size + 1usize;
+                        target_ref.size = target_ref.size + 1u32;
                     }
                     if state.selected == target {
                         state.stacksize += 1;
@@ -1756,7 +1767,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         let pop_val = top_node.value;
                         let next = top_node.next;
                         state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        state.selected_ref.size = state.selected_ref.size - 1u32;
                         jit_free_node(top_node);
                         pop_val
                     };
@@ -1772,7 +1783,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         let pop_val = top_node.value;
                         let next = top_node.next;
                         state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1usize;
+                        state.selected_ref.size = state.selected_ref.size - 1u32;
                         jit_free_node(top_node);
                         pop_val
                     };
@@ -1796,7 +1807,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     let old_head = state.selected_ref.head;
                     let new_node = jit_alloc_node(v, old_head);
                     state.selected_ref.head = new_node;
-                    state.selected_ref.size = state.selected_ref.size + 1usize;
+                    state.selected_ref.size = state.selected_ref.size + 1u32;
                 }
             }
             OP_PUSHCHAR => {
@@ -1816,7 +1827,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     let old_head = state.selected_ref.head;
                     let new_node = jit_alloc_node(v, old_head);
                     state.selected_ref.head = new_node;
-                    state.selected_ref.size = state.selected_ref.size + 1usize;
+                    state.selected_ref.size = state.selected_ref.size + 1u32;
                 }
             }
             // Branch ops: concrete execution handled by the pre-dispatch

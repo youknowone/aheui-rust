@@ -1110,7 +1110,7 @@ impl Storage {
                     count += 1;
                     cur = unsafe { (*cur).next };
                 }
-                stack.size = count;
+                stack.size = count as u32;
             }
         }
     }

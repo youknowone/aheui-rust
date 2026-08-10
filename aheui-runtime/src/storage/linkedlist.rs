@@ -151,7 +151,12 @@ pub trait LinkedList {
 #[repr(C)]
 pub struct Stack {
     pub head: *mut Node,
-    pub size: usize,
+    /// The element count.  `u32`, not `usize`, so the JIT's field descr is
+    /// sub-word and `intbounds` can bound a load of it: with no upper bound a
+    /// depth `+ 1` may overflow, the sum goes rangeless, and every re-check of
+    /// the depth has to be guarded again.  A list is a chain of 16-byte nodes,
+    /// so 2^32 elements is 64 GiB of nodes.
+    pub size: u32,
 }
 
 impl Stack {
@@ -175,10 +180,10 @@ impl LinkedList for Stack {
         self.head = h;
     }
     fn size(&self) -> usize {
-        self.size
+        self.size as usize
     }
     fn set_size(&mut self, s: usize) {
-        self.size = s;
+        self.size = s as u32;
     }
 
     // linkedlist.py:76-80
@@ -234,7 +239,8 @@ impl LinkedList for Stack {
 #[repr(C)]
 pub struct Queue {
     pub head: *mut Node,
-    pub size: usize,
+    /// The element count, narrowed for the same reason as [`Stack::size`].
+    pub size: u32,
     pub tail: *mut Node,
 }
 
@@ -262,10 +268,10 @@ impl LinkedList for Queue {
         self.head = h;
     }
     fn size(&self) -> usize {
-        self.size
+        self.size as usize
     }
     fn set_size(&mut self, s: usize) {
-        self.size = s;
+        self.size = s as u32;
     }
 
     // linkedlist.py:103-110
@@ -335,7 +341,8 @@ impl LinkedList for Queue {
 #[repr(C)]
 pub struct Port {
     pub head: *mut Node,
-    pub size: usize,
+    /// The element count, narrowed for the same reason as [`Stack::size`].
+    pub size: u32,
     pub last_push: Val,
 }
 
@@ -362,10 +369,10 @@ impl LinkedList for Port {
         self.head = h;
     }
     fn size(&self) -> usize {
-        self.size
+        self.size as usize
     }
     fn set_size(&mut self, s: usize) {
-        self.size = s;
+        self.size = s as u32;
     }
 
     // linkedlist.py:134-139
