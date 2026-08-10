@@ -498,7 +498,7 @@ pub fn val_div_raw(a: Val, b: Val) -> Val {
     if b.0 == 0 {
         return Val(0);
     }
-    Val(a.0.wrapping_div(b.0))
+    Val(super::floor_div_i64(a.0, b.0))
 }
 
 /// Mode-0 remainder. A zero divisor yields zero; nothing else can fail.
@@ -507,7 +507,7 @@ pub fn val_mod_raw(a: Val, b: Val) -> Val {
     if b.0 == 0 {
         return Val(0);
     }
-    Val(a.0.wrapping_rem(b.0))
+    Val(super::floor_mod_i64(a.0, b.0))
 }
 
 /// Convert one mode-0 raw word into its mode-1 tagged form.
@@ -585,6 +585,34 @@ fn binop_fast(
     Val::normalize_big(f_big(a.to_bigint(), b.to_bigint()))
 }
 
+/// Whether a truncating division of a bignum needs the floor correction, the
+/// [`super::floor_correction_needed`] twin.
+#[inline]
+fn floor_correction_needed_big(r: &BigInt, b: &BigInt) -> bool {
+    !r.is_zero() && (r.is_negative() != b.is_negative())
+}
+
+/// `a // b` for a non-zero `b`, floored. `rbigint.div` is `floordiv`, which is
+/// `divmod`'s quotient; the backing crates' `/` truncates instead.
+fn floor_div_big(a: BigInt, b: BigInt) -> BigInt {
+    let q = &a / &b;
+    if floor_correction_needed_big(&(a % &b), &b) {
+        q - BigInt::from(1)
+    } else {
+        q
+    }
+}
+
+/// `a % b` for a non-zero `b`, floored. `rbigint.mod` is `divmod`'s remainder.
+fn floor_mod_big(a: BigInt, b: BigInt) -> BigInt {
+    let r = a % &b;
+    if floor_correction_needed_big(&r, &b) {
+        r + b
+    } else {
+        r
+    }
+}
+
 // Mode 0 is a plain `checked_*` on the machine word. The overflow arm is the
 // only exit from it, and it is cold: it fires at most once per process.
 
@@ -628,13 +656,15 @@ pub fn val_div(a: Val, b: Val) -> Val {
     }
     if !bigint_mode() {
         // `checked_div` also rejects `i64::MIN / -1`, whose true quotient does
-        // not fit the word — that one is a promotion, not a zero.
+        // not fit the word — that one is a promotion, not a zero. It is asked
+        // only for that verdict; the quotient itself comes from the floored
+        // division, which agrees with it everywhere the correction is idle.
         return match a.0.checked_div(b.0) {
-            Some(r) => Val(r),
+            Some(_) => Val(super::floor_div_i64(a.0, b.0)),
             None => promote_and_apply(a, b, val_div),
         };
     }
-    binop_fast(a, b, |a, b| Some(a.wrapping_div(b)), |a, b| a / b)
+    binop_fast(a, b, |a, b| Some(super::floor_div_i64(a, b)), floor_div_big)
 }
 
 #[inline(always)]
@@ -643,13 +673,13 @@ pub fn val_mod(a: Val, b: Val) -> Val {
         return val_from_i32(0);
     }
     if !bigint_mode() {
-        // `wrapping_rem`, not `checked_rem`: the one case the checked form
-        // rejects is `i64::MIN % -1`, whose remainder is 0 and fits the word
-        // perfectly — it is rejected only because the division instruction
-        // traps on it. No remainder fails to fit, so mode 0 is never left here.
-        return Val(a.0.wrapping_rem(b.0));
+        // The one case `checked_rem` rejects is `i64::MIN % -1`, whose
+        // remainder is 0 and fits the word perfectly — it is rejected only
+        // because the division instruction traps on it. No remainder fails to
+        // fit, floored or not, so mode 0 is never left here.
+        return Val(super::floor_mod_i64(a.0, b.0));
     }
-    binop_fast(a, b, |a, b| Some(a.wrapping_rem(b)), |a, b| a % b)
+    binop_fast(a, b, |a, b| Some(super::floor_mod_i64(a, b)), floor_mod_big)
 }
 
 #[inline(always)]

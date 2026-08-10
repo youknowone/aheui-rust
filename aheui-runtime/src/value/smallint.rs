@@ -51,12 +51,20 @@ pub fn val_mul(a: Val, b: Val) -> Val {
 
 #[inline(always)]
 pub fn val_div(a: Val, b: Val) -> Val {
-    if b == 0 { 0 } else { a.wrapping_div(b) }
+    if b == 0 {
+        0
+    } else {
+        super::floor_div_i64(a, b)
+    }
 }
 
 #[inline(always)]
 pub fn val_mod(a: Val, b: Val) -> Val {
-    if b == 0 { 0 } else { a.wrapping_rem(b) }
+    if b == 0 {
+        0
+    } else {
+        super::floor_mod_i64(a, b)
+    }
 }
 
 #[inline(always)]

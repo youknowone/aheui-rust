@@ -24,6 +24,56 @@ pub use smallint::*;
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 pub use bigint::*;
 
+// ── Floored division ────────────────────────────────────────────────
+//
+// Both backends divide the same way, because both upstream files do:
+// `smallint.py` spells division `r1 // r2` and `bigint.py` calls
+// `rbigint.div`, and those are the same convention — the quotient rounds
+// toward negative infinity and the remainder carries the divisor's sign
+// (`rbigint.divmod`: "a mod b has the value a - b*floor(a/b)").
+//
+// Rust's `/`, `wrapping_div` and `wrapping_rem` truncate toward zero
+// instead, so a pair whose signs differ needs the correction below. The two
+// conventions agree whenever the signs match or the division is exact, which
+// is why they are told apart only by a mixed-sign inexact pair.
+//
+// `div_euclid`/`rem_euclid` are a *third* convention, not this one: they
+// force a non-negative remainder, so they answer `7 / -2` with `-3` where
+// flooring answers `-4`.
+
+/// Whether a truncating division of `a` by `b` needs the floor correction.
+///
+/// `r` is the truncated remainder, which carries `a`'s sign.
+#[inline(always)]
+pub(crate) fn floor_correction_needed(r: i64, b: i64) -> bool {
+    r != 0 && (r < 0) != (b < 0)
+}
+
+/// `a // b` for a non-zero `b`, floored.
+#[inline(always)]
+pub(crate) fn floor_div_i64(a: i64, b: i64) -> i64 {
+    let q = a.wrapping_div(b);
+    if floor_correction_needed(a.wrapping_rem(b), b) {
+        q.wrapping_sub(1)
+    } else {
+        q
+    }
+}
+
+/// `a % b` for a non-zero `b`, floored.
+///
+/// The corrected remainder cannot overflow: it is only computed when `r` and
+/// `b` have opposite signs, so `|r + b| < |b|`.
+#[inline(always)]
+pub(crate) fn floor_mod_i64(a: i64, b: i64) -> i64 {
+    let r = a.wrapping_rem(b);
+    if floor_correction_needed(r, b) {
+        r.wrapping_add(b)
+    } else {
+        r
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
