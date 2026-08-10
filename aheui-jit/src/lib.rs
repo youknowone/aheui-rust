@@ -5,6 +5,13 @@
 //   reds   = [stacksize, storage, selected]
 //   storage = linked list stacks (no virtualizable arrays)
 //
+// `bm` is a fifth green with no counterpart upstream. It carries the dual-mode
+// encoding — pyre runs values as raw machine words until one overflows — and
+// being a green is what keeps the mode out of compiled code: each trace is
+// keyed on one encoding, so the arithmetic arms below pick their helper once,
+// at record time, instead of testing a global per operation. The flip changes
+// the key, which retires the mode-0 traces and records mode-1 ones.
+//
 // stackok is a green (rpaheui parity): specialising the trace on it lets
 // `jit_effective_stacksize_delta(op, stackok)` fold to a constant, so the
 // per-op stacksize update carries no residual call. The green-key-explosion
@@ -761,10 +768,32 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
     val_from_i32(raw as i32)
 }
 
+/// [`jit_tag_val`]'s mode-0 twin: the word is the value, so this is identity.
+///
+/// Unlike its sibling it keeps the full `i64`. The truncation there predates
+/// dual mode and only bites on an input number wider than 32 bits; mode 0 has
+/// no reason to inherit it.
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+extern "C" fn jit_tag_val_raw(raw: i64) -> Val {
+    aheui_runtime::value::val_from_raw_i64(raw)
+}
+
 #[inline(always)]
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 fn jit_retag_small(untagged: i64) -> Val {
     aheui_runtime::value::val_retag_small(untagged)
+}
+
+/// The dual-mode encoding as a jitcode value: 1 while values are tagged, 0
+/// while they are raw machine words.
+///
+/// Elidable although it reads a mutable global, because it is a green: the mode
+/// is part of the merge-point key, so it is constant for the whole life of any
+/// one trace, and the flip retires that trace by changing the key rather than
+/// by invalidating a value inside it.
+#[inline(always)]
+fn jit_bigint_mode() -> i64 {
+    aheui_runtime::value::bigint_mode() as i64
 }
 
 // ── Node alloc/free + val comparison — local JIT wrappers ──
@@ -1010,7 +1039,9 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_read_number => residual_int,
         jit_output_flush => residual_void_cannot_raise,
         jit_tag_val => elidable_int_cannot_raise,
+        jit_tag_val_raw => elidable_int_cannot_raise,
         jit_retag_small => elidable_int_cannot_raise,
+        jit_bigint_mode => elidable_int_cannot_raise,
         // First MethodCall RHS consumer; lowered via `lower_method_call_value`.
         Program::get_req_size => elidable_int_cannot_raise,
         Program::get_op => elidable_int_cannot_raise,
@@ -1046,6 +1077,21 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::queue_dup => inline_void,
         lj::queue_swap => inline_void,
         lj::queue_cmp => inline_void,
+        // Mode-0 twins of the arithmetic helpers, selected on the `bm` green.
+        // All inline, including div and mod, which are residual above: their
+        // mode-0 form carries a guard that only survives inside the trace.
+        lj::stack_add_raw => inline_void,
+        lj::stack_sub_raw => inline_void,
+        lj::stack_mul_raw => inline_void,
+        lj::stack_div_raw => inline_void,
+        lj::stack_mod_raw => inline_void,
+        lj::stack_cmp_raw => inline_void,
+        lj::queue_add_raw => inline_void,
+        lj::queue_sub_raw => inline_void,
+        lj::queue_mul_raw => inline_void,
+        lj::queue_div_raw => inline_void,
+        lj::queue_mod_raw => inline_void,
+        lj::queue_cmp_raw => inline_void,
         jit_pop_is_zero_stack => residual_int,
         jit_pop_is_zero_queue => residual_int,
         jit_pop_is_zero => residual_int,
@@ -1206,13 +1252,21 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // out from the stack family), and within a trace specialised by
     // `guard_value(selected)` the comparison folds to a constant and
     // only the live branch reaches the optimised IR.
-    greens = [pc, stackok, is_queue, program],
+    // `bm` is pyre's own fifth green — see the module header. It binds through
+    // the same pre-merge-point walker as `is_queue`.
+    greens = [pc, stackok, is_queue, bm, program],
     recover = refresh_state_from_storage,
     switch_dispatch = true,
     native_tag_small = { jit_retag_small },
 )]
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
     init_gc_subsystem();
+
+    // Dual mode: run on raw machine words until one operation overflows one.
+    // Ahead of `Storage::new()` below, because the queue builds a sentinel
+    // value and the conversion walks it — it has to be written in the mode it
+    // will be read in.
+    aheui_runtime::value::start_in_raw_mode();
 
     let mut driver: majit_meta::JitDriver<AheuiState> = majit_meta::JitDriver::new(threshold);
 
@@ -1342,6 +1396,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // canonical source (`state.selected == VAL_QUEUE`) so A.3.6.1's
         // body-local walker can bind it as a green for `resolve_greens`.
         let is_queue = state.selected == 21usize;
+        // The dual-mode encoding, read once per dispatch so it reaches the
+        // merge-point key. Bound here rather than hoisted out of the loop
+        // because the flip has to change the key the moment it happens.
+        let bm = jit_bigint_mode();
 
         WALK_STORAGE_PTR.with(|c| c.set(&state.storage as *const Storage as usize));
         // rpaheui/aheui/aheui.py:253-255: jit_merge_point
@@ -1412,14 +1470,14 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if stackok == false {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, program);
                     continue;
                 }
             }
             OP_JMP => {
                 pc = program.get_label(pc - 1);
                 stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
+                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, program);
                 continue;
             }
             OP_BRZ => {
@@ -1438,13 +1496,17 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     // `(0 << 1) | 1 = 1` for bigint. Use the raw int
                     // comparison `pop_val == jit_tag_val(0)` which the
                     // lowerer handles natively as IntEq.
-                    let zero_val = jit_tag_val(0i64);
+                    let zero_val = if bm != 0 {
+                        jit_tag_val(0i64)
+                    } else {
+                        jit_tag_val_raw(0i64)
+                    };
                     if pop_val == zero_val { 1i64 } else { 0i64 }
                 };
                 if zero != 0 {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, program);
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, program);
                     continue;
                 }
             }
@@ -1464,35 +1526,57 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_ADD => {
                 if stackok {
                     if is_queue {
-                        lj::queue_add(state.selected_ref);
-                    } else {
+                        if bm != 0 {
+                            lj::queue_add(state.selected_ref);
+                        } else {
+                            lj::queue_add_raw(state.selected_ref);
+                        }
+                    } else if bm != 0 {
                         lj::stack_add(state.selected_ref);
+                    } else {
+                        lj::stack_add_raw(state.selected_ref);
                     }
                 }
             }
             OP_SUB => {
                 if stackok {
                     if is_queue {
-                        lj::queue_sub(state.selected_ref);
-                    } else {
+                        if bm != 0 {
+                            lj::queue_sub(state.selected_ref);
+                        } else {
+                            lj::queue_sub_raw(state.selected_ref);
+                        }
+                    } else if bm != 0 {
                         lj::stack_sub(state.selected_ref);
+                    } else {
+                        lj::stack_sub_raw(state.selected_ref);
                     }
                 }
             }
             OP_MUL => {
                 if stackok {
                     if is_queue {
-                        lj::queue_mul(state.selected_ref);
-                    } else {
+                        if bm != 0 {
+                            lj::queue_mul(state.selected_ref);
+                        } else {
+                            lj::queue_mul_raw(state.selected_ref);
+                        }
+                    } else if bm != 0 {
                         lj::stack_mul(state.selected_ref);
+                    } else {
+                        lj::stack_mul_raw(state.selected_ref);
                     }
                 }
             }
             OP_DIV => {
                 if stackok {
                     if is_queue {
-                        lj::queue_div(state.selected_ref);
-                    } else {
+                        if bm != 0 {
+                            lj::queue_div(state.selected_ref);
+                        } else {
+                            lj::queue_div_raw(state.selected_ref);
+                        }
+                    } else if bm != 0 {
                         let top_node = state.selected_ref.head;
                         let r1 = top_node.value;
                         let next = top_node.next;
@@ -1501,14 +1585,20 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         jit_free_node(top_node);
                         let r2 = next.value;
                         next.value = val_div(r2, r1);
+                    } else {
+                        lj::stack_div_raw(state.selected_ref);
                     }
                 }
             }
             OP_MOD => {
                 if stackok {
                     if is_queue {
-                        lj::queue_mod(state.selected_ref);
-                    } else {
+                        if bm != 0 {
+                            lj::queue_mod(state.selected_ref);
+                        } else {
+                            lj::queue_mod_raw(state.selected_ref);
+                        }
+                    } else if bm != 0 {
                         let top_node = state.selected_ref.head;
                         let r1 = top_node.value;
                         let next = top_node.next;
@@ -1517,6 +1607,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         jit_free_node(top_node);
                         let r2 = next.value;
                         next.value = val_mod(r2, r1);
+                    } else {
+                        lj::stack_mod_raw(state.selected_ref);
                     }
                 }
             }
@@ -1542,7 +1634,11 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_PUSH => {
                 // rpaheui/aheui/aheui.py:272-275.
                 let value = program.get_operand(pc - 1) as i64;
-                let v = jit_tag_val(value);
+                let v = if bm != 0 {
+                    jit_tag_val(value)
+                } else {
+                    jit_tag_val_raw(value)
+                };
                 if is_queue {
                     lj::queue_push(state.selected_ref, v);
                 } else if state.selected == VAL_PORT {
@@ -1638,9 +1734,15 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_CMP => {
                 if stackok {
                     if is_queue {
-                        lj::queue_cmp(state.selected_ref);
-                    } else {
+                        if bm != 0 {
+                            lj::queue_cmp(state.selected_ref);
+                        } else {
+                            lj::queue_cmp_raw(state.selected_ref);
+                        }
+                    } else if bm != 0 {
                         lj::stack_cmp(state.selected_ref);
+                    } else {
+                        lj::stack_cmp_raw(state.selected_ref);
                     }
                 }
             }
@@ -1681,7 +1783,11 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 // rpaheui/aheui/aheui.py:318-321
                 jit_output_flush();
                 let num = jit_read_number();
-                let v = jit_tag_val(num);
+                let v = if bm != 0 {
+                    jit_tag_val(num)
+                } else {
+                    jit_tag_val_raw(num)
+                };
                 if is_queue {
                     lj::queue_push(state.selected_ref, v);
                 } else if state.selected == VAL_PORT {
@@ -1697,7 +1803,11 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 // rpaheui/aheui/aheui.py:322-325
                 jit_output_flush();
                 let ch = jit_read_utf8();
-                let v = jit_tag_val(ch);
+                let v = if bm != 0 {
+                    jit_tag_val(ch)
+                } else {
+                    jit_tag_val_raw(ch)
+                };
                 if is_queue {
                     lj::queue_push(state.selected_ref, v);
                 } else if state.selected == VAL_PORT {

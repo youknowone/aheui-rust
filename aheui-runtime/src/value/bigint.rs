@@ -75,6 +75,33 @@ impl PartialOrd for Val {
     }
 }
 
+/// Mode-0 machine-word arithmetic, `None` when the true result does not fit
+/// the word.
+///
+/// These read the packed representation as the plain `i64` it is in mode 0, so
+/// they are meaningless in mode 1. They exist in this shape because the JIT
+/// recognises `match a.checked_add(b) { Some(_) => _, None => _ }` and fuses it
+/// into one overflow-branching add — which is what mode 0 is for. The `None`
+/// arm must be the only route out of mode 0 in JIT-visible code: leaving it
+/// anywhere else inside compiled code would convert a storage whose values the
+/// trace is still holding raw.
+impl Val {
+    #[inline(always)]
+    pub fn checked_add(self, o: Val) -> Option<Val> {
+        self.0.checked_add(o.0).map(Val)
+    }
+
+    #[inline(always)]
+    pub fn checked_sub(self, o: Val) -> Option<Val> {
+        self.0.checked_sub(o.0).map(Val)
+    }
+
+    #[inline(always)]
+    pub fn checked_mul(self, o: Val) -> Option<Val> {
+        self.0.checked_mul(o.0).map(Val)
+    }
+}
+
 impl Val {
     #[inline(always)]
     fn from_small(v: i64) -> Self {
@@ -273,6 +300,18 @@ fn dual_log_enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("AHEUI_DUAL_LOG").is_some())
 }
 
+/// `AHEUI_DUAL=0` makes [`start_in_raw_mode`] a no-op, so the run stays tagged
+/// from the start.
+///
+/// This is the control arm. Both modes compute the same integers, so a run's
+/// output cannot tell you which encoding produced it, and one binary that can
+/// be asked for either is what makes the comparison a comparison rather than a
+/// diff between two builds.
+fn dual_mode_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("AHEUI_DUAL").map(|v| v != "0").unwrap_or(true))
+}
+
 /// Start the process in mode 0, before any value exists.
 ///
 /// ⚠ Only valid before the first value is created: it reinterprets nothing, it
@@ -285,6 +324,12 @@ fn dual_log_enabled() -> bool {
 /// would be reread as raw words. (One mainloop per process is the standing
 /// assumption anyway: `set_gc_roots` is a single global slot.)
 pub fn start_in_raw_mode() {
+    if !dual_mode_enabled() {
+        if dual_log_enabled() {
+            eprintln!("@@@DUAL start refused: AHEUI_DUAL=0");
+        }
+        return;
+    }
     if RAW_MODE_EXITS.load(Ordering::Relaxed) != 0 {
         if dual_log_enabled() {
             eprintln!("@@@DUAL start refused: this process already left mode 0");
@@ -433,6 +478,38 @@ pub fn val_from_raw_i64(v: i64) -> Val {
     Val(v)
 }
 
+/// Mode-0 `>=` as a value, 1 or 0.
+///
+/// Raw word ordering, which is what mode 0 wants and what mode 1's tagged
+/// encoding would get wrong for a heap value. Cannot leave mode 0.
+#[inline(always)]
+pub fn val_ge_raw(a: Val, b: Val) -> Val {
+    Val((a.0 >= b.0) as i64)
+}
+
+/// Mode-0 division that cannot leave mode 0.
+///
+/// A zero divisor yields zero, as it does everywhere. The caller must have
+/// ruled out `i64::MIN / -1`, the one quotient that does not fit a machine
+/// word — [`val_div`] handles that by leaving mode 0, which is not available
+/// from inside compiled code.
+#[inline(always)]
+pub fn val_div_raw(a: Val, b: Val) -> Val {
+    if b.0 == 0 {
+        return Val(0);
+    }
+    Val(a.0.wrapping_div(b.0))
+}
+
+/// Mode-0 remainder. A zero divisor yields zero; nothing else can fail.
+#[inline(always)]
+pub fn val_mod_raw(a: Val, b: Val) -> Val {
+    if b.0 == 0 {
+        return Val(0);
+    }
+    Val(a.0.wrapping_rem(b.0))
+}
+
 /// Convert one mode-0 raw word into its mode-1 tagged form.
 ///
 /// ⚠ **Not idempotent.** A second application reads an already-tagged word as
@@ -566,10 +643,11 @@ pub fn val_mod(a: Val, b: Val) -> Val {
         return val_from_i32(0);
     }
     if !bigint_mode() {
-        return match a.0.checked_rem(b.0) {
-            Some(r) => Val(r),
-            None => promote_and_apply(a, b, val_mod),
-        };
+        // `wrapping_rem`, not `checked_rem`: the one case the checked form
+        // rejects is `i64::MIN % -1`, whose remainder is 0 and fits the word
+        // perfectly — it is rejected only because the division instruction
+        // traps on it. No remainder fails to fit, so mode 0 is never left here.
+        return Val(a.0.wrapping_rem(b.0));
     }
     binop_fast(a, b, |a, b| Some(a.wrapping_rem(b)), |a, b| a % b)
 }

@@ -99,6 +99,7 @@ pub fn stack_add(stack: usize) {
     };
 }
 
+
 #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
 #[inline(always)]
 #[majit_macros::jit_inline(
@@ -863,6 +864,463 @@ pub fn queue_cmp(queue: usize) {
     queue.size = queue.size - 1usize;
     free_node_jit(n2);
     let result = (r2 >= r1) as i64;
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
+}
+
+// ── Mode-0 twins ─────────────────────────────────────────────────────
+//
+// Same storage work as the helpers above, raw-word arithmetic instead of
+// tagged. The mainloop picks between a twin and its sibling on the `bm` green,
+// so the choice is made once at record time and compiled code never tests the
+// mode.
+//
+// **Every route out of mode 0 sits on the failure side of a guard.** That is
+// the invariant these bodies exist to hold, and it is not an optimisation: the
+// conversion walks the storage and retags every value it can reach, and from
+// inside compiled code it can reach neither a value the trace has already
+// loaded into a register nor a node the trace has not materialised yet. Both
+// would keep their raw words while everything around them turned tagged.
+//
+// So `val_add`/`val_sub`/`val_mul` appear only in the `None` arm of a
+// `checked_*`, which the tracer records as a `guard_no_overflow`, and `val_div`
+// only behind an explicit divisor test. The conversion then runs after the
+// deopt, in the interpreter, where the storage is materialised and no register
+// holds a value.
+//
+// `>> 0` reads the mode-0 word unchanged, the way `>> 1` untags in the tagged
+// twins. It is written this way — rather than through an accessor — because an
+// unregistered call is silently skipped by the lowerer rather than rejected.
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_add => elidable_int,
+    },
+)]
+pub fn stack_add_raw(stack: usize) {
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    next.value = match r2.checked_add(r1) {
+        Some(sum) => sum,
+        None => val_add(r2, r1),
+    };
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_sub => elidable_int,
+    },
+)]
+pub fn stack_sub_raw(stack: usize) {
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    next.value = match r2.checked_sub(r1) {
+        Some(diff) => diff,
+        None => val_sub(r2, r1),
+    };
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_mul => elidable_int,
+    },
+)]
+pub fn stack_mul_raw(stack: usize) {
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    next.value = match r2.checked_mul(r1) {
+        Some(prod) => prod,
+        None => val_mul(r2, r1),
+    };
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_ge_raw => elidable_int_cannot_raise,
+    },
+    native_int_binops = { val_ge_raw => IntGe },
+)]
+pub fn stack_cmp_raw(stack: usize) {
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    next.value = val_ge_raw(r2, r1);
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_div => elidable_int,
+        val_div_raw => elidable_int_cannot_raise,
+    },
+)]
+pub fn stack_div_raw(stack: usize) {
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    // Divisor −1 is guarded out wholesale: it is the only divisor for which a
+    // quotient can fail to fit the word (`i64::MIN / -1`), and `val_div` leaves
+    // mode 0 for that one. Testing the divisor alone keeps the test to a single
+    // compare, and the arm the tracer records for it puts the conversion in the
+    // interpreter.
+    next.value = if (r1 >> 0) == -1 {
+        val_div(r2, r1)
+    } else {
+        val_div_raw(r2, r1)
+    };
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        stack: ref(super::linkedlist::Stack),
+    },
+    ref_fields = {
+        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_mod_raw => elidable_int_cannot_raise,
+    },
+)]
+pub fn stack_mod_raw(stack: usize) {
+    let top_node = stack.head;
+    let r1 = top_node.value;
+    let next = top_node.next;
+    stack.head = next;
+    stack.size = stack.size - 1usize;
+    free_node_jit(top_node);
+    let r2 = next.value;
+    // No guard: every remainder fits the word, `i64::MIN % -1` included.
+    next.value = val_mod_raw(r2, r1);
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_add => elidable_int,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+)]
+pub fn queue_add_raw(queue: usize) {
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let result = match r2.checked_add(r1) {
+        Some(sum) => sum,
+        None => val_add(r2, r1),
+    };
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_sub => elidable_int,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+)]
+pub fn queue_sub_raw(queue: usize) {
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let result = match r2.checked_sub(r1) {
+        Some(diff) => diff,
+        None => val_sub(r2, r1),
+    };
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_mul => elidable_int,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+)]
+pub fn queue_mul_raw(queue: usize) {
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let result = match r2.checked_mul(r1) {
+        Some(prod) => prod,
+        None => val_mul(r2, r1),
+    };
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_ge_raw => elidable_int_cannot_raise,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+    native_int_binops = { val_ge_raw => IntGe },
+)]
+pub fn queue_cmp_raw(queue: usize) {
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let result = val_ge_raw(r2, r1);
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_div => elidable_int,
+        val_div_raw => elidable_int_cannot_raise,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+)]
+pub fn queue_div_raw(queue: usize) {
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    // Divisor −1 guarded out, as in `stack_div_raw`.
+    let result = if (r1 >> 0) == -1 {
+        val_div(r2, r1)
+    } else {
+        val_div_raw(r2, r1)
+    };
+    let sentinel_val = val_from_i32(0);
+    let new_sentinel = alloc_node_jit(sentinel_val, 0);
+    let tail = queue.tail;
+    tail.value = result;
+    tail.next = new_sentinel;
+    queue.tail = new_sentinel;
+    queue.size = queue.size + 1usize;
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline(always)]
+#[majit_macros::jit_inline(
+    ref_params = {
+        queue: ref(super::linkedlist::Queue),
+    },
+    ref_fields = {
+        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::Queue::tail => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
+    },
+    calls = {
+        free_node_jit => concrete_only_void,
+        val_mod_raw => elidable_int_cannot_raise,
+        val_from_i32 => elidable_int_cannot_raise,
+        alloc_node_jit => nursery_alloc_ref,
+    },
+)]
+pub fn queue_mod_raw(queue: usize) {
+    let n1 = queue.head;
+    let r1 = n1.value;
+    let n2 = n1.next;
+    queue.head = n2;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n1);
+    let r2 = n2.value;
+    let n3 = n2.next;
+    queue.head = n3;
+    queue.size = queue.size - 1usize;
+    free_node_jit(n2);
+    let result = val_mod_raw(r2, r1);
     let sentinel_val = val_from_i32(0);
     let new_sentinel = alloc_node_jit(sentinel_val, 0);
     let tail = queue.tail;
