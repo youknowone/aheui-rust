@@ -214,6 +214,14 @@ mod bigint_gc {
     }
 
     fn maybe_collect_bigints() {
+        // `alloc_bigint_oldgen` reaches this directly rather than through
+        // `value::maybe_collect_bigints`, so the suppression has to be read
+        // here too — the dual-mode flip allocates while the storage is half
+        // promoted, and a collection would read its unvisited raw words as
+        // bigint pointers.
+        if aheui_runtime::value::no_collect_active() {
+            return;
+        }
         if BIGINT_BYTES_SINCE_COLLECT.load(Ordering::Relaxed) < BIGINT_COLLECT_THRESHOLD {
             return;
         }

@@ -75,3 +75,30 @@ pub fn with_bigint_transient_root<R>(_value: &mut Val, f: impl FnOnce() -> R) ->
 
 #[inline(always)]
 pub fn maybe_collect_bigints() {}
+
+#[inline(always)]
+pub fn no_collect_active() -> bool {
+    false
+}
+
+/// This backend is permanently untagged, so mode 0 is the only mode it has.
+#[inline(always)]
+pub fn start_in_raw_mode() {}
+
+/// Mode 0 is never left here: there is no tagged mode to leave it for.
+#[inline(always)]
+pub fn raw_mode_exit_count() -> usize {
+    0
+}
+
+/// Always false: there is no tagged mode to reach.
+#[inline(always)]
+pub fn bigint_mode() -> bool {
+    false
+}
+
+/// No bignum exists in this backend, so there is nothing to suppress.
+#[inline(always)]
+pub fn with_no_collect<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}

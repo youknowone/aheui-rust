@@ -673,6 +673,37 @@ pub fn walk_bigint_root_values(visit: &mut dyn FnMut(&mut Val)) {
     crate::value::walk_bigint_transient_roots(visit);
 }
 
+/// Convert every reachable mode-0 raw value into its mode-1 tagged form, once.
+///
+/// This is the dual-mode flip. It runs on the same root set and under the same
+/// safepoint discipline as the bignum collection above: an aheui op boundary
+/// where every live value sits in a committed node. Two things are outside
+/// that set and are the caller's job:
+///
+/// * the operands of the op that overflowed, which it has already popped;
+/// * the queue's sentinel node, whose value is walked here and so must have
+///   been built raw in mode 0 — it is never read, but promoting a tagged word
+///   a second time would double it.
+///
+/// Returns whether a storage was registered. `false` means nothing was
+/// converted, and the caller must not treat the flip as done: with no storage
+/// the walk reaches no value at all yet reports no error, so a mode switch on
+/// top of it leaves every live raw word to be reread as a tagged one.
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[must_use]
+pub fn promote_all_root_values() -> bool {
+    if GC_ROOTS.load(Ordering::Relaxed) == 0 {
+        return false;
+    }
+    // Not merely an optimisation: a half-promoted storage cannot be walked by
+    // the collector, because an unvisited raw even value is bit-identical to a
+    // bigint pointer. See `value::with_no_collect`.
+    crate::value::with_no_collect(|| {
+        walk_bigint_root_values(&mut |v: &mut Val| crate::value::promote_raw_value(v));
+    });
+    true
+}
+
 /// Report any storage whose node chain disagrees with its recorded `size`,
 /// bracketing a collection so a malformed chain can be attributed to the
 /// collector or to the mutator that ran before it. Gated on `AHEUI_GC_LOG`
@@ -1179,6 +1210,102 @@ mod tests {
         assert_eq!(q.__len__(), 2);
         assert_eq!(val_to_i64(&q.pop()), 3);
         assert_eq!(val_to_i64(&q.pop()), 3);
+    }
+
+    /// The dual-mode flip has to reach every live value, and one of them —
+    /// `port.last_push` — lives outside every node chain. Asserted through the
+    /// walk itself, so a holder added to `Storage` later without being added
+    /// to the walk fails here.
+    #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+    #[test]
+    fn test_promote_all_root_values_reaches_every_holder() {
+        use crate::value::val_from_raw_i64;
+
+        let _guard = NurseryTestGuard::new();
+
+        let mut storage = Storage::new();
+        storage.refresh_pools();
+        set_gc_roots(&mut storage as *mut Storage);
+
+        let stack_idx = (0..STORAGE_COUNT)
+            .find(|&idx| idx != VAL_QUEUE && idx != VAL_PORT)
+            .unwrap();
+        // Past the small range, so the heap-bigint arm of the promotion is
+        // exercised and not only the retag.
+        const BIG: i64 = (1i64 << 62) + 7;
+
+        storage.dispatch_mut(stack_idx).push(val_from_raw_i64(-5));
+        storage.dispatch_mut(stack_idx).push(val_from_raw_i64(BIG));
+        storage.dispatch_mut(VAL_QUEUE).push(val_from_raw_i64(11));
+        storage.dispatch_mut(VAL_PORT).push(val_from_raw_i64(13));
+        // After the port push, which writes `last_push` itself.
+        storage.port.last_push = val_from_raw_i64(17);
+
+        promote_all_root_values();
+
+        let mut seen = Vec::new();
+        walk_bigint_root_values(&mut |v: &mut Val| seen.push(v.try_to_i64()));
+        for want in [BIG, -5, 11, 13, 17] {
+            assert!(
+                seen.contains(&Some(want)),
+                "promotion did not reach {want}; walked {seen:?}"
+            );
+        }
+    }
+
+    /// The flip allocates — every value past ±2^62 boxes — and
+    /// `alloc_bigint_oldgen` collects *before* each allocation. A collection
+    /// there walks a storage whose unvisited values are still raw words, and a
+    /// raw even number is bit-identical to a bigint pointer, so it would be
+    /// followed. Pinned with a hook that mimics that allocator.
+    #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+    #[test]
+    fn test_promote_all_root_values_suppresses_collection() {
+        use crate::value::{AheuiBigInt, val_from_raw_i64};
+
+        static COLLECTS: AtomicUsize = AtomicUsize::new(0);
+
+        fn counting_collect() {
+            COLLECTS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // The shape of `alloc_bigint_oldgen`: collect, then allocate.
+        fn collecting_alloc(v: AheuiBigInt) -> *mut AheuiBigInt {
+            crate::value::maybe_collect_bigints();
+            Box::into_raw(Box::new(v))
+        }
+
+        let _guard = NurseryTestGuard::new();
+        COLLECTS.store(0, Ordering::Relaxed);
+        crate::value::register_bigint_maybe_collect_hook(counting_collect);
+        crate::value::register_bigint_alloc_hook(collecting_alloc);
+
+        // Control first: a zero below has to mean "suppressed", not "hook was
+        // never wired" — those two produce the same count.
+        crate::value::maybe_collect_bigints();
+        assert_eq!(
+            COLLECTS.load(Ordering::Relaxed),
+            1,
+            "collect hook is not wired, so the count below would prove nothing"
+        );
+
+        let mut storage = Storage::new();
+        storage.refresh_pools();
+        set_gc_roots(&mut storage as *mut Storage);
+        let stack_idx = (0..STORAGE_COUNT)
+            .find(|&idx| idx != VAL_QUEUE && idx != VAL_PORT)
+            .unwrap();
+        // Past ±2^62, so promoting it must box and therefore must allocate.
+        storage
+            .dispatch_mut(stack_idx)
+            .push(val_from_raw_i64((1i64 << 62) + 7));
+
+        let before = COLLECTS.load(Ordering::Relaxed);
+        promote_all_root_values();
+        let fired = COLLECTS.load(Ordering::Relaxed) - before;
+
+        crate::value::bigint::clear_bigint_hooks_for_test();
+        assert_eq!(fired, 0, "collection fired while the storage was half promoted");
     }
 
     #[test]

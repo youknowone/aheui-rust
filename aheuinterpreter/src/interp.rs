@@ -24,12 +24,21 @@ use crate::value::*;
 // path here just maintains it. Suppress unused-write warnings.
 #[allow(unused_assignments, unused_variables)]
 pub fn mainloop(program: &Program) -> Val {
+    // Dual mode: run on raw machine words until an operation overflows one.
+    // Must precede `Storage::new()` — the queue allocates a sentinel value,
+    // and the flip walks it, so it has to be built in the mode it is read in.
+    start_in_raw_mode();
+
     // rpaheui/aheui/aheui.py:228-234
     let mut pc: usize = 0;
     let mut stacksize: i32 = 0;
     let mut is_queue: bool = false;
     let mut storage = Storage::new();
     let mut selected: usize = 0;
+
+    // The registered storage is what enumerates the live values, both for the
+    // node collection and for the dual-mode flip, which cannot run without it.
+    crate::storage::set_gc_roots(&mut storage as *mut Storage);
 
     let mut input = aheui_io::InputBuffer::new();
     while pc < program.size {

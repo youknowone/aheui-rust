@@ -15,7 +15,7 @@ use malachite_bigint::BigInt;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const SMALL_MIN: i64 = -(1i64 << 62);
 const SMALL_MAX: i64 = (1i64 << 62) - 1;
@@ -126,6 +126,9 @@ impl Val {
     /// Try to convert to i64, returning None for BigInt values that overflow.
     #[inline]
     pub fn try_to_i64(self) -> Option<i64> {
+        if !bigint_mode() {
+            return Some(self.0);
+        }
         if self.is_small() {
             Some(self.as_i64_unchecked())
         } else {
@@ -158,12 +161,19 @@ impl Val {
 impl From<i64> for Val {
     #[inline(always)]
     fn from(v: i64) -> Self {
-        Val::from_i64_promoting(v)
+        if bigint_mode() {
+            Val::from_i64_promoting(v)
+        } else {
+            Val(v)
+        }
     }
 }
 
 impl std::fmt::Display for Val {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if !bigint_mode() {
+            return write!(f, "{}", self.0);
+        }
         if self.is_small() {
             write!(f, "{}", self.as_i64_unchecked())
         } else {
@@ -174,6 +184,9 @@ impl std::fmt::Display for Val {
 
 impl std::fmt::Debug for Val {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if !bigint_mode() {
+            return write!(f, "Val::Raw({})", self.0);
+        }
         if self.is_small() {
             write!(f, "Val::Small({})", self.as_i64_unchecked())
         } else {
@@ -192,6 +205,13 @@ pub fn register_bigint_maybe_collect_hook(hook: BigIntMaybeCollectHook) {
 
 #[inline(always)]
 pub fn val_bigint_addr(v: &Val) -> Option<usize> {
+    // In mode 0 the word is a raw integer, and an even one has bit 0 clear
+    // exactly like a pointer does. No bigint exists before the flip, so the
+    // collector must be told there is nothing here rather than left to read
+    // the tag.
+    if !bigint_mode() {
+        return None;
+    }
     (!v.is_small()).then_some(v.0 as usize)
 }
 
@@ -223,8 +243,146 @@ pub fn walk_bigint_transient_roots(visit: &mut dyn FnMut(&mut Val)) {
     }
 }
 
+/// False while values are raw machine words (mode 0), true once they are
+/// tagged (mode 1). One-way: set by [`leave_raw_mode`] and never cleared.
+static BIGINT_MODE: AtomicBool = AtomicBool::new(true);
+
+/// True when values carry the tag bit.
+#[inline(always)]
+pub fn bigint_mode() -> bool {
+    BIGINT_MODE.load(Ordering::Relaxed)
+}
+
+/// Number of completed flips out of mode 0. At most one per process; a second
+/// would mean a value was read in a mode it was not written in.
+static RAW_MODE_EXITS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many times this process left mode 0.
+///
+/// Which mode a run used is invisible in its output — both modes compute the
+/// same integers — so a corpus that passes proves nothing about which one
+/// produced the answers. This is what a caller reads to tell them apart.
+pub fn raw_mode_exit_count() -> usize {
+    RAW_MODE_EXITS.load(Ordering::Relaxed)
+}
+
+/// Report each dual-mode transition on stderr under `AHEUI_DUAL_LOG`, the way
+/// `AHEUI_GC_LOG` reports collections.
+fn dual_log_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("AHEUI_DUAL_LOG").is_some())
+}
+
+/// Start the process in mode 0, before any value exists.
+///
+/// ⚠ Only valid before the first value is created: it reinterprets nothing, it
+/// only changes how subsequent words are read. Flipping back is not offered —
+/// the reverse direction has no meaning once a bigint has been allocated.
+///
+/// A no-op once the process has left mode 0. The mode is process-global while
+/// each mainloop owns its own storage, so a second mainloop in a process that
+/// already flipped must not re-enter mode 0 — the first one's boxed values
+/// would be reread as raw words. (One mainloop per process is the standing
+/// assumption anyway: `set_gc_roots` is a single global slot.)
+pub fn start_in_raw_mode() {
+    if RAW_MODE_EXITS.load(Ordering::Relaxed) != 0 {
+        if dual_log_enabled() {
+            eprintln!("@@@DUAL start refused: this process already left mode 0");
+        }
+        return;
+    }
+    if dual_log_enabled() {
+        eprintln!("@@@DUAL start mode=0");
+    }
+    BIGINT_MODE.store(false, Ordering::Relaxed);
+}
+
+/// Leave mode 0: convert every value the storage can reach, then switch.
+///
+/// The caller is responsible for two things this cannot see — any operand it
+/// has already popped, and staying inside a [`with_no_collect`] region until
+/// its own in-flight values are tagged and reachable again.
+fn leave_raw_mode() {
+    debug_assert!(no_collect_active(), "the flip must not be collectable");
+    // Not a `debug_assert`: an unregistered storage converts nothing while
+    // reporting nothing, and the mode switch below would then reread every live
+    // raw word as a tagged one. The check costs one branch on a path that runs
+    // at most once per process, and the alternative to failing here is silent
+    // memory corruption.
+    assert!(
+        crate::storage::promote_all_root_values(),
+        "mode 0 was entered without a registered storage, so the flip cannot \
+         reach the live values — call `storage::set_gc_roots` before \
+         `start_in_raw_mode`"
+    );
+    BIGINT_MODE.store(true, Ordering::Relaxed);
+    RAW_MODE_EXITS.fetch_add(1, Ordering::Relaxed);
+    if dual_log_enabled() {
+        eprintln!("@@@DUAL flip mode=1");
+    }
+}
+
+/// Leave mode 0 on behalf of a binary op that has already popped `a` and `b`,
+/// then apply `f` to the promoted operands.
+///
+/// `a` and `b` are not reachable from any root, so the whole sequence — the
+/// walk, their own promotion, and `f`, which allocates again — runs inside one
+/// suppressed region rather than leaving a freshly boxed operand unrooted.
+#[cold]
+#[inline(never)]
+fn promote_and_apply(a: Val, b: Val, f: impl FnOnce(Val, Val) -> Val) -> Val {
+    with_no_collect(|| {
+        leave_raw_mode();
+        let mut a = a;
+        let mut b = b;
+        promote_raw_value(&mut a);
+        promote_raw_value(&mut b);
+        debug_assert!(bigint_mode());
+        f(a, b)
+    })
+}
+
+/// Nesting depth of [`with_no_collect`]. Non-zero suppresses bignum
+/// collection.
+static NO_COLLECT_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// True while a [`with_no_collect`] region is open.
+#[inline(always)]
+pub fn no_collect_active() -> bool {
+    NO_COLLECT_DEPTH.load(Ordering::Relaxed) != 0
+}
+
+/// Run `f` with bignum collection suppressed.
+///
+/// `rgc.no_collect` states the same property statically, as
+/// `func._gc_no_collect_`; a Rust build has no translation step to enforce it
+/// against, so the region is marked dynamically instead.
+///
+/// The region this exists for is the dual-mode flip. Mid-walk the storage
+/// holds visited values in tagged form and unvisited ones as raw words, and a
+/// raw even number has bit 0 clear — indistinguishable from a bigint pointer.
+/// A collection there would follow it. The flip allocates (every value past
+/// ±2^62 boxes), and `alloc_bigint_oldgen` collects *before* each allocation,
+/// so the two meet unless the region is closed.
+pub fn with_no_collect<R>(f: impl FnOnce() -> R) -> R {
+    struct DepthGuard;
+
+    impl Drop for DepthGuard {
+        fn drop(&mut self) {
+            NO_COLLECT_DEPTH.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
+    NO_COLLECT_DEPTH.fetch_add(1, Ordering::Relaxed);
+    let _guard = DepthGuard;
+    f()
+}
+
 #[inline]
 pub fn maybe_collect_bigints() {
+    if no_collect_active() {
+        return;
+    }
     let hook_addr = BIGINT_MAYBE_COLLECT_HOOK.load(Ordering::Relaxed);
     if hook_addr != 0 {
         let hook: BigIntMaybeCollectHook = unsafe { std::mem::transmute(hook_addr) };
@@ -232,11 +390,23 @@ pub fn maybe_collect_bigints() {
     }
 }
 
+/// Drop both hooks. Tests register process-global hooks and must not leak them
+/// into the next test.
+#[cfg(test)]
+pub(crate) fn clear_bigint_hooks_for_test() {
+    BIGINT_ALLOC_HOOK.store(0, Ordering::Relaxed);
+    BIGINT_MAYBE_COLLECT_HOOK.store(0, Ordering::Relaxed);
+}
+
 // ── Public API ──────────────────────────────────────────────────────
 
 #[inline(always)]
 pub fn val_from_i32(v: i32) -> Val {
-    Val::from_small(v as i64)
+    if bigint_mode() {
+        Val::from_small(v as i64)
+    } else {
+        Val(v as i64)
+    }
 }
 
 /// Raw tagged-word retag for JIT fast paths.
@@ -247,8 +417,40 @@ pub fn val_retag_small(untagged: i64) -> Val {
     Val((untagged << 1) | 1)
 }
 
+// ── Dual mode ───────────────────────────────────────────────────────
+//
+// Dual mode runs untagged until the first arithmetic overflow. While it is in
+// mode 0 the same word carries a plain `i64`, so nothing tags, untags or
+// allocates; the flip converts every reachable value once and the tagged
+// encoding above takes over for the rest of the run.
+
+/// Mode-0 constructor: the word holds a plain untagged `i64`.
+///
+/// The full `i64` range is representable, unlike [`Val::from_small`] — mode 0
+/// is left by an overflow of the machine word, not by leaving ±2^62.
+#[inline(always)]
+pub fn val_from_raw_i64(v: i64) -> Val {
+    Val(v)
+}
+
+/// Convert one mode-0 raw word into its mode-1 tagged form.
+///
+/// ⚠ **Not idempotent.** A second application reads an already-tagged word as
+/// a raw integer and doubles it. Every reachable value must be visited exactly
+/// once; `storage::walk_bigint_root_values` is what guarantees that, by
+/// walking the stack chains with the queue and port slots excluded and then
+/// those two chains once each — `pools[VAL_QUEUE]`/`pools[VAL_PORT]` alias
+/// them, so a walk over all 28 slots would visit those values twice.
+#[inline]
+pub fn promote_raw_value(v: &mut Val) {
+    *v = Val::from_i64_promoting(v.0);
+}
+
 #[inline(always)]
 pub fn val_is_zero(v: &Val) -> bool {
+    if !bigint_mode() {
+        return v.0 == 0;
+    }
     // Small 0 is encoded as (0 << 1) | 1 = 1.
     if v.is_small() {
         v.0 == 1
@@ -259,12 +461,19 @@ pub fn val_is_zero(v: &Val) -> bool {
 
 #[inline(always)]
 pub fn val_to_i64(v: &Val) -> i64 {
+    if !bigint_mode() {
+        return v.0;
+    }
     v.to_i64()
 }
 
 pub fn val_to_i32_saturating(v: &Val) -> i32 {
-    if v.is_small() {
-        let raw = v.as_i64_unchecked();
+    if v.is_small() || !bigint_mode() {
+        let raw = if bigint_mode() {
+            v.as_i64_unchecked()
+        } else {
+            v.0
+        };
         if raw > i32::MAX as i64 {
             i32::MAX
         } else if raw < i32::MIN as i64 {
@@ -299,25 +508,54 @@ fn binop_fast(
     Val::normalize_big(f_big(a.to_bigint(), b.to_bigint()))
 }
 
+// Mode 0 is a plain `checked_*` on the machine word. The overflow arm is the
+// only exit from it, and it is cold: it fires at most once per process.
+
 #[inline(always)]
 pub fn val_add(a: Val, b: Val) -> Val {
+    if !bigint_mode() {
+        return match a.0.checked_add(b.0) {
+            Some(r) => Val(r),
+            None => promote_and_apply(a, b, val_add),
+        };
+    }
     binop_fast(a, b, |a, b| a.checked_add(b), |a, b| a + b)
 }
 
 #[inline(always)]
 pub fn val_sub(a: Val, b: Val) -> Val {
+    if !bigint_mode() {
+        return match a.0.checked_sub(b.0) {
+            Some(r) => Val(r),
+            None => promote_and_apply(a, b, val_sub),
+        };
+    }
     binop_fast(a, b, |a, b| a.checked_sub(b), |a, b| a - b)
 }
 
 #[inline(always)]
 pub fn val_mul(a: Val, b: Val) -> Val {
+    if !bigint_mode() {
+        return match a.0.checked_mul(b.0) {
+            Some(r) => Val(r),
+            None => promote_and_apply(a, b, val_mul),
+        };
+    }
     binop_fast(a, b, |a, b| a.checked_mul(b), |a, b| a * b)
 }
 
 #[inline(always)]
 pub fn val_div(a: Val, b: Val) -> Val {
     if val_is_zero(&b) {
-        return Val::from_small(0);
+        return val_from_i32(0);
+    }
+    if !bigint_mode() {
+        // `checked_div` also rejects `i64::MIN / -1`, whose true quotient does
+        // not fit the word — that one is a promotion, not a zero.
+        return match a.0.checked_div(b.0) {
+            Some(r) => Val(r),
+            None => promote_and_apply(a, b, val_div),
+        };
     }
     binop_fast(a, b, |a, b| Some(a.wrapping_div(b)), |a, b| a / b)
 }
@@ -325,13 +563,22 @@ pub fn val_div(a: Val, b: Val) -> Val {
 #[inline(always)]
 pub fn val_mod(a: Val, b: Val) -> Val {
     if val_is_zero(&b) {
-        return Val::from_small(0);
+        return val_from_i32(0);
+    }
+    if !bigint_mode() {
+        return match a.0.checked_rem(b.0) {
+            Some(r) => Val(r),
+            None => promote_and_apply(a, b, val_mod),
+        };
     }
     binop_fast(a, b, |a, b| Some(a.wrapping_rem(b)), |a, b| a % b)
 }
 
 #[inline(always)]
 pub fn val_ge(a: &Val, b: &Val) -> bool {
+    if !bigint_mode() {
+        return a.0 >= b.0;
+    }
     if a.is_small() & b.is_small() {
         return a.as_i64_unchecked() >= b.as_i64_unchecked();
     }
@@ -365,8 +612,77 @@ fn val_ge_slow(a: &Val, b: &Val) -> bool {
 }
 
 pub fn val_from_str(s: &str) -> Option<Val> {
+    if !bigint_mode() {
+        if let Ok(v) = s.parse::<i64>() {
+            return Some(Val(v));
+        }
+        // Input wider than a machine word leaves mode 0 on its own, with no
+        // arithmetic involved. There is no popped operand to fix up here.
+        let big = s.parse::<BigInt>().ok()?;
+        return Some(with_no_collect(|| {
+            leave_raw_mode();
+            Val::normalize_big(big)
+        }));
+    }
     if let Ok(v) = s.parse::<i64>() {
         return Some(Val::from_i64_promoting(v));
     }
     s.parse::<BigInt>().ok().map(Val::normalize_big)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every raw word that stays inside the small range becomes a tagged
+    /// small; the ones that do not become heap bigints, and both readings
+    /// agree with the raw word they came from.
+    #[test]
+    fn test_promote_raw_value_covers_both_encodings() {
+        for raw in [
+            0i64,
+            1,
+            -1,
+            42,
+            -42,
+            SMALL_MAX,
+            SMALL_MIN,
+            SMALL_MAX + 1,
+            SMALL_MIN - 1,
+            i64::MAX,
+            i64::MIN,
+        ] {
+            let mut v = val_from_raw_i64(raw);
+            promote_raw_value(&mut v);
+            assert_eq!(
+                v.is_small(),
+                (SMALL_MIN..=SMALL_MAX).contains(&raw),
+                "wrong encoding chosen for {raw}"
+            );
+            assert_eq!(v.try_to_i64(), Some(raw), "value changed promoting {raw}");
+        }
+    }
+
+    /// The zero a mode-0 storage holds is the raw word `0`, which as a tagged
+    /// word would be a null bigint pointer — so promotion, not reinterpretation,
+    /// is what makes an untouched storage readable after the flip.
+    #[test]
+    fn test_promote_raw_zero_is_not_a_null_pointer() {
+        let mut v = val_from_raw_i64(0);
+        assert!(!v.is_small(), "raw 0 has no tag bit set");
+        promote_raw_value(&mut v);
+        assert!(v.is_small());
+        assert!(val_is_zero(&v));
+    }
+
+    /// Pinned because the walk's correctness rests on it: promoting twice is
+    /// wrong, so a value reachable from two roots must not be walked twice.
+    #[test]
+    fn test_promote_raw_value_is_not_idempotent() {
+        let mut v = val_from_raw_i64(21);
+        promote_raw_value(&mut v);
+        assert_eq!(v.try_to_i64(), Some(21));
+        promote_raw_value(&mut v);
+        assert_eq!(v.try_to_i64(), Some(43), "(21 << 1) | 1 read as a raw word");
+    }
 }
