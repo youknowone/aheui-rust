@@ -3,8 +3,12 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 
-TESTS_DIR="tests"
-SNIPPETS="snippets"
+TESTS_DIR="${AHEUI_SNIPPETS:-tests}"
+SNIPPETS="$TESTS_DIR"
+if [ ! -d "$SNIPPETS" ]; then
+    echo "snippet corpus not found; initialize snippets/ or set AHEUI_SNIPPETS" >&2
+    exit 1
+fi
 PASS=0
 FAIL=0
 RED='\033[91m'

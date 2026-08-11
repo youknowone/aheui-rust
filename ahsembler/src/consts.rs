@@ -138,6 +138,43 @@ pub fn is_binary_op(op: u8) -> bool {
     matches!(op, OP_DIV | OP_ADD | OP_MUL | OP_MOD | OP_CMP | OP_SUB)
 }
 
+/// `OP_DIV` on a non-zero divisor: the quotient rounds toward negative
+/// infinity, as `int.__floordiv__` and `rbigint.div` both do.
+///
+/// Rust's `/` and `wrapping_div` truncate toward zero, which answers the same
+/// as flooring whenever the operands share a sign or the division is exact and
+/// differs by one otherwise. A constant folder that truncates here would give
+/// a literal `-7 / 2` a different answer from the same division performed at
+/// run time.
+///
+/// `div_euclid` is a third convention — it forces a non-negative remainder —
+/// and is not this one.
+#[inline]
+pub fn floor_div_i64(a: i64, b: i64) -> i64 {
+    let q = a.wrapping_div(b);
+    let r = a.wrapping_rem(b);
+    if r != 0 && (r < 0) != (b < 0) {
+        q.wrapping_sub(1)
+    } else {
+        q
+    }
+}
+
+/// `OP_MOD` on a non-zero divisor: the remainder carries the divisor's sign,
+/// the twin of [`floor_div_i64`].
+///
+/// The corrected remainder cannot overflow — it is only computed when `r` and
+/// `b` have opposite signs, so `|r + b| < |b|`.
+#[inline]
+pub fn floor_mod_i64(a: i64, b: i64) -> i64 {
+    let r = a.wrapping_rem(b);
+    if r != 0 && (r < 0) != (b < 0) {
+        r.wrapping_add(b)
+    } else {
+        r
+    }
+}
+
 /// Decompose a Korean syllable into (초성, 중성, 종성).
 /// Returns None for non-Korean characters.
 pub fn decompose(ch: char) -> Option<(u8, i32, i32)> {

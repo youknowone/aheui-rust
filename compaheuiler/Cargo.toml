@@ -10,7 +10,7 @@ categories = ["compilers"]
 
 [features]
 default = ["malachite-bigint"]
-bigint = []
+bigint = ["dep:num-traits"]
 num-bigint = ["bigint", "dep:num-bigint"]
 malachite-bigint = ["bigint", "dep:malachite-bigint"]
 cranelift = ["dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
@@ -21,9 +21,13 @@ clap = { version = "4", features = ["derive"] }
 
 num-bigint = { version = "0.4", optional = true }
 malachite-bigint = { version = "0.9", optional = true }
+num-traits = { version = "0.2", optional = true }
 
 cranelift-codegen = { version = "0.130", optional = true }
 cranelift-frontend = { version = "0.130", optional = true }
 cranelift-jit = { version = "0.130", optional = true }
 cranelift-module = { version = "0.130", optional = true }
 cranelift-native = { version = "0.130", optional = true }
+
+[dev-dependencies]
+wat = "1.227"

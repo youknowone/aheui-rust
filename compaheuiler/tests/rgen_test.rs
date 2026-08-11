@@ -1,3 +1,5 @@
+mod common;
+
 use std::process::Command;
 use std::time::Instant;
 
@@ -44,9 +46,7 @@ fn test_add_rs() {
 
 #[test]
 fn test_logo_rs() {
-    let source =
-        std::fs::read_to_string("snippets/logo/logo.aheui")
-            .unwrap();
+    let source = common::require_snippet("logo/logo.aheui");
     let (out, compile_ms, run_ms) = compile_and_run_rs("logo", &source);
     eprintln!(
         "logo(rust): rustc={compile_ms:.0}ms  run={run_ms:.0}ms  output={}bytes",
@@ -90,9 +90,8 @@ fn compile_and_run_rs_stdin(name: &str, source: &str, stdin: &[u8]) -> (String, 
 
 #[test]
 fn test_99bottles_rs() {
-    let base = "tests";
-    let source = std::fs::read_to_string(format!("{base}/99bottles/99bottles.aheui")).unwrap();
-    let expected = std::fs::read_to_string(format!("{base}/99bottles/99bottles.out")).unwrap();
+    let source = common::require_snippet("99bottles/99bottles.aheui");
+    let expected = common::require_snippet("99bottles/99bottles.out");
     let (out, _, run_ms) = compile_and_run_rs_stdin("99bottles", &source, b"");
     eprintln!("99bottles: {run_ms:.0}ms  {} bytes", out.len());
     assert_eq!(out, expected, "99bottles output mismatch");
@@ -100,10 +99,13 @@ fn test_99bottles_rs() {
 
 #[test]
 fn test_aheui_self_interp() {
-    let aheui_src = std::fs::read_to_string(
-        "tests/aheui.aheui",
-    )
-    .unwrap();
+    let Some(aheui_src) = common::read_self_interp() else {
+        common::skip(
+            "test_aheui_self_interp",
+            "aheui.aheui (set AHEUI_SELF_INTERP)",
+        );
+        return;
+    };
     let test_prog = "밝희";
     let (out, exit, run_ms) =
         compile_and_run_rs_stdin("aheui_self", &aheui_src, test_prog.as_bytes());

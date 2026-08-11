@@ -29,9 +29,31 @@ impl Program {
         OP_REQSIZE[self.opcodes[pc] as usize]
     }
 
+    /// rpaheui/aheui/aheui.py:175-189 `Program.get_label` resolves a label
+    /// id through the `labels` dict on every jump.  After
+    /// `resolve_jump_targets` rewrites `values[pc]` for jump ops to point
+    /// at the target PC directly the lookup collapses to a single array
+    /// load — RPython's `@jit.elidable` plus immutable `labels[**]`
+    /// achieves the same effect at JIT time, but the naive interpreter
+    /// path needs the rewrite to avoid the per-jump `HashMap` probe.
     #[inline(always)]
     pub fn get_label(&self, pc: usize) -> usize {
-        self.labels[&self.values[pc]]
+        self.values[pc] as usize
+    }
+
+    /// Rewrite `values[pc]` for every jump op so it carries the target PC
+    /// instead of a label id.  Idempotent — once resolved, target PCs are
+    /// already valid PCs (in `0..size`) and re-running the pass keeps
+    /// them unchanged.
+    pub fn resolve_jump_targets(&mut self) {
+        for pc in 0..self.size {
+            if is_jump_op(self.opcodes[pc]) {
+                let label_id = self.values[pc];
+                if let Some(&target_pc) = self.labels.get(&label_id) {
+                    self.values[pc] = target_pc as i32;
+                }
+            }
+        }
     }
 }
 
@@ -387,6 +409,7 @@ impl Compiler {
         min_stacksize_map.iter().map(|&s| s >= 0).collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn optimize_deadcode2(&self) -> Vec<bool> {
         let n = self.lines.len();
         let mut min_map: Vec<[i32; STORAGE_COUNT]> = vec![[-1i32; STORAGE_COUNT]; n];
@@ -634,8 +657,16 @@ impl Compiler {
                 },
                 OP_DIV => {
                     if effective_v1 != 0 {
+                        // `checked_div` is asked only whether the quotient fits
+                        // the operand width: `i32::MIN / -1` does not, and a
+                        // run-time division promotes there rather than
+                        // wrapping, so the folder declines instead of
+                        // answering. Flooring in `i64` cannot leave the range
+                        // for a pair that clears that check — the correction
+                        // only fires when `|divisor| >= 2`, which halves the
+                        // quotient's magnitude.
                         match v2.checked_div(effective_v1) {
-                            Some(r) => r,
+                            Some(_) => floor_div_i64(v2 as i64, effective_v1 as i64) as i32,
                             None => continue,
                         }
                     } else {
@@ -643,8 +674,10 @@ impl Compiler {
                     }
                 }
                 OP_MOD => {
+                    // `|remainder| < |divisor|`, floored or not, so this always
+                    // fits the operand width.
                     if effective_v1 != 0 {
-                        v2 % effective_v1
+                        floor_mod_i64(v2 as i64, effective_v1 as i64) as i32
                     } else {
                         0
                     }
@@ -769,16 +802,20 @@ impl Compiler {
 }
 
 pub fn dump_asm(program: &Program, writer: &mut impl Write) -> io::Result<()> {
-    let mut label_at: HashMap<usize, Vec<i32>> = HashMap::new();
-    for (&label_id, &target_pc) in &program.labels {
-        label_at.entry(target_pc).or_default().push(label_id);
+    // After `resolve_jump_targets`, `values[pc]` for jump ops carries the
+    // target PC directly.  Derive label markers from the unique set of
+    // jump targets so `JMP L<val>` matches an `L<pc>:` line at the same
+    // PC.
+    let mut targets: HashSet<usize> = HashSet::new();
+    for pc in 0..program.size {
+        if is_jump_op(program.opcodes[pc]) {
+            targets.insert(program.values[pc] as usize);
+        }
     }
 
     for pc in 0..program.size {
-        if let Some(labels) = label_at.get(&pc) {
-            for label_id in labels {
-                writeln!(writer, "L{label_id}:")?;
-            }
+        if targets.contains(&pc) {
+            writeln!(writer, "L{pc}:")?;
         }
         let op = program.opcodes[pc];
         let val = program.values[pc];
@@ -906,12 +943,47 @@ mod tests {
         assert!(c.lines.iter().any(|&(op, _)| op == OP_BRPOP1));
     }
 
+    /// Locate the snippet corpus — the `snippets` submodule
+    /// (github.com/aheui/snippets) pinned by this repo's gitlink, with
+    /// `$AHEUI_SNIPPETS` and a sibling `rpaheui/snippets` checkout as
+    /// fallbacks for a tree cloned without `--recurse-submodules`. Same order
+    /// as `check.sh find_snippets` and `scripts/jitstats.py`. Resolved at run
+    /// time because a fixed `include_str!` path only holds on the machine it
+    /// was written on.
+    fn snippets_dir() -> std::path::PathBuf {
+        let mut dir = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+        while let Some(d) = dir {
+            let candidate = d.join("snippets");
+            if candidate.join(".git").exists() {
+                return candidate;
+            }
+            dir = d.parent();
+        }
+        if let Some(p) = std::env::var_os("AHEUI_SNIPPETS") {
+            return std::path::PathBuf::from(p);
+        }
+        let mut dir = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
+        while let Some(d) = dir {
+            let candidate = d.join("rpaheui").join("snippets");
+            if candidate.is_dir() {
+                return candidate;
+            }
+            dir = d.parent();
+        }
+        panic!(
+            "snippet corpus not found in or above {}; \
+             run 'git submodule update --init' or set AHEUI_SNIPPETS",
+            env!("CARGO_MANIFEST_DIR"),
+        )
+    }
+
     #[test]
     fn test_hello_puzzlet_has_halt() {
-        let source =
-            include_str!("../../../../../../rpaheui/snippets/hello-world/hello.puzzlet.aheui");
+        let path = snippets_dir().join("hello-world/hello.puzzlet.aheui");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         let mut c = Compiler::new();
-        c.compile(source);
+        c.compile(&source);
         assert!(c.lines.iter().any(|&(op, _)| op == OP_HALT));
     }
 }

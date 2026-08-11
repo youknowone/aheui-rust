@@ -213,7 +213,16 @@ fn preferred_successor(block: &CfgBlock) -> Option<BlockId> {
 
 fn inst_to_opcode(inst: &Inst) -> (u8, i32) {
     match inst {
-        Inst::Push(v) => (OP_PUSH, *v as i32),
+        // `Program::values` is a `Vec<i32>`, so a wider `Push` cannot be
+        // carried; truncating one silently changes what the program computes.
+        // Source literals are small and `fold_constants` is bounded by
+        // `ConstWidth::I32` on every path that reaches here, so this is an
+        // invariant rather than a case to handle.
+        Inst::Push(v) => (
+            OP_PUSH,
+            i32::try_from(*v)
+                .unwrap_or_else(|_| panic!("Push({v}) does not fit the linearized i32 operand")),
+        ),
         Inst::Pop => (OP_POP, -1),
         Inst::Dup => (OP_DUP, -1),
         Inst::Swap => (OP_SWAP, -1),
@@ -323,7 +332,7 @@ mod tests {
         cfg.add_block(vec![Inst::BinOp(BinOpKind::Add)], Terminator::Halt);
         cfg.add_block(vec![], Terminator::Halt);
 
-        let optimized = optimize_cfg(cfg);
+        let optimized = optimize_cfg(cfg, crate::cfg_optimize::ConstWidth::I32);
         let program = linearize(&optimized);
 
         assert_eq!(program.opcodes, vec![OP_PUSH, OP_HALT]);

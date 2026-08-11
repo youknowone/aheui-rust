@@ -1,9 +1,10 @@
-//! Generate C99 code from an Aheui CFG using the same optimization pipeline as rgen.
+//! Generate C99 code from an Aheui CFG using the same optimization pipeline as rust_gen.
 //!
-//! Compile with: cc -O2 -o program output.c
+//! The i64 output compiles directly with `cc`. Dual-mode output is compiled to
+//! an object and linked with [`c_bigint_bridge_rs`] by Cargo.
 
 use ahsembler::cfg::*;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 const QUEUE: usize = 21;
 const PORT: usize = 27;
@@ -12,56 +13,49 @@ fn is_special(s: usize) -> bool {
 }
 
 pub fn compile_to_c(source: &str) -> String {
-    let mut cfg = ahsembler::compile_to_cfg_aot(source);
-    // Same optimization pipeline as compile_to_rs_inner
-    for _ in 0..10 {
-        let before = cfg.num_blocks();
-        let states = ahsembler::cfg_optimize::analyze_stack_depths(&cfg);
-        ahsembler::cfg_optimize::eliminate_guards(&mut cfg, &states);
-        ahsembler::cfg_optimize::eliminate_guard_depth(&mut cfg, &states);
-        ahsembler::cfg_optimize::thread_jumps(&mut cfg);
-        ahsembler::cfg_optimize::merge_guard_ok(&mut cfg);
-        ahsembler::cfg_optimize::merge_blocks(&mut cfg);
-        ahsembler::cfg_optimize::eliminate_dead_blocks(&mut cfg);
-        if cfg.num_blocks() == before {
-            break;
-        }
-    }
-    let removed = ahsembler::cfg_optimize::eliminate_loop_guards(&mut cfg);
-    if removed > 0 {
-        for _ in 0..10 {
-            let before = cfg.num_blocks();
-            let states = ahsembler::cfg_optimize::analyze_stack_depths(&cfg);
-            ahsembler::cfg_optimize::eliminate_guard_depth(&mut cfg, &states);
-            ahsembler::cfg_optimize::thread_jumps(&mut cfg);
-            ahsembler::cfg_optimize::merge_blocks(&mut cfg);
-            ahsembler::cfg_optimize::eliminate_dead_blocks(&mut cfg);
-            if cfg.num_blocks() == before {
-                break;
-            }
-        }
-        let states = ahsembler::cfg_optimize::analyze_stack_depths(&cfg);
-        ahsembler::cfg_optimize::fold_constants(&mut cfg, &states);
-        ahsembler::cfg_optimize::peephole_cleanup(&mut cfg, &states);
-    }
-    let chain_removed = ahsembler::cfg_optimize::eliminate_chain_guards(&mut cfg);
-    if chain_removed > 0 {
-        for _ in 0..10 {
-            let before = cfg.num_blocks();
-            ahsembler::cfg_optimize::thread_jumps(&mut cfg);
-            ahsembler::cfg_optimize::merge_blocks(&mut cfg);
-            ahsembler::cfg_optimize::eliminate_dead_blocks(&mut cfg);
-            if cfg.num_blocks() == before {
-                break;
-            }
-        }
-    }
-    generate_c_dispatch(&cfg)
+    compile_to_c_opt(source, ahsembler::OptimizationLevel::O3)
 }
 
-fn generate_c_dispatch(cfg: &Cfg) -> String {
+pub fn compile_to_c_opt(source: &str, opt: ahsembler::OptimizationLevel) -> String {
+    let cfg = crate::pipeline::optimize(source, opt);
+    generate_c_dispatch(&cfg, false)
+}
+
+/// Compile to C with the same raw-i64-to-tagged-bigint transition used by the
+/// Rust backend. The emitted C99 calls the Rust ABI provided by
+/// [`c_bigint_bridge_rs`]; compile it as an object and let Cargo link both.
+pub fn compile_to_c_bigint(source: &str) -> String {
+    compile_to_c_bigint_opt(source, ahsembler::OptimizationLevel::O3)
+}
+
+pub fn compile_to_c_bigint_opt(source: &str, opt: ahsembler::OptimizationLevel) -> String {
+    let cfg = crate::pipeline::optimize(source, opt);
+    generate_c_dispatch(&cfg, true)
+}
+
+/// Rust half of the C BigInt runtime. It supplies the C ABI and the final
+/// `main`, using the same BigInt crate selected for compaheuiler itself.
+pub fn c_bigint_bridge_rs() -> String {
+    let bigint_import = if cfg!(feature = "num-bigint") {
+        "use num_bigint::BigInt;\n"
+    } else {
+        "use malachite_bigint::BigInt;\n"
+    };
+    format!("{bigint_import}{}", include_str!("c_bigint_bridge.rs"))
+}
+
+/// Cargo dependency declaration matching [`c_bigint_bridge_rs`].
+pub fn c_bigint_dependency_toml() -> &'static str {
+    if cfg!(feature = "num-bigint") {
+        r#"num-bigint = "0.4""#
+    } else {
+        r#"malachite-bigint = "0.9""#
+    }
+}
+
+fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
     let mut out = String::with_capacity(32768);
-    out.push_str(C_PRELUDE);
+    out.push_str(if bigint { C_BIGINT_PRELUDE } else { C_PRELUDE });
 
     let states = ahsembler::cfg_optimize::analyze_stack_depths(cfg);
     let mut used: BTreeSet<usize> = BTreeSet::new();
@@ -96,12 +90,6 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
         .collect();
 
     let use_match = live_blocks.len() > 16;
-    let has_dyn_sel = live_blocks.iter().any(|&bid| {
-        states
-            .get(bid as usize)
-            .map_or(false, |s| s.selected.is_none())
-    });
-
     // Function signature
     out.push_str("static int64_t aheui_main(int64_t** bases, int32_t* lengths) {\n");
     out.push_str("  SpecialStorage sp;\n  sp_init(&sp);\n");
@@ -109,6 +97,17 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
         out.push_str(&format!("  int64_t* t{s} = bases[{s}] + lengths[{s}];\n"));
     }
     out.push_str("  int64_t* top = t0;\n  size_t sel = 0;\n  /*VARDECL*/\n");
+    if bigint {
+        out.push_str("  int _bm = 0, _bm_prev = 0;\n");
+        out.push_str("  int64_t* tops_snapshot[STORAGE_COUNT] = {0};\n");
+        // Keep promotion metadata coherent when a top changes. This avoids
+        // copying every storage top before every checked arithmetic operation.
+        for &s in &used {
+            if !is_special(s) {
+                out.push_str(&format!("  tops_snapshot[{s}] = t{s};\n"));
+            }
+        }
+    }
     let mut max_var: usize = 0;
     let ind = "      ";
 
@@ -214,23 +213,43 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
 
         // Abs register allocation
         let mut abs = Abs {
-            stacks: HashMap::new(),
+            stacks: BTreeMap::new(),
             active: entry_sel.unwrap_or(0),
             sel_known: entry_sel.is_some(),
             next_var: max_var,
+            bigint,
         };
         let insts = &block.instructions;
         let mut ii = 0;
         let mut top_modified = false;
 
         let op_str_fn = |kind: &BinOpKind, a: &str, b: &str| -> String {
-            match kind {
-                BinOpKind::Add => format!("((int64_t)((uint64_t)({a}) + (uint64_t)({b})))"),
-                BinOpKind::Sub => format!("((int64_t)((uint64_t)({a}) - (uint64_t)({b})))"),
-                BinOpKind::Mul => format!("((int64_t)((uint64_t)({a}) * (uint64_t)({b})))"),
-                BinOpKind::Div => format!("(({b}) != 0 ? wrapping_div({a}, {b}) : 0)"),
-                BinOpKind::Mod => format!("(({b}) != 0 ? wrapping_rem({a}, {b}) : 0)"),
-                BinOpKind::Cmp => format!("(({a}) >= ({b}) ? 1 : 0)"),
+            if bigint {
+                match kind {
+                    BinOpKind::Add => {
+                        format!("dual_add({a}, {b}, &_bm, bases, tops_snapshot, &sp)")
+                    }
+                    BinOpKind::Sub => {
+                        format!("dual_sub({a}, {b}, &_bm, bases, tops_snapshot, &sp)")
+                    }
+                    BinOpKind::Mul => {
+                        format!("dual_mul({a}, {b}, &_bm, bases, tops_snapshot, &sp)")
+                    }
+                    BinOpKind::Div => format!("int_div({a}, {b}, _bm)"),
+                    BinOpKind::Mod => format!("int_rem({a}, {b}, _bm)"),
+                    BinOpKind::Cmp => {
+                        format!("int_ge({a}, {b}, _bm) ? int_lit(1, _bm) : int_lit(0, _bm)")
+                    }
+                }
+            } else {
+                match kind {
+                    BinOpKind::Add => format!("((int64_t)((uint64_t)({a}) + (uint64_t)({b})))"),
+                    BinOpKind::Sub => format!("((int64_t)((uint64_t)({a}) - (uint64_t)({b})))"),
+                    BinOpKind::Mul => format!("((int64_t)((uint64_t)({a}) * (uint64_t)({b})))"),
+                    BinOpKind::Div => format!("(({b}) != 0 ? wrapping_div({a}, {b}) : 0)"),
+                    BinOpKind::Mod => format!("(({b}) != 0 ? wrapping_rem({a}, {b}) : 0)"),
+                    BinOpKind::Cmp => format!("(({a}) >= ({b}) ? 1 : 0)"),
+                }
             }
         };
 
@@ -241,17 +260,22 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
             let reg = sel.is_some() && !sp_known;
             match inst {
                 Inst::Push(v) => {
+                    let cv = if bigint {
+                        format!("int_lit((int64_t){v}LL, _bm)")
+                    } else {
+                        format!("(int64_t){v}LL")
+                    };
                     if sp_known {
-                        out.push_str(&format!(
-                            "{ind}  sp_push(&sp, {}, (int64_t){v}LL);\n",
-                            sel.unwrap()
-                        ));
+                        out.push_str(&format!("{ind}  sp_push(&sp, {}, {cv});\n", sel.unwrap()));
                     } else if ds {
                         top_modified = true;
-                        out.push_str(&format!("{ind}  if (sel == {QUEUE} || sel == {PORT}) {{ sp_push(&sp, sel, (int64_t){v}LL); }} else {{ *top = (int64_t){v}LL; top++; }}\n"));
+                        out.push_str(&format!("{ind}  if (sel == {QUEUE} || sel == {PORT}) {{ sp_push(&sp, sel, {cv}); }} else {{ *top = {cv}; top++; }}\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  if (sel != {QUEUE} && sel != {PORT}) tops_snapshot[sel] = top;\n"));
+                        }
                     } else {
                         let var = abs.fresh();
-                        out.push_str(&format!("{ind}  {var} = (int64_t){v}LL;\n"));
+                        out.push_str(&format!("{ind}  {var} = {cv};\n"));
                         abs.push(var);
                     }
                 }
@@ -261,9 +285,18 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                     } else if ds {
                         top_modified = true;
                         out.push_str(&format!("{ind}  if (sel == {QUEUE} || sel == {PORT}) {{ sp_pop(&sp, sel); }} else {{ top--; }}\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  if (sel != {QUEUE} && sel != {PORT}) tops_snapshot[sel] = top;\n"));
+                        }
                     } else if abs.pop().is_none() {
                         let t = abs.top_var();
                         out.push_str(&format!("{ind}  {t}--;\n"));
+                        if bigint {
+                            out.push_str(&format!(
+                                "{ind}  tops_snapshot[{}] = {t};\n",
+                                sel.unwrap()
+                            ));
+                        }
                     }
                 }
                 Inst::Dup => {
@@ -283,6 +316,9 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                     } else if ds {
                         top_modified = true;
                         out.push_str(&format!("{ind}  if (sel == {QUEUE} || sel == {PORT}) {{ sp_dup(&sp, sel); }} else {{ int64_t _v = *(top-1); *top = _v; top++; }}\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  if (sel != {QUEUE} && sel != {PORT}) tops_snapshot[sel] = top;\n"));
+                        }
                     } else {
                         ensure_depth_c(&mut out, &mut abs, 1, &format!("{ind}  "));
                         let v = abs.peek().unwrap().clone();
@@ -303,6 +339,9 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                     }
                 }
                 Inst::BinOp(kind) => {
+                    if bigint && matches!(kind, BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul) {
+                        out.push_str(&format!("{ind}  _bm_prev = _bm;\n"));
+                    }
                     if sp_known {
                         let s = sel.unwrap();
                         let v1 = abs.fresh();
@@ -313,6 +352,11 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                         ));
                         out.push_str(&format!("{ind}  {vr} = {};\n", op_str_fn(kind, &v2, &v1)));
                         out.push_str(&format!("{ind}  sp_push(&sp, {s}, {vr});\n"));
+                        if bigint
+                            && matches!(kind, BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul)
+                        {
+                            emit_promote_live_vars_c(&mut out, &abs, ind);
+                        }
                     } else if ds {
                         top_modified = true;
                         let v1 = abs.fresh();
@@ -331,12 +375,25 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                         out.push_str(&format!("{ind}    {vr} = {};\n", op_str_fn(kind, &v2, &v1)));
                         out.push_str(&format!("{ind}    *top = {vr}; top++;\n"));
                         out.push_str(&format!("{ind}  }}\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  if (sel != {QUEUE} && sel != {PORT}) tops_snapshot[sel] = top;\n"));
+                        }
+                        if bigint
+                            && matches!(kind, BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul)
+                        {
+                            emit_promote_live_vars_c(&mut out, &abs, ind);
+                        }
                     } else {
                         ensure_depth_c(&mut out, &mut abs, 2, &format!("{ind}  "));
                         let r1 = abs.pop().unwrap();
                         let r2 = abs.pop().unwrap();
                         let vr = abs.fresh();
                         out.push_str(&format!("{ind}  {vr} = {};\n", op_str_fn(kind, &r2, &r1)));
+                        if bigint
+                            && matches!(kind, BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul)
+                        {
+                            emit_promote_live_vars_c(&mut out, &abs, ind);
+                        }
                         abs.push(vr);
                     }
                 }
@@ -364,15 +421,28 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                             out.push_str(&format!("{ind}  sp_push(&sp, {target}, {vr});\n"));
                         } else {
                             out.push_str(&format!("{ind}  *t{target} = {vr}; t{target}++;\n"));
+                            if bigint {
+                                out.push_str(&format!(
+                                    "{ind}  tops_snapshot[{target}] = t{target};\n"
+                                ));
+                            }
                         }
                     } else if ds {
                         top_modified = true;
                         let vr = abs.fresh();
                         out.push_str(&format!("{ind}  if (sel == {QUEUE} || sel == {PORT}) {{ {vr} = sp_pop(&sp, sel); }} else {{ top--; {vr} = *top; }}\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  if (sel != {QUEUE} && sel != {PORT}) tops_snapshot[sel] = top;\n"));
+                        }
                         if is_special(*target) {
                             out.push_str(&format!("{ind}  sp_push(&sp, {target}, {vr});\n"));
                         } else {
                             out.push_str(&format!("{ind}  *t{target} = {vr}; t{target}++;\n"));
+                            if bigint {
+                                out.push_str(&format!(
+                                    "{ind}  tops_snapshot[{target}] = t{target};\n"
+                                ));
+                            }
                         }
                     } else {
                         ensure_depth_c(&mut out, &mut abs, 1, &format!("{ind}  "));
@@ -388,32 +458,56 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                     if sp_known {
                         let vr = abs.fresh();
                         out.push_str(&format!("{ind}  {vr} = sp_pop(&sp, {});\n", sel.unwrap()));
-                        out.push_str(&format!("{ind}  write_num({vr});\n"));
+                        out.push_str(&format!(
+                            "{ind}  write_num({vr}{});\n",
+                            if bigint { ", _bm" } else { "" }
+                        ));
                     } else if ds {
                         top_modified = true;
                         let vr = abs.fresh();
                         out.push_str(&format!("{ind}  if (sel == {QUEUE} || sel == {PORT}) {{ {vr} = sp_pop(&sp, sel); }} else {{ top--; {vr} = *top; }}\n"));
-                        out.push_str(&format!("{ind}  write_num({vr});\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  if (sel != {QUEUE} && sel != {PORT}) tops_snapshot[sel] = top;\n"));
+                        }
+                        out.push_str(&format!(
+                            "{ind}  write_num({vr}{});\n",
+                            if bigint { ", _bm" } else { "" }
+                        ));
                     } else {
                         ensure_depth_c(&mut out, &mut abs, 1, &format!("{ind}  "));
                         let vr = abs.pop().unwrap();
-                        out.push_str(&format!("{ind}  write_num({vr});\n"));
+                        out.push_str(&format!(
+                            "{ind}  write_num({vr}{});\n",
+                            if bigint { ", _bm" } else { "" }
+                        ));
                     }
                 }
                 Inst::PopChar => {
                     if sp_known {
                         let vr = abs.fresh();
                         out.push_str(&format!("{ind}  {vr} = sp_pop(&sp, {});\n", sel.unwrap()));
-                        out.push_str(&format!("{ind}  write_char({vr});\n"));
+                        out.push_str(&format!(
+                            "{ind}  write_char({vr}{});\n",
+                            if bigint { ", _bm" } else { "" }
+                        ));
                     } else if ds {
                         top_modified = true;
                         let vr = abs.fresh();
                         out.push_str(&format!("{ind}  if (sel == {QUEUE} || sel == {PORT}) {{ {vr} = sp_pop(&sp, sel); }} else {{ top--; {vr} = *top; }}\n"));
-                        out.push_str(&format!("{ind}  write_char({vr});\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  if (sel != {QUEUE} && sel != {PORT}) tops_snapshot[sel] = top;\n"));
+                        }
+                        out.push_str(&format!(
+                            "{ind}  write_char({vr}{});\n",
+                            if bigint { ", _bm" } else { "" }
+                        ));
                     } else {
                         ensure_depth_c(&mut out, &mut abs, 1, &format!("{ind}  "));
                         let vr = abs.pop().unwrap();
-                        out.push_str(&format!("{ind}  write_char({vr});\n"));
+                        out.push_str(&format!(
+                            "{ind}  write_char({vr}{});\n",
+                            if bigint { ", _bm" } else { "" }
+                        ));
                     }
                 }
                 Inst::PushNum => {
@@ -422,13 +516,17 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                     }
                     let vr = abs.fresh();
                     out.push_str(&format!(
-                        "{ind}  fflush(stdout);\n{ind}  {vr} = read_num();\n"
+                        "{ind}  fflush(stdout);\n{ind}  {vr} = read_num{};\n",
+                        if bigint { "(_bm)" } else { "()" }
                     ));
                     if sp_known {
                         out.push_str(&format!("{ind}  sp_push(&sp, {}, {vr});\n", sel.unwrap()));
                     } else if ds {
                         top_modified = true;
                         out.push_str(&format!("{ind}  if (sel == {QUEUE} || sel == {PORT}) {{ sp_push(&sp, sel, {vr}); }} else {{ *top = {vr}; top++; }}\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  if (sel != {QUEUE} && sel != {PORT}) tops_snapshot[sel] = top;\n"));
+                        }
                     } else {
                         abs.push(vr);
                     }
@@ -439,13 +537,17 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                     }
                     let vr = abs.fresh();
                     out.push_str(&format!(
-                        "{ind}  fflush(stdout);\n{ind}  {vr} = read_char_();\n"
+                        "{ind}  fflush(stdout);\n{ind}  {vr} = read_char_{};\n",
+                        if bigint { "(_bm)" } else { "()" }
                     ));
                     if sp_known {
                         out.push_str(&format!("{ind}  sp_push(&sp, {}, {vr});\n", sel.unwrap()));
                     } else if ds {
                         top_modified = true;
                         out.push_str(&format!("{ind}  if (sel == {QUEUE} || sel == {PORT}) {{ sp_push(&sp, sel, {vr}); }} else {{ *top = {vr}; top++; }}\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  if (sel != {QUEUE} && sel != {PORT}) tops_snapshot[sel] = top;\n"));
+                        }
                     } else {
                         abs.push(vr);
                     }
@@ -574,10 +676,22 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                         out.push_str(&format!("{ind}  {vr} = sp_pop(&sp, {});\n", sel.unwrap()));
                     } else if sel.is_none() && has_special {
                         out.push_str(&format!("{ind}  if (sel == {QUEUE} || sel == {PORT}) {{ {vr} = sp_pop(&sp, sel); }} else {{ top--; {vr} = *top; }}\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  if (sel != {QUEUE} && sel != {PORT}) tops_snapshot[sel] = top;\n"));
+                        }
                     } else if sel.is_none() {
                         out.push_str(&format!("{ind}  top--; {vr} = *top;\n"));
+                        if bigint {
+                            out.push_str(&format!("{ind}  tops_snapshot[sel] = top;\n"));
+                        }
                     } else {
                         out.push_str(&format!("{ind}  {t}--; {vr} = *{t};\n"));
+                        if bigint {
+                            out.push_str(&format!(
+                                "{ind}  tops_snapshot[{}] = {t};\n",
+                                sel.unwrap()
+                            ));
+                        }
                     }
                     vr
                 };
@@ -595,15 +709,30 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                 let nonzero_seq = block_order.get(on_nonzero).copied().unwrap_or(0);
                 if is_self_loop && *on_nonzero == block_id {
                     out.push_str(&format!(
-                        "{ind}  if ({vr} == 0) {{ _pc = {zero_seq}; break; }}\n"
+                        "{ind}  if ({} ) {{ _pc = {zero_seq}; break; }}\n",
+                        if bigint {
+                            format!("int_is_zero({vr}, _bm)")
+                        } else {
+                            format!("{vr} == 0")
+                        }
                     ));
                 } else if is_self_loop && *on_zero == block_id {
                     out.push_str(&format!(
-                        "{ind}  if ({vr} != 0) {{ _pc = {nonzero_seq}; break; }}\n"
+                        "{ind}  if (!({})) {{ _pc = {nonzero_seq}; break; }}\n",
+                        if bigint {
+                            format!("int_is_zero({vr}, _bm)")
+                        } else {
+                            format!("{vr} == 0")
+                        }
                     ));
                 } else {
+                    let zero = if bigint {
+                        format!("int_is_zero({vr}, _bm)")
+                    } else {
+                        format!("{vr} == 0")
+                    };
                     out.push_str(&format!(
-                        "{ind}  _pc = ({vr} == 0) ? {zero_seq} : {nonzero_seq}; continue;\n"
+                        "{ind}  _pc = ({zero}) ? {zero_seq} : {nonzero_seq}; continue;\n"
                     ));
                 }
             }
@@ -613,7 +742,13 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
                     Some(s) => format!("bases[{s}]"),
                     None => "bases[sel]".into(),
                 };
-                out.push_str(&format!("{ind}  return ({t} > {base}) ? *({t}-1) : 0;\n"));
+                if bigint {
+                    out.push_str(&format!(
+                        "{ind}  return ({t} > {base}) ? int_to_i64(*({t}-1), _bm) : 0;\n"
+                    ));
+                } else {
+                    out.push_str(&format!("{ind}  return ({t} > {base}) ? *({t}-1) : 0;\n"));
+                }
             }
         }
 
@@ -647,11 +782,31 @@ fn generate_c_dispatch(cfg: &Cfg) -> String {
     out
 }
 
+fn emit_promote_live_vars_c(out: &mut String, abs: &Abs, indent: &str) {
+    let mut live_vars: Vec<&str> = Vec::new();
+    for stack in abs.stacks.values() {
+        for value in stack {
+            if !live_vars.contains(&value.as_str()) {
+                live_vars.push(value);
+            }
+        }
+    }
+    if live_vars.is_empty() {
+        return;
+    }
+    out.push_str(&format!("{indent}  if (_bm && !_bm_prev) {{ "));
+    for value in live_vars {
+        out.push_str(&format!("{value} = promote_val({value}); "));
+    }
+    out.push_str("}\n");
+}
+
 struct Abs {
-    stacks: HashMap<usize, Vec<String>>,
+    stacks: BTreeMap<usize, Vec<String>>,
     active: usize,
     sel_known: bool,
     next_var: usize,
+    bigint: bool,
 }
 
 impl Abs {
@@ -682,10 +837,7 @@ impl Abs {
     fn flush_all_c(&mut self, out: &mut String, indent: &str) {
         let active = self.active;
         let active_top = self.top_var();
-        let mut keys: Vec<usize> = self.stacks.keys().copied().collect();
-        keys.sort();
-        for s in keys {
-            let stack = self.stacks.get_mut(&s).unwrap();
+        for (&s, stack) in self.stacks.iter_mut() {
             if stack.is_empty() {
                 continue;
             }
@@ -696,6 +848,9 @@ impl Abs {
             };
             for var in stack.drain(..) {
                 out.push_str(&format!("{indent}*{t} = {var}; {t}++;\n"));
+            }
+            if self.bigint {
+                out.push_str(&format!("{indent}tops_snapshot[{s}] = {t};\n"));
             }
         }
     }
@@ -715,6 +870,13 @@ fn ensure_depth_c(out: &mut String, abs: &mut Abs, depth: usize, indent: &str) {
         loaded.push(var);
     }
     out.push_str(&format!("{indent}{t} -= {need};\n"));
+    if abs.bigint {
+        if abs.sel_known {
+            out.push_str(&format!("{indent}tops_snapshot[{active}] = {t};\n"));
+        } else {
+            out.push_str(&format!("{indent}tops_snapshot[sel] = {t};\n"));
+        }
+    }
     let stack = abs.stacks.entry(active).or_default();
     let mut existing = std::mem::take(stack);
     stack.extend(loaded);
@@ -736,14 +898,17 @@ const C_PRELUDE: &str = r#"/* Generated by compaheuiler — https://github.com/y
 #define PORT_CAP 65536
 
 static inline int64_t wrapping_div(int64_t a, int64_t b) {
-    /* C99 division truncates toward zero, which matches wrapping_div for most cases.
-       Special case: INT64_MIN / -1 would overflow. */
     if (a == INT64_MIN && b == -1) return INT64_MIN;
-    return a / b;
+    int64_t q = a / b, r = a % b;
+    if (r != 0 && (r < 0) != (b < 0)) q -= 1;
+    return q;
 }
 static inline int64_t wrapping_rem(int64_t a, int64_t b) {
     if (a == INT64_MIN && b == -1) return 0;
-    return a % b;
+    int64_t q = a / b, r = a % b;
+    (void)q;
+    if (r != 0 && (r < 0) != (b < 0)) r += b;
+    return r;
 }
 
 typedef struct {
@@ -879,8 +1044,10 @@ static inline int64_t read_char_(void) {
 
 "#;
 
+const C_BIGINT_PRELUDE: &str = include_str!("c_bigint_runtime.c");
+
 const C_MAIN: &str = r#"
-int main(void) {
+int64_t compaheuiler_c_entry(void) {
     int64_t* data[STORAGE_COUNT];
     int64_t* bases[STORAGE_COUNT];
     int32_t lengths[STORAGE_COUNT];
@@ -893,6 +1060,10 @@ int main(void) {
     _flush();
     fflush(stdout);
     for (int i = 0; i < STORAGE_COUNT; i++) free(data[i]);
-    return (int)result;
+    return result;
 }
+
+#ifndef COMPAHEUILER_RUST_BIGINT
+int main(void) { return (int)compaheuiler_c_entry(); }
+#endif
 "#;
