@@ -242,6 +242,22 @@ pub fn val_bigint_addr(v: &Val) -> Option<usize> {
     (!v.is_small()).then_some(v.0 as usize)
 }
 
+/// Write back a collector-forwarded heap-bigint address.
+///
+/// This is the inverse of [`val_bigint_addr`]: the collector uses it after a
+/// root visitor has replaced the address in its mutable root slot. In mode 0
+/// the word is a raw integer rather than a tagged pointer, so it is left
+/// unchanged.
+#[inline(always)]
+pub fn val_set_bigint_addr(v: &mut Val, addr: usize) {
+    if !bigint_mode() {
+        return;
+    }
+    debug_assert_eq!(addr & 1, 0, "heap-bigint addresses must have bit 0 clear");
+    debug_assert_ne!(addr, 0, "a heap-bigint address must not be null");
+    v.0 = addr as i64;
+}
+
 #[inline]
 pub fn with_bigint_transient_root<R>(value: &mut Val, f: impl FnOnce() -> R) -> R {
     struct RootGuard;

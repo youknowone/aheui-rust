@@ -251,8 +251,44 @@ mod bigint_gc {
             if let Some(addr) = aheui_runtime::value::val_bigint_addr(value) {
                 let mut root = GcRef(addr);
                 visit(&mut root);
+                if root.0 != addr {
+                    // Today's collect_oldgen_nonmoving leaves these old-gen
+                    // payloads in place. Write back anyway so a future moving
+                    // visitor can forward the live Val instead of a temporary.
+                    aheui_runtime::value::val_set_bigint_addr(value, root.0);
+                }
             }
         });
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn bigint_root_walker_writes_forwarded_address_back_to_val() {
+            let mut value = aheui_runtime::value::val_from_str("9223372036854775808")
+                .expect("value must parse as a heap bigint");
+            let original = aheui_runtime::value::val_bigint_addr(&value)
+                .expect("value must use the heap-bigint representation");
+            let forwarded = 0x1000;
+            assert_ne!(forwarded, original);
+            assert_eq!(forwarded & 1, 0);
+            assert_ne!(forwarded, 0);
+
+            aheui_runtime::value::with_bigint_transient_root(&mut value, || {
+                walk_aheui_bigint_roots(&mut |root| {
+                    if root.0 == original {
+                        *root = GcRef(forwarded);
+                    }
+                });
+            });
+
+            assert_eq!(
+                aheui_runtime::value::val_bigint_addr(&value),
+                Some(forwarded)
+            );
+        }
     }
 
     unsafe fn bigint_destructor(addr: usize) {

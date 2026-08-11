@@ -640,6 +640,10 @@ pub fn set_gc_roots(storage: *mut Storage) {
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 pub fn walk_bigint_root_values(visit: &mut dyn FnMut(&mut Val)) {
     fn walk_node_chain(mut node: *mut linkedlist::Node, visit: &mut dyn FnMut(&mut Val)) {
+        // Deliberately walk to NULL to over-approximate liveness: bounding by
+        // `size` would drop the last live node when a pop decrements `size`
+        // before committing its `head` store. `chain_digest` bounds instead
+        // because it reports an observable rather than deciding liveness.
         while !node.is_null() {
             unsafe {
                 visit(&mut (*node).value);
