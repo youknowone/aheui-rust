@@ -10,9 +10,9 @@ categories = ["compilers"]
 
 [features]
 default = ["malachite-bigint"]
-bigint = ["dep:num-traits"]
+bigint = ["dep:num-traits", "dep:malachite-bigint"]
 num-bigint = ["bigint", "dep:num-bigint"]
-malachite-bigint = ["bigint", "dep:malachite-bigint"]
+malachite-bigint = ["bigint"]
 cranelift = ["dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
 
 [dependencies]

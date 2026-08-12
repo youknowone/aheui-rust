@@ -9,7 +9,12 @@ use ahsembler::cfg::Cfg;
 
 /// Optimized CFG for an AOT backend at `level`.
 pub fn optimize(source: &str, level: OptimizationLevel) -> Cfg {
-    let mut cfg = ahsembler::compile_to_cfg_aot(source);
+    let mut compiler = ahsembler::compiler::Compiler::new();
+    compiler.compile(source);
+    if !matches!(level, OptimizationLevel::O0) {
+        compiler.optimize1();
+    }
+    let mut cfg = ahsembler::cfg_build::build_cfg(&compiler);
     optimize_cfg(&mut cfg, level);
     cfg
 }
@@ -72,5 +77,29 @@ pub fn optimize_cfg(cfg: &mut Cfg, level: OptimizationLevel) {
             ahsembler::cfg_optimize::ConstWidth::I64,
         );
         ahsembler::cfg_optimize::peephole_cleanup(cfg, &states);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ahsembler::cfg::{BinOpKind, Inst};
+
+    #[test]
+    fn o0_does_not_run_the_aot_constant_folder() {
+        let raw = optimize("박받다하", OptimizationLevel::O0);
+        assert!(
+            raw.blocks
+                .iter()
+                .any(|block| { block.instructions.contains(&Inst::BinOp(BinOpKind::Add)) })
+        );
+
+        let optimized = optimize("박받다하", OptimizationLevel::O3);
+        assert!(
+            !optimized
+                .blocks
+                .iter()
+                .any(|block| { block.instructions.contains(&Inst::BinOp(BinOpKind::Add)) })
+        );
     }
 }

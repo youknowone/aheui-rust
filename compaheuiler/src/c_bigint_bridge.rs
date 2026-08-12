@@ -1,7 +1,13 @@
 use num_traits::ToPrimitive;
+use std::sync::{Mutex, OnceLock};
 
 const SMALL_MIN: i64 = -(1i64 << 62);
 const SMALL_MAX: i64 = (1i64 << 62) - 1;
+
+fn arena() -> &'static Mutex<Vec<Box<BigInt>>> {
+    static ARENA: OnceLock<Mutex<Vec<Box<BigInt>>>> = OnceLock::new();
+    ARENA.get_or_init(|| Mutex::new(Vec::new()))
+}
 
 fn to_big(value: i64) -> BigInt {
     if value & 1 != 0 {
@@ -14,7 +20,15 @@ fn to_big(value: i64) -> BigInt {
 fn normalize(value: BigInt) -> i64 {
     match value.to_i64() {
         Some(small) if (SMALL_MIN..=SMALL_MAX).contains(&small) => (small << 1) | 1,
-        _ => Box::into_raw(Box::new(value)) as i64,
+        _ => {
+            let value = Box::new(value);
+            let ptr = (&*value as *const BigInt) as i64;
+            arena()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(value);
+            ptr
+        }
     }
 }
 
@@ -73,12 +87,21 @@ pub extern "C" fn cbig_ge(a: i64, b: i64) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cbig_to_i64(value: i64) -> i64 {
-    unsafe { &*(value as *const BigInt) }.to_i64().unwrap_or(0)
+    if value & 1 != 0 {
+        value >> 1
+    } else {
+        unsafe { &*(value as *const BigInt) }.to_i64().unwrap_or(0)
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn cbig_write_num(value: i64, emit: extern "C" fn(u8)) {
-    for byte in unsafe { &*(value as *const BigInt) }.to_string().bytes() {
+    let text = if value & 1 != 0 {
+        (value >> 1).to_string()
+    } else {
+        unsafe { &*(value as *const BigInt) }.to_string()
+    };
+    for byte in text.bytes() {
         emit(byte);
     }
 }
@@ -89,5 +112,6 @@ unsafe extern "C" {
 
 fn main() {
     let result = unsafe { compaheuiler_c_entry() };
+    arena().lock().unwrap_or_else(|e| e.into_inner()).clear();
     std::process::exit(result as i32);
 }

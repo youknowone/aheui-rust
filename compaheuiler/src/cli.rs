@@ -1,5 +1,6 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap::{Args, ValueEnum};
 
@@ -54,9 +55,9 @@ pub struct BuildArgs {
 }
 
 impl BuildArgs {
-    pub fn output_path(&self) -> PathBuf {
+    pub fn output_path(&self) -> std::io::Result<PathBuf> {
         if let Some(ref p) = self.output {
-            return p.clone();
+            return Ok(p.clone());
         }
         let mut stem = self
             .input
@@ -65,7 +66,7 @@ impl BuildArgs {
             .to_string_lossy()
             .to_string();
         stem = stem.replace('.', "_").replace('-', "_");
-        std::env::current_dir().unwrap().join(stem)
+        Ok(std::env::current_dir()?.join(stem))
     }
 }
 
@@ -74,6 +75,14 @@ pub fn run_build(args: &BuildArgs) {
         eprintln!("error: {}: {e}", args.input.display());
         std::process::exit(1);
     });
+
+    let output_path = match args.emit {
+        Emit::Asm => None,
+        Emit::Link => Some(args.output_path().unwrap_or_else(|e| {
+            eprintln!("error: cannot determine output path: {e}");
+            std::process::exit(1);
+        })),
+    };
 
     match (args.codegen, args.emit) {
         (Codegen::Rust, Emit::Asm) => {
@@ -96,13 +105,22 @@ pub fn run_build(args: &BuildArgs) {
             print!("{}", crate::compile_to_wat_opt(&source, args.opt_level));
         }
         (Codegen::Rust, Emit::Link) => {
-            compile_rs(&generate_rs(&source, args.opt_level), &args.output_path());
+            compile_rs(
+                &generate_rs(&source, args.opt_level),
+                output_path.as_ref().unwrap(),
+            );
         }
         (Codegen::C, Emit::Link) => {
             #[cfg(feature = "bigint")]
-            compile_c_bigint(&generate_c(&source, args.opt_level), &args.output_path());
+            compile_c_bigint(
+                &generate_c(&source, args.opt_level),
+                output_path.as_ref().unwrap(),
+            );
             #[cfg(not(feature = "bigint"))]
-            compile_c(&generate_c(&source, args.opt_level), &args.output_path());
+            compile_c(
+                &generate_c(&source, args.opt_level),
+                output_path.as_ref().unwrap(),
+            );
         }
         (Codegen::Cranelift, Emit::Link) => {
             #[cfg(feature = "cranelift")]
@@ -118,16 +136,54 @@ pub fn run_build(args: &BuildArgs) {
         (Codegen::Wasm32Wasi, Emit::Link) => {
             compile_wat(
                 &crate::compile_to_wat_wasi_opt(&source, args.opt_level),
-                &args.output_path(),
+                output_path.as_ref().unwrap(),
             );
         }
         (Codegen::Wasm32Web, Emit::Link) => {
             compile_wat(
                 &crate::compile_to_wat_opt(&source, args.opt_level),
-                &args.output_path(),
+                output_path.as_ref().unwrap(),
             );
         }
     }
+}
+
+struct ScratchDir(PathBuf);
+
+impl ScratchDir {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn scratch_dir(label: &str) -> std::io::Result<ScratchDir> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "compaheuiler_{label}_{}_{}",
+            std::process::id(),
+            serial
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(ScratchDir(path)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn scratch_dir_or_exit(label: &str) -> ScratchDir {
+    scratch_dir(label).unwrap_or_else(|e| {
+        eprintln!("error: cannot create temporary directory: {e}");
+        std::process::exit(1);
+    })
 }
 
 fn generate_rs(source: &str, opt: ahsembler::OptimizationLevel) -> String {
@@ -165,13 +221,13 @@ fn generate_c(source: &str, opt: ahsembler::OptimizationLevel) -> String {
 /// their temporary path does not reach their output, and the flag that would
 /// do this (`-ffile-prefix-map`) is not portable across the compilers `cc` may
 /// resolve to.
-fn remap_path_prefixes(generated_dir: &str) -> Vec<String> {
+fn remap_path_prefixes(generated_dir: &Path) -> Vec<String> {
     let mut flags = Vec::new();
     // The generated crate. Canonicalized because `/tmp` is a symlink on macOS
     // and rustc records the resolved path, which a `/tmp` prefix never matches.
     let generated = std::fs::canonicalize(generated_dir)
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| generated_dir.to_string());
+        .unwrap_or_else(|_| generated_dir.to_string_lossy().into_owned());
     flags.push(format!("--remap-path-prefix={generated}=/compaheuiler"));
 
     if let Some(cargo_home) = std::env::var_os("CARGO_HOME")
@@ -197,30 +253,27 @@ fn remap_path_prefixes(generated_dir: &str) -> Vec<String> {
     flags
 }
 
-fn compile_rs(code: &str, bin_path: &PathBuf) {
+fn compile_rs(code: &str, bin_path: &Path) {
     #[cfg(feature = "bigint")]
     {
-        let stem = bin_path.file_name().unwrap().to_string_lossy();
-        let dir = format!("/tmp/compaheuiler_{stem}");
-        std::fs::create_dir_all(format!("{dir}/src")).ok();
-        std::fs::write(format!("{dir}/src/main.rs"), code).unwrap();
+        let scratch = scratch_dir_or_exit("rust");
+        let dir = scratch.path();
+        std::fs::create_dir(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), code).unwrap();
 
-        #[cfg(feature = "num-bigint")]
-        let bigint_dep = r#"num-bigint = "0.4""#;
-        #[cfg(not(feature = "num-bigint"))]
-        let bigint_dep = r#"malachite-bigint = "0.9""#;
+        let bigint_dep = crate::c_bigint_dependency_toml();
 
         std::fs::write(
-            format!("{dir}/Cargo.toml"),
+            dir.join("Cargo.toml"),
             format!(
                 r#"[package]
 name = "compaheuiler-output"
 version = "0.0.1"
 edition = "2021"
+rust-version = "1.85"
 
 [dependencies]
 {bigint_dep}
-num-traits = "0.2"
 
 [profile.release]
 opt-level = 2
@@ -233,21 +286,21 @@ lto = "fat"
         // `.cargo/config.toml` beside the generated crate rather than
         // `RUSTFLAGS`, so an existing `RUSTFLAGS` in the caller's environment
         // still wins instead of being silently replaced.
-        std::fs::create_dir_all(format!("{dir}/.cargo")).ok();
-        let rustflags = remap_path_prefixes(&dir)
+        std::fs::create_dir(dir.join(".cargo")).unwrap();
+        let rustflags = remap_path_prefixes(dir)
             .iter()
             .map(|f| format!("{:?}", f))
             .collect::<Vec<_>>()
             .join(", ");
         std::fs::write(
-            format!("{dir}/.cargo/config.toml"),
+            dir.join(".cargo/config.toml"),
             format!("[build]\nrustflags = [{rustflags}]\n"),
         )
         .unwrap();
 
         let status = Command::new("cargo")
             .args(["build", "--release", "--quiet"])
-            .current_dir(&dir)
+            .current_dir(dir)
             .status()
             .unwrap_or_else(|e| {
                 eprintln!("error: cargo: {e}");
@@ -256,29 +309,21 @@ lto = "fat"
         if !status.success() {
             std::process::exit(1);
         }
-        std::fs::copy(
-            format!("{dir}/target/release/compaheuiler-output"),
-            bin_path,
-        )
-        .unwrap();
+        std::fs::copy(dir.join("target/release/compaheuiler-output"), bin_path).unwrap();
     }
 
     #[cfg(not(feature = "bigint"))]
     {
-        let dir = format!("/tmp/compaheuiler_{}", std::process::id());
-        std::fs::create_dir_all(&dir).ok();
-        let rs_path = format!("{dir}/main.rs");
+        let scratch = scratch_dir_or_exit("rust");
+        let dir = scratch.path();
+        let rs_path = dir.join("main.rs");
         std::fs::write(&rs_path, code).unwrap();
 
         let output = Command::new("rustc")
-            .args([
-                "-C",
-                "opt-level=2",
-                "-o",
-                bin_path.to_str().unwrap(),
-                &rs_path,
-            ])
-            .args(remap_path_prefixes(&dir))
+            .args(["-C", "opt-level=2", "-o"])
+            .arg(bin_path)
+            .arg(&rs_path)
+            .args(remap_path_prefixes(dir))
             .output()
             .unwrap_or_else(|e| {
                 eprintln!("error: rustc: {e}");
@@ -288,17 +333,19 @@ lto = "fat"
             eprint!("{}", String::from_utf8_lossy(&output.stderr));
             std::process::exit(1);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
-fn compile_wat(code: &str, bin_path: &PathBuf) {
-    let wat_path = format!("/tmp/compaheuiler_{}.wat", std::process::id());
+fn compile_wat(code: &str, bin_path: &Path) {
+    let scratch = scratch_dir_or_exit("wat");
+    let wat_path = scratch.path().join("program.wat");
     std::fs::write(&wat_path, code).unwrap();
 
     let wasm_path = bin_path.with_extension("wasm");
     let output = Command::new("wat2wasm")
-        .args([&wat_path, "-o", wasm_path.to_str().unwrap()])
+        .arg(&wat_path)
+        .arg("-o")
+        .arg(&wasm_path)
         .output()
         .unwrap_or_else(|e| {
             eprintln!("error: wat2wasm: {e}");
@@ -308,16 +355,19 @@ fn compile_wat(code: &str, bin_path: &PathBuf) {
         eprint!("{}", String::from_utf8_lossy(&output.stderr));
         std::process::exit(1);
     }
-    let _ = std::fs::remove_file(&wat_path);
 }
 
 #[cfg(not(feature = "bigint"))]
-fn compile_c(code: &str, bin_path: &PathBuf) {
-    let c_path = format!("/tmp/compaheuiler_{}.c", std::process::id());
+fn compile_c(code: &str, bin_path: &Path) {
+    let scratch = scratch_dir_or_exit("c");
+    let c_path = scratch.path().join("program.c");
     std::fs::write(&c_path, code).unwrap();
 
     let output = Command::new("cc")
-        .args(["-O2", "-o", bin_path.to_str().unwrap(), &c_path, "-lm"])
+        .args(["-O2", "-o"])
+        .arg(bin_path)
+        .arg(&c_path)
+        .arg("-lm")
         .output()
         .unwrap_or_else(|e| {
             eprintln!("error: cc: {e}");
@@ -327,11 +377,10 @@ fn compile_c(code: &str, bin_path: &PathBuf) {
         eprint!("{}", String::from_utf8_lossy(&output.stderr));
         std::process::exit(1);
     }
-    let _ = std::fs::remove_file(&c_path);
 }
 
 #[cfg(feature = "bigint")]
-fn compile_c_bigint(code: &str, bin_path: &PathBuf) {
+fn compile_c_bigint(code: &str, bin_path: &Path) {
     let stem = bin_path.file_name().unwrap().to_string_lossy();
     let suffix: String = stem
         .chars()
@@ -346,27 +395,25 @@ fn compile_c_bigint(code: &str, bin_path: &PathBuf) {
     let suffix = suffix.trim_matches('-');
     let suffix = if suffix.is_empty() { "output" } else { suffix };
     let package = format!("compaheuiler-c-output-{suffix}");
-    let dir = format!("/tmp/compaheuiler_c_{stem}");
-    let target_dir = "/tmp/compaheuiler_c_cargo_target";
-    std::fs::create_dir_all(format!("{dir}/src")).ok();
-    let c_path = format!("{dir}/program.c");
-    let object_path = format!("{dir}/program.o");
-    // Older compaheuiler versions put a per-output link arg here, which also
-    // forced Cargo to rebuild every BigInt dependency for every C program.
-    let _ = std::fs::remove_file(format!("{dir}/.cargo/config.toml"));
+    let scratch = scratch_dir_or_exit("c_bigint");
+    let dir = scratch.path();
+    let target_dir = dir.join("target");
+    std::fs::create_dir(dir.join("src")).unwrap();
+    let c_path = dir.join("program.c");
+    let object_path = dir.join("program.o");
     std::fs::write(&c_path, code).unwrap();
-    std::fs::write(format!("{dir}/src/main.rs"), crate::c_bigint_bridge_rs()).unwrap();
+    std::fs::write(dir.join("src/main.rs"), crate::c_bigint_bridge_rs()).unwrap();
     std::fs::write(
-        format!("{dir}/Cargo.toml"),
+        dir.join("Cargo.toml"),
         format!(
             r#"[package]
 name = {package:?}
 version = "0.0.1"
 edition = "2024"
+rust-version = "1.85"
 
 [dependencies]
 {bigint_dependency}
-num-traits = "0.2"
 
 [profile.release]
 opt-level = 3
@@ -379,7 +426,8 @@ opt-level = 3
     let output = Command::new("cc")
         .args(["-O2", "-std=c99", "-DCOMPAHEUILER_RUST_BIGINT", "-c"])
         .arg(&c_path)
-        .args(["-o", &object_path])
+        .arg("-o")
+        .arg(&object_path)
         .output()
         .unwrap_or_else(|e| {
             eprintln!("error: cc: {e}");
@@ -391,19 +439,20 @@ opt-level = 3
     }
 
     std::fs::write(
-        format!("{dir}/build.rs"),
+        dir.join("build.rs"),
         format!(
             "fn main() {{\n  let object = {object_path:?};\n  println!(\"cargo:rerun-if-changed={{object}}\");\n  println!(\"cargo:rustc-link-arg-bin={package}={{object}}\");\n}}\n",
+            object_path = object_path.to_string_lossy(),
         ),
     )
     .unwrap();
 
     let status = Command::new("cargo")
         .args(["rustc", "--release", "--quiet"])
-        .current_dir(&dir)
-        .env("CARGO_TARGET_DIR", target_dir)
+        .current_dir(dir)
+        .env("CARGO_TARGET_DIR", &target_dir)
         .arg("--")
-        .args(remap_path_prefixes(&dir))
+        .args(remap_path_prefixes(dir))
         .status()
         .unwrap_or_else(|e| {
             eprintln!("error: cargo: {e}");
@@ -412,7 +461,7 @@ opt-level = 3
     if !status.success() {
         std::process::exit(1);
     }
-    std::fs::copy(format!("{target_dir}/release/{package}"), bin_path).unwrap();
+    std::fs::copy(target_dir.join("release").join(package), bin_path).unwrap();
 }
 
 #[cfg(feature = "cranelift")]

@@ -42,9 +42,11 @@ impl Program {
     }
 
     /// Rewrite `values[pc]` for every jump op so it carries the target PC
-    /// instead of a label id.  Idempotent — once resolved, target PCs are
-    /// already valid PCs (in `0..size`) and re-running the pass keeps
-    /// them unchanged.
+    /// instead of a label id.
+    ///
+    /// Call this exactly once, after the program is completely built. Label
+    /// ids and program counters share the same integer representation, so a
+    /// second call could mistake an already-resolved PC for another label id.
     pub fn resolve_jump_targets(&mut self) {
         for pc in 0..self.size {
             if is_jump_op(self.opcodes[pc]) {
@@ -409,7 +411,6 @@ impl Compiler {
         min_stacksize_map.iter().map(|&s| s >= 0).collect()
     }
 
-    #[cfg(test)]
     pub(crate) fn optimize_deadcode2(&self) -> Vec<bool> {
         let n = self.lines.len();
         let mut min_map: Vec<[i32; STORAGE_COUNT]> = vec![[-1i32; STORAGE_COUNT]; n];
@@ -943,24 +944,20 @@ mod tests {
         assert!(c.lines.iter().any(|&(op, _)| op == OP_BRPOP1));
     }
 
-    /// Locate the snippet corpus — the `snippets` submodule
-    /// (github.com/aheui/snippets) pinned by this repo's gitlink, with
-    /// `$AHEUI_SNIPPETS` and a sibling `rpaheui/snippets` checkout as
-    /// fallbacks for a tree cloned without `--recurse-submodules`. Same order
-    /// as `check.sh find_snippets` and `scripts/jitstats.py`. Resolved at run
-    /// time because a fixed `include_str!` path only holds on the machine it
-    /// was written on.
+    /// Locate the snippet corpus with the same precedence as `check.sh`:
+    /// `$AHEUI_SNIPPETS`, the tracked `tests -> snippets` link, then a sibling
+    /// `rpaheui/snippets` checkout.
     fn snippets_dir() -> std::path::PathBuf {
+        if let Some(p) = std::env::var_os("AHEUI_SNIPPETS") {
+            return std::path::PathBuf::from(p);
+        }
         let mut dir = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
         while let Some(d) = dir {
-            let candidate = d.join("snippets");
-            if candidate.join(".git").exists() {
+            let candidate = d.join("tests");
+            if candidate.is_dir() {
                 return candidate;
             }
             dir = d.parent();
-        }
-        if let Some(p) = std::env::var_os("AHEUI_SNIPPETS") {
-            return std::path::PathBuf::from(p);
         }
         let mut dir = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
         while let Some(d) = dir {

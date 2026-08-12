@@ -590,6 +590,7 @@ fn eval_binop(kind: BinOpKind, lhs: i64, rhs: i64) -> Option<i64> {
         BinOpKind::Mul => lhs.checked_mul(rhs)?,
         BinOpKind::Div => {
             if rhs != 0 {
+                lhs.checked_div(rhs)?;
                 crate::consts::floor_div_i64(lhs, rhs)
             } else {
                 0
@@ -1678,6 +1679,30 @@ mod tests {
         let states = analyze_stack_depths(&wide);
         assert_eq!(fold_constants(&mut wide, &states, ConstWidth::I64), 1);
         assert_eq!(wide.block(0).instructions, vec![Inst::Push(4294967296)]);
+    }
+
+    #[test]
+    fn test_fold_declines_overflowing_i64_division() {
+        let mut cfg = Cfg::new();
+        cfg.add_block(
+            vec![
+                Inst::Push(i64::MIN),
+                Inst::Push(-1),
+                Inst::BinOp(BinOpKind::Div),
+            ],
+            Terminator::Halt,
+        );
+
+        let states = analyze_stack_depths(&cfg);
+        assert_eq!(fold_constants(&mut cfg, &states, ConstWidth::I64), 0);
+        assert_eq!(
+            cfg.block(0).instructions,
+            vec![
+                Inst::Push(i64::MIN),
+                Inst::Push(-1),
+                Inst::BinOp(BinOpKind::Div),
+            ]
+        );
     }
 
     #[test]

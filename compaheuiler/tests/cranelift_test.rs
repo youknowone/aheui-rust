@@ -13,7 +13,7 @@ static READ_NUM: AtomicI64 = AtomicI64::new(0);
 
 extern "C" fn write_char(v: i64) {
     let c = v as u32;
-    let mut buf = STDOUT_BUF.lock().unwrap();
+    let mut buf = STDOUT_BUF.lock().unwrap_or_else(|e| e.into_inner());
     if c <= 0x7f {
         buf.push(c as u8);
     } else if let Some(ch) = char::from_u32(c) {
@@ -23,12 +23,15 @@ extern "C" fn write_char(v: i64) {
 }
 extern "C" fn write_bytes(data: *const u8, len: usize) {
     let bytes = unsafe { std::slice::from_raw_parts(data, len) };
-    STDOUT_BUF.lock().unwrap().extend_from_slice(bytes);
+    STDOUT_BUF
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend_from_slice(bytes);
 }
 extern "C" fn write_num(v: i64) {
     STDOUT_BUF
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .extend_from_slice(format!("{}", v).as_bytes());
 }
 extern "C" fn read_char() -> i64 {
@@ -43,7 +46,7 @@ fn run_cranelift(source: &str) -> (String, i64, f64) {
 }
 
 fn run_cranelift_with_num(source: &str, input: i64) -> (String, i64, f64) {
-    let _run = RUN_LOCK.lock().unwrap();
+    let _run = RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     READ_NUM.store(input, Ordering::Relaxed);
     let t = Instant::now();
     // The same pipeline `aheui build --codegen cranelift` runs, so this test
@@ -65,7 +68,7 @@ fn run_cranelift_with_num(source: &str, input: i64) -> (String, i64, f64) {
     let mut lengths = [0i32; 28];
     let mut sp = SpecialStorage::new();
     let sp_ctx = &mut sp as *mut SpecialStorage as *mut u8;
-    STDOUT_BUF.lock().unwrap().clear();
+    STDOUT_BUF.lock().unwrap_or_else(|e| e.into_inner()).clear();
     let t3 = Instant::now();
     let exit = unsafe {
         jit.execute_buffered(
@@ -85,7 +88,8 @@ fn run_cranelift_with_num(source: &str, input: i64) -> (String, i64, f64) {
         )
     };
     let run_ms = t3.elapsed().as_secs_f64() * 1000.0;
-    let out = String::from_utf8_lossy(&STDOUT_BUF.lock().unwrap()).to_string();
+    let out =
+        String::from_utf8_lossy(&STDOUT_BUF.lock().unwrap_or_else(|e| e.into_inner())).to_string();
     let total_ms = t.elapsed().as_secs_f64() * 1000.0;
     eprintln!(
         "  breakdown: cfg={cfg_ms:.1}ms cranelift={cl_ms:.1}ms run={run_ms:.1}ms total={total_ms:.1}ms"
@@ -116,6 +120,15 @@ fn test_post_promotion_ops_cranelift_bigint() {
     let (out, exit, _) = run_cranelift(common::DUAL_MODE_POST_PROMOTION_OPS);
     assert_eq!(exit, 0);
     assert_eq!(out, common::DUAL_MODE_POST_PROMOTION_OUTPUT);
+}
+
+#[cfg(feature = "bigint")]
+#[test]
+fn test_read_num_boxes_large_i64_after_cranelift_promotion() {
+    let source = "반빠따빠따빠따빠따빠따빠따마방망하";
+    let (out, exit, _) = run_cranelift_with_num(source, 5_000_000_000_000_000_000);
+    assert_eq!(out, "5000000000000000000");
+    assert_eq!(exit, 0);
 }
 
 #[cfg(feature = "bigint")]

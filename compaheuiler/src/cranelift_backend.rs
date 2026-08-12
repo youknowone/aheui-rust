@@ -7,7 +7,9 @@
 #[cfg(feature = "cranelift")]
 pub mod jit {
     use ahsembler::cfg::*;
-    use ahsembler::consts::{STORAGE_COUNT, floor_div_i64, floor_mod_i64};
+    use ahsembler::consts::STORAGE_COUNT;
+    #[cfg(feature = "bigint")]
+    use ahsembler::consts::{floor_div_i64, floor_mod_i64};
     use cranelift_codegen::ir::condcodes::IntCC;
     use cranelift_codegen::ir::types::*;
     use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, StackSlotData, StackSlotKind};
@@ -138,6 +140,8 @@ pub mod jit {
         buffer_output: i64,
         output_len: usize,
         output: [u8; OUTPUT_BUFFER_CAPACITY],
+        #[cfg(feature = "bigint")]
+        bigints: Vec<Box<BigInt>>,
     }
 
     #[inline]
@@ -162,19 +166,26 @@ pub mod jit {
         }
     }
 
-    #[cfg(feature = "bigint")]
     const SMALL_MIN: i64 = -(1_i64 << 62);
-    #[cfg(feature = "bigint")]
     const SMALL_MAX: i64 = (1_i64 << 62) - 1;
 
     #[cfg(feature = "bigint")]
     #[inline]
-    fn promote_value(value: i64) -> i64 {
+    fn promote_value(ctx: &mut ExecutionContext, value: i64) -> i64 {
         if (SMALL_MIN..=SMALL_MAX).contains(&value) {
             (value << 1) | 1
         } else {
-            Box::into_raw(Box::new(BigInt::from(value))) as i64
+            store_bigint(ctx, BigInt::from(value))
         }
+    }
+
+    #[cfg(feature = "bigint")]
+    #[inline]
+    fn store_bigint(ctx: &mut ExecutionContext, value: BigInt) -> i64 {
+        let value = Box::new(value);
+        let ptr = (&*value as *const BigInt) as i64;
+        ctx.bigints.push(value);
+        ptr
     }
 
     #[cfg(feature = "bigint")]
@@ -189,10 +200,10 @@ pub mod jit {
 
     #[cfg(feature = "bigint")]
     #[inline]
-    fn normalize_big(value: BigInt) -> i64 {
+    fn normalize_big(ctx: &mut ExecutionContext, value: BigInt) -> i64 {
         match value.to_i64() {
             Some(value) if (SMALL_MIN..=SMALL_MAX).contains(&value) => (value << 1) | 1,
-            _ => Box::into_raw(Box::new(value)) as i64,
+            _ => store_bigint(ctx, value),
         }
     }
 
@@ -219,7 +230,7 @@ pub mod jit {
             let mut value = unsafe { *bases.add(storage) };
             let top = unsafe { *tops.add(storage) };
             while value < top {
-                unsafe { *value = promote_value(*value) };
+                unsafe { *value = promote_value(ctx, *value) };
                 value = unsafe { value.add(1) };
             }
         }
@@ -228,12 +239,12 @@ pub mod jit {
         if !ctx.sp_ctx.is_null() {
             let special = unsafe { &mut *(ctx.sp_ctx as *mut SpecialStorage) };
             for value in &mut special.queue {
-                *value = promote_value(*value);
+                *value = promote_value(ctx, *value);
             }
             for value in &mut special.port {
-                *value = promote_value(*value);
+                *value = promote_value(ctx, *value);
             }
-            special.port_last = promote_value(special.port_last);
+            special.port_last = promote_value(ctx, special.port_last);
         }
     }
 
@@ -273,21 +284,21 @@ pub mod jit {
             (BigInt::from(a), BigInt::from(b))
         };
         match opcode {
-            0 => normalize_big(a + b),
-            1 => normalize_big(a - b),
-            2 => normalize_big(a * b),
+            0 => normalize_big(ctx, a + b),
+            1 => normalize_big(ctx, a - b),
+            2 => normalize_big(ctx, a * b),
             3 => {
                 if b == BigInt::from(0) {
                     1
                 } else {
-                    normalize_big(floor_bigint_divmod(a, b).0)
+                    normalize_big(ctx, floor_bigint_divmod(a, b).0)
                 }
             }
             4 => {
                 if b == BigInt::from(0) {
                     1
                 } else {
-                    normalize_big(floor_bigint_divmod(a, b).1)
+                    normalize_big(ctx, floor_bigint_divmod(a, b).1)
                 }
             }
             5 => {
@@ -352,7 +363,7 @@ pub mod jit {
         let value = (ctx.read_char)();
         #[cfg(feature = "bigint")]
         if ctx.big_mode != 0 {
-            return (value << 1) | 1;
+            return promote_value(ctx, value);
         }
         value
     }
@@ -363,8 +374,21 @@ pub mod jit {
         let value = (ctx.read_num)();
         #[cfg(feature = "bigint")]
         if ctx.big_mode != 0 {
-            return (value << 1) | 1;
+            return promote_value(ctx, value);
         }
+        value
+    }
+
+    extern "C" fn runtime_literal(raw_ctx: *mut u8, value: i64) -> i64 {
+        #[cfg(feature = "bigint")]
+        {
+            let ctx = unsafe { execution_context(raw_ctx) };
+            if ctx.big_mode != 0 {
+                return promote_value(ctx, value);
+            }
+        }
+        #[cfg(not(feature = "bigint"))]
+        let _ = raw_ctx;
         value
     }
 
@@ -425,8 +449,12 @@ pub mod jit {
     impl JitFunction {
         /// Execute the JIT-compiled function.
         ///
-        /// `sp_ctx`: pointer to `SpecialStorage` (or null if unused).
-        /// `sp_push_fn` .. `sp_swap_fn`: callback function pointers for special storage ops.
+        /// # Safety
+        ///
+        /// `bases` must point to writable storage for the whole execution. When
+        /// bigint support is enabled, a non-null `sp_ctx` must point to this
+        /// crate's [`SpecialStorage`], and the special-storage callbacks must be
+        /// compatible with it: promotion traverses that concrete type directly.
         pub unsafe fn execute(
             &self,
             bases: &mut [*mut i64; STORAGE_COUNT],
@@ -465,6 +493,13 @@ pub mod jit {
         /// buffered inside the execution context and delivered in 16 KiB
         /// batches; non-ASCII and post-promotion output retains the ordinary
         /// character callback semantics.
+        ///
+        /// # Safety
+        ///
+        /// `bases` must point to writable storage for the whole execution. When
+        /// bigint support is enabled, a non-null `sp_ctx` must point to this
+        /// crate's [`SpecialStorage`], and the special-storage callbacks must be
+        /// compatible with it: promotion traverses that concrete type directly.
         pub unsafe fn execute_buffered(
             &self,
             bases: &mut [*mut i64; STORAGE_COUNT],
@@ -549,6 +584,8 @@ pub mod jit {
                 buffer_output: i64::from(write_bytes_fn.is_some()),
                 output_len: 0,
                 output: [0; OUTPUT_BUFFER_CAPACITY],
+                #[cfg(feature = "bigint")]
+                bigints: Vec::new(),
             };
             let runtime_ctx = &mut runtime as *mut ExecutionContext as *mut u8;
             let result = unsafe {
@@ -591,7 +628,20 @@ pub mod jit {
                 let mbb = builder.create_block();
                 builder.append_block_param(mbb, I64);
                 let zero = builder.ins().iconst(I64, 0);
-                builder.ins().brif(is_nz, opbb, &[], mbb, &[zero.into()]);
+                let (can_operate, fallback) = if matches!(kind, BinOpKind::Div) {
+                    let is_min = builder.ins().icmp_imm(IntCC::Equal, a, i64::MIN);
+                    let is_neg_one = builder.ins().icmp_imm(IntCC::Equal, b, -1);
+                    let overflows = builder.ins().band(is_min, is_neg_one);
+                    let does_not_overflow = builder.ins().icmp_imm(IntCC::Equal, overflows, 0);
+                    let can_divide = builder.ins().band(is_nz, does_not_overflow);
+                    let wrapped = builder.ins().iconst(I64, i64::MIN);
+                    (can_divide, builder.ins().select(overflows, wrapped, zero))
+                } else {
+                    (is_nz, zero)
+                };
+                builder
+                    .ins()
+                    .brif(can_operate, opbb, &[], mbb, &[fallback.into()]);
                 builder.switch_to_block(opbb);
                 builder.seal_block(opbb);
                 let r = builder.ins().srem(a, b);
@@ -655,7 +705,7 @@ pub mod jit {
         kind: &BinOpKind,
         a: cranelift_codegen::ir::Value,
         b: cranelift_codegen::ir::Value,
-        v_big_mode: Option<Variable>,
+        bigint: bool,
         v_runtime_ctx: Variable,
         v_bases: Variable,
         tops_slot: cranelift_codegen::ir::StackSlot,
@@ -663,12 +713,17 @@ pub mod jit {
         ptr_type: cranelift_codegen::ir::Type,
         sig_bigint: Option<cranelift_codegen::ir::SigRef>,
     ) -> cranelift_codegen::ir::Value {
-        let (Some(_v_big_mode), Some(sig_bigint)) = (v_big_mode, sig_bigint) else {
+        let Some(sig_bigint) = sig_bigint.filter(|_| bigint) else {
             return emit_raw_binop(builder, kind, a, b);
         };
 
         let ctx = builder.use_var(v_runtime_ctx);
-        let mode = builder.ins().load(I64, MemFlags::trusted(), ctx, 0);
+        let mode = builder.ins().load(
+            I64,
+            MemFlags::trusted(),
+            ctx,
+            std::mem::offset_of!(ExecutionContext, big_mode) as i32,
+        );
         let tagged = builder.ins().icmp_imm(IntCC::NotEqual, mode, 0);
         let big_block = builder.create_block();
         let raw_block = builder.create_block();
@@ -725,6 +780,27 @@ pub mod jit {
             let result = emit_slow(builder);
             reload_all_top_vars(builder, tops_slot, v_top, ptr_type);
             builder.ins().jump(merge, &[result.into()]);
+        } else if matches!(kind, BinOpKind::Div) {
+            let is_min = builder.ins().icmp_imm(IntCC::Equal, a, i64::MIN);
+            let is_neg_one = builder.ins().icmp_imm(IntCC::Equal, b, -1);
+            let overflow = builder.ins().band(is_min, is_neg_one);
+            let overflow_block = builder.create_block();
+            let normal_block = builder.create_block();
+            builder
+                .ins()
+                .brif(overflow, overflow_block, &[], normal_block, &[]);
+
+            builder.switch_to_block(overflow_block);
+            builder.seal_block(overflow_block);
+            flush_all_top_vars(builder, tops_slot, v_top);
+            let result = emit_slow(builder);
+            reload_all_top_vars(builder, tops_slot, v_top, ptr_type);
+            builder.ins().jump(merge, &[result.into()]);
+
+            builder.switch_to_block(normal_block);
+            builder.seal_block(normal_block);
+            let result = emit_raw_binop(builder, kind, a, b);
+            builder.ins().jump(merge, &[result.into()]);
         } else {
             let result = emit_raw_binop(builder, kind, a, b);
             builder.ins().jump(merge, &[result.into()]);
@@ -738,17 +814,26 @@ pub mod jit {
     fn emit_literal(
         builder: &mut FunctionBuilder,
         value: i64,
-        v_big_mode: Option<Variable>,
+        bigint: bool,
         v_runtime_ctx: Variable,
+        ptr_type: cranelift_codegen::ir::Type,
+        signature: cranelift_codegen::ir::SigRef,
     ) -> cranelift_codegen::ir::Value {
         let raw = builder.ins().iconst(I64, value);
-        let Some(v_big_mode) = v_big_mode else {
+        if !bigint {
             return raw;
-        };
+        }
+        if !(SMALL_MIN..=SMALL_MAX).contains(&value) {
+            let ctx = builder.use_var(v_runtime_ctx);
+            let address = builder
+                .ins()
+                .iconst(ptr_type, runtime_literal as *const () as usize as i64);
+            let call = builder.ins().call_indirect(signature, address, &[ctx, raw]);
+            return builder.inst_results(call)[0];
+        }
         let tagged = builder
             .ins()
             .iconst(I64, ((value as u64).wrapping_shl(1) | 1) as i64);
-        let _ = v_big_mode;
         let ctx = builder.use_var(v_runtime_ctx);
         let mode = builder.ins().load(I64, MemFlags::trusted(), ctx, 0);
         let is_big = builder.ins().icmp_imm(IntCC::NotEqual, mode, 0);
@@ -758,10 +843,12 @@ pub mod jit {
     fn emit_is_zero(
         builder: &mut FunctionBuilder,
         value: cranelift_codegen::ir::Value,
-        v_big_mode: Option<Variable>,
+        bigint: bool,
         v_runtime_ctx: Variable,
+        ptr_type: cranelift_codegen::ir::Type,
+        signature: cranelift_codegen::ir::SigRef,
     ) -> cranelift_codegen::ir::Value {
-        let zero = emit_literal(builder, 0, v_big_mode, v_runtime_ctx);
+        let zero = emit_literal(builder, 0, bigint, v_runtime_ctx, ptr_type, signature);
         builder.ins().icmp(IntCC::Equal, value, zero)
     }
 
@@ -1068,12 +1155,9 @@ pub mod jit {
         let v_rc = builder.declare_var(ptr_type);
         let v_rn = builder.declare_var(ptr_type);
         let v_sel = builder.declare_var(I64);
-        #[cfg(feature = "bigint")]
-        let v_big_mode = Some(builder.declare_var(I64));
-        #[cfg(not(feature = "bigint"))]
-        let v_big_mode: Option<Variable> = None;
+        let bigint = cfg!(feature = "bigint");
         // Special storage callback variables
-        let v_sp_ctx = builder.declare_var(ptr_type);
+        let v_runtime_ctx = builder.declare_var(ptr_type);
         let v_sp_push = builder.declare_var(ptr_type);
         let v_sp_pop = builder.declare_var(ptr_type);
         let v_sp_depth = builder.declare_var(ptr_type);
@@ -1193,7 +1277,7 @@ pub mod jit {
         builder.def_var(v_wn, params[3]);
         builder.def_var(v_rc, params[4]);
         builder.def_var(v_rn, params[5]);
-        builder.def_var(v_sp_ctx, params[6]);
+        builder.def_var(v_runtime_ctx, params[6]);
         builder.def_var(v_sp_push, params[7]);
         builder.def_var(v_sp_pop, params[8]);
         builder.def_var(v_sp_depth, params[9]);
@@ -1202,9 +1286,6 @@ pub mod jit {
         builder.def_var(v_flush_output, params[12]);
         let z = builder.ins().iconst(I64, 0);
         builder.def_var(v_sel, z);
-        if let Some(v_big_mode) = v_big_mode {
-            builder.def_var(v_big_mode, z);
-        }
 
         // Init tops_slot: tops[s] = bases[s] + lengths[s] * 8
         // Also def_var each per-storage Variable
@@ -1263,10 +1344,17 @@ pub mod jit {
                 match inst {
                     Inst::Push(v) => {
                         if sel.is_some_and(is_special) {
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let fn_ptr = builder.use_var(v_sp_push);
                             let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
-                            let cv = emit_literal(&mut builder, *v, v_big_mode, v_sp_ctx);
+                            let cv = emit_literal(
+                                &mut builder,
+                                *v,
+                                bigint,
+                                v_runtime_ctx,
+                                ptr_type,
+                                sig_sp_pop,
+                            );
                             builder
                                 .ins()
                                 .call_indirect(sig_sp_push, fn_ptr, &[ctx, sv, cv]);
@@ -1278,10 +1366,17 @@ pub mod jit {
                             builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                             builder.switch_to_block(sp_bb);
                             builder.seal_block(sp_bb);
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let fn_ptr = builder.use_var(v_sp_push);
                             let sv = builder.use_var(v_sel);
-                            let cv = emit_literal(&mut builder, *v, v_big_mode, v_sp_ctx);
+                            let cv = emit_literal(
+                                &mut builder,
+                                *v,
+                                bigint,
+                                v_runtime_ctx,
+                                ptr_type,
+                                sig_sp_pop,
+                            );
                             builder
                                 .ins()
                                 .call_indirect(sig_sp_push, fn_ptr, &[ctx, sv, cv]);
@@ -1290,7 +1385,14 @@ pub mod jit {
                             builder.seal_block(normal_bb);
                             let top =
                                 load_top(&mut builder, tops_slot, sel, v_sel, &v_top, ptr_type);
-                            let cv = emit_literal(&mut builder, *v, v_big_mode, v_sp_ctx);
+                            let cv = emit_literal(
+                                &mut builder,
+                                *v,
+                                bigint,
+                                v_runtime_ctx,
+                                ptr_type,
+                                sig_sp_pop,
+                            );
                             builder.ins().store(MemFlags::trusted(), cv, top, 0);
                             let nt = builder.ins().iadd_imm(top, 8);
                             store_top(&mut builder, tops_slot, sel, v_sel, &v_top, nt, ptr_type);
@@ -1300,7 +1402,14 @@ pub mod jit {
                         } else {
                             let top =
                                 load_top(&mut builder, tops_slot, sel, v_sel, &v_top, ptr_type);
-                            let cv = emit_literal(&mut builder, *v, v_big_mode, v_sp_ctx);
+                            let cv = emit_literal(
+                                &mut builder,
+                                *v,
+                                bigint,
+                                v_runtime_ctx,
+                                ptr_type,
+                                sig_sp_pop,
+                            );
                             builder.ins().store(MemFlags::trusted(), cv, top, 0);
                             let nt = builder.ins().iadd_imm(top, 8);
                             store_top(&mut builder, tops_slot, sel, v_sel, &v_top, nt, ptr_type);
@@ -1308,7 +1417,7 @@ pub mod jit {
                     }
                     Inst::Pop => {
                         if sel.is_some_and(is_special) {
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let fn_ptr = builder.use_var(v_sp_pop);
                             let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                             builder.ins().call_indirect(sig_sp_pop, fn_ptr, &[ctx, sv]);
@@ -1320,7 +1429,7 @@ pub mod jit {
                             builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                             builder.switch_to_block(sp_bb);
                             builder.seal_block(sp_bb);
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let fn_ptr = builder.use_var(v_sp_pop);
                             let sv = builder.use_var(v_sel);
                             builder.ins().call_indirect(sig_sp_pop, fn_ptr, &[ctx, sv]);
@@ -1343,7 +1452,7 @@ pub mod jit {
                     }
                     Inst::Dup => {
                         if sel.is_some_and(is_special) {
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let fn_ptr = builder.use_var(v_sp_dup);
                             let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                             builder.ins().call_indirect(sig_sp_dup, fn_ptr, &[ctx, sv]);
@@ -1355,7 +1464,7 @@ pub mod jit {
                             builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                             builder.switch_to_block(sp_bb);
                             builder.seal_block(sp_bb);
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let fn_ptr = builder.use_var(v_sp_dup);
                             let sv = builder.use_var(v_sel);
                             builder.ins().call_indirect(sig_sp_dup, fn_ptr, &[ctx, sv]);
@@ -1382,7 +1491,7 @@ pub mod jit {
                     }
                     Inst::Swap => {
                         if sel.is_some_and(is_special) {
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let fn_ptr = builder.use_var(v_sp_swap);
                             let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                             builder.ins().call_indirect(sig_sp_swap, fn_ptr, &[ctx, sv]);
@@ -1394,7 +1503,7 @@ pub mod jit {
                             builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                             builder.switch_to_block(sp_bb);
                             builder.seal_block(sp_bb);
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let fn_ptr = builder.use_var(v_sp_swap);
                             let sv = builder.use_var(v_sel);
                             builder.ins().call_indirect(sig_sp_swap, fn_ptr, &[ctx, sv]);
@@ -1424,7 +1533,7 @@ pub mod jit {
                         // Normal: both operands are already adjacent under the top.
                         let emit_special =
                             |builder: &mut FunctionBuilder, sv: cranelift_codegen::ir::Value| {
-                                let ctx = builder.use_var(v_sp_ctx);
+                                let ctx = builder.use_var(v_runtime_ctx);
                                 let pop_fn = builder.use_var(v_sp_pop);
                                 let push_fn = builder.use_var(v_sp_push);
                                 let ci1 =
@@ -1434,8 +1543,17 @@ pub mod jit {
                                     builder.ins().call_indirect(sig_sp_pop, pop_fn, &[ctx, sv]);
                                 let a = builder.inst_results(ci2)[0];
                                 let r = emit_binop(
-                                    builder, kind, a, b, v_big_mode, v_sp_ctx, v_bases, tops_slot,
-                                    &v_top, ptr_type, sig_bigint,
+                                    builder,
+                                    kind,
+                                    a,
+                                    b,
+                                    bigint,
+                                    v_runtime_ctx,
+                                    v_bases,
+                                    tops_slot,
+                                    &v_top,
+                                    ptr_type,
+                                    sig_bigint,
                                 );
                                 builder
                                     .ins()
@@ -1467,8 +1585,8 @@ pub mod jit {
                                 kind,
                                 a,
                                 b,
-                                v_big_mode,
-                                v_sp_ctx,
+                                bigint,
+                                v_runtime_ctx,
                                 v_bases,
                                 tops_slot,
                                 &v_top,
@@ -1500,8 +1618,8 @@ pub mod jit {
                                 kind,
                                 a,
                                 b,
-                                v_big_mode,
-                                v_sp_ctx,
+                                bigint,
+                                v_runtime_ctx,
                                 v_bases,
                                 tops_slot,
                                 &v_top,
@@ -1534,7 +1652,7 @@ pub mod jit {
                     Inst::Mov(target) => {
                         if sel.is_some_and(is_special) {
                             // Pop from special source
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let pop_fn = builder.use_var(v_sp_pop);
                             let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                             let ci = builder.ins().call_indirect(sig_sp_pop, pop_fn, &[ctx, sv]);
@@ -1575,7 +1693,7 @@ pub mod jit {
                                 builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                                 builder.switch_to_block(sp_bb);
                                 builder.seal_block(sp_bb);
-                                let ctx = builder.use_var(v_sp_ctx);
+                                let ctx = builder.use_var(v_runtime_ctx);
                                 let pop_fn = builder.use_var(v_sp_pop);
                                 let sv = builder.use_var(v_sel);
                                 let ci =
@@ -1619,7 +1737,7 @@ pub mod jit {
                             };
                             // Push to target storage
                             if is_special(*target) {
-                                let ctx = builder.use_var(v_sp_ctx);
+                                let ctx = builder.use_var(v_runtime_ctx);
                                 let push_fn = builder.use_var(v_sp_push);
                                 let tv = builder.ins().iconst(I64, *target as i64);
                                 builder
@@ -1656,7 +1774,7 @@ pub mod jit {
                                 emit_write_char(
                                     builder,
                                     val,
-                                    v_sp_ctx,
+                                    v_runtime_ctx,
                                     v_wc,
                                     v_flush_output,
                                     ptr_type,
@@ -1665,7 +1783,7 @@ pub mod jit {
                                 );
                             };
                         if sel.is_some_and(is_special) {
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let pop_fn = builder.use_var(v_sp_pop);
                             let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                             let ci = builder.ins().call_indirect(sig_sp_pop, pop_fn, &[ctx, sv]);
@@ -1680,7 +1798,7 @@ pub mod jit {
                             builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                             builder.switch_to_block(sp_bb);
                             builder.seal_block(sp_bb);
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let pop_fn = builder.use_var(v_sp_pop);
                             let sv = builder.use_var(v_sel);
                             let ci = builder.ins().call_indirect(sig_sp_pop, pop_fn, &[ctx, sv]);
@@ -1711,11 +1829,11 @@ pub mod jit {
                         let out_fn =
                             |builder: &mut FunctionBuilder, val: cranelift_codegen::ir::Value| {
                                 let w = builder.use_var(v_wn);
-                                let ctx = builder.use_var(v_sp_ctx);
+                                let ctx = builder.use_var(v_runtime_ctx);
                                 builder.ins().call_indirect(sig_vi64, w, &[ctx, val]);
                             };
                         if sel.is_some_and(is_special) {
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let pop_fn = builder.use_var(v_sp_pop);
                             let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                             let ci = builder.ins().call_indirect(sig_sp_pop, pop_fn, &[ctx, sv]);
@@ -1730,7 +1848,7 @@ pub mod jit {
                             builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                             builder.switch_to_block(sp_bb);
                             builder.seal_block(sp_bb);
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let pop_fn = builder.use_var(v_sp_pop);
                             let sv = builder.use_var(v_sel);
                             let ci = builder.ins().call_indirect(sig_sp_pop, pop_fn, &[ctx, sv]);
@@ -1759,11 +1877,11 @@ pub mod jit {
                     }
                     Inst::PushNum => {
                         let r = builder.use_var(v_rn);
-                        let ctx = builder.use_var(v_sp_ctx);
+                        let ctx = builder.use_var(v_runtime_ctx);
                         let ci = builder.ins().call_indirect(sig_i64v, r, &[ctx]);
                         let val = builder.inst_results(ci)[0];
                         if sel.is_some_and(is_special) {
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let push_fn = builder.use_var(v_sp_push);
                             let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                             builder
@@ -1777,7 +1895,7 @@ pub mod jit {
                             builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                             builder.switch_to_block(sp_bb);
                             builder.seal_block(sp_bb);
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let push_fn = builder.use_var(v_sp_push);
                             let sv = builder.use_var(v_sel);
                             builder
@@ -1804,11 +1922,11 @@ pub mod jit {
                     }
                     Inst::PushChar => {
                         let r = builder.use_var(v_rc);
-                        let ctx = builder.use_var(v_sp_ctx);
+                        let ctx = builder.use_var(v_runtime_ctx);
                         let ci = builder.ins().call_indirect(sig_i64v, r, &[ctx]);
                         let val = builder.inst_results(ci)[0];
                         if sel.is_some_and(is_special) {
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let push_fn = builder.use_var(v_sp_push);
                             let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                             builder
@@ -1822,7 +1940,7 @@ pub mod jit {
                             builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                             builder.switch_to_block(sp_bb);
                             builder.seal_block(sp_bb);
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let push_fn = builder.use_var(v_sp_push);
                             let sv = builder.use_var(v_sel);
                             builder
@@ -1851,7 +1969,7 @@ pub mod jit {
                         // Flush Variable to slot before branch (fail path needs slot)
                         flush_top_var(&mut builder, tops_slot, sel, &v_top);
                         let elems = if sel.is_some_and(is_special) {
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let depth_fn = builder.use_var(v_sp_depth);
                             let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                             let ci =
@@ -1861,10 +1979,7 @@ pub mod jit {
                             builder.inst_results(ci)[0]
                         } else if sel.is_none() {
                             // Dynamic sel: branch on special vs normal
-                            let sv = builder.use_var(v_sel);
-                            let is_q = builder.ins().icmp_imm(IntCC::Equal, sv, QUEUE as i64);
-                            let is_p = builder.ins().icmp_imm(IntCC::Equal, sv, PORT as i64);
-                            let is_sp = builder.ins().bor(is_q, is_p);
+                            let is_sp = is_special_at_runtime(&mut builder, v_sel);
                             let sp_bb = builder.create_block();
                             let normal_bb = builder.create_block();
                             let merge_bb = builder.create_block();
@@ -1873,7 +1988,7 @@ pub mod jit {
                             // Special path
                             builder.switch_to_block(sp_bb);
                             builder.seal_block(sp_bb);
-                            let ctx = builder.use_var(v_sp_ctx);
+                            let ctx = builder.use_var(v_runtime_ctx);
                             let depth_fn = builder.use_var(v_sp_depth);
                             let sv2 = builder.use_var(v_sel);
                             let ci =
@@ -1938,7 +2053,7 @@ pub mod jit {
                     fail,
                 } => {
                     let elems = if sel.is_some_and(is_special) {
-                        let ctx = builder.use_var(v_sp_ctx);
+                        let ctx = builder.use_var(v_runtime_ctx);
                         let depth_fn = builder.use_var(v_sp_depth);
                         let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                         let ci = builder
@@ -1947,10 +2062,7 @@ pub mod jit {
                         builder.inst_results(ci)[0]
                     } else if sel.is_none() {
                         // Dynamic sel: branch on special vs normal
-                        let sv = builder.use_var(v_sel);
-                        let is_q = builder.ins().icmp_imm(IntCC::Equal, sv, QUEUE as i64);
-                        let is_p = builder.ins().icmp_imm(IntCC::Equal, sv, PORT as i64);
-                        let is_sp = builder.ins().bor(is_q, is_p);
+                        let is_sp = is_special_at_runtime(&mut builder, v_sel);
                         let sp_bb = builder.create_block();
                         let normal_bb = builder.create_block();
                         let merge_bb = builder.create_block();
@@ -1958,7 +2070,7 @@ pub mod jit {
                         builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                         builder.switch_to_block(sp_bb);
                         builder.seal_block(sp_bb);
-                        let ctx = builder.use_var(v_sp_ctx);
+                        let ctx = builder.use_var(v_runtime_ctx);
                         let depth_fn = builder.use_var(v_sp_depth);
                         let sv2 = builder.use_var(v_sel);
                         let ci = builder
@@ -2009,17 +2121,14 @@ pub mod jit {
                     on_nonzero,
                 } => {
                     let val = if sel.is_some_and(is_special) {
-                        let ctx = builder.use_var(v_sp_ctx);
+                        let ctx = builder.use_var(v_runtime_ctx);
                         let pop_fn = builder.use_var(v_sp_pop);
                         let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                         let ci = builder.ins().call_indirect(sig_sp_pop, pop_fn, &[ctx, sv]);
                         builder.inst_results(ci)[0]
                     } else if sel.is_none() {
                         // Dynamic sel: branch on special vs normal
-                        let sv = builder.use_var(v_sel);
-                        let is_q = builder.ins().icmp_imm(IntCC::Equal, sv, QUEUE as i64);
-                        let is_p = builder.ins().icmp_imm(IntCC::Equal, sv, PORT as i64);
-                        let is_sp = builder.ins().bor(is_q, is_p);
+                        let is_sp = is_special_at_runtime(&mut builder, v_sel);
                         let sp_bb = builder.create_block();
                         let normal_bb = builder.create_block();
                         let merge_bb = builder.create_block();
@@ -2027,7 +2136,7 @@ pub mod jit {
                         builder.ins().brif(is_sp, sp_bb, &[], normal_bb, &[]);
                         builder.switch_to_block(sp_bb);
                         builder.seal_block(sp_bb);
-                        let ctx = builder.use_var(v_sp_ctx);
+                        let ctx = builder.use_var(v_runtime_ctx);
                         let pop_fn = builder.use_var(v_sp_pop);
                         let sv2 = builder.use_var(v_sel);
                         let ci = builder.ins().call_indirect(sig_sp_pop, pop_fn, &[ctx, sv2]);
@@ -2050,7 +2159,14 @@ pub mod jit {
                         store_top_slot(&mut builder, tops_slot, sel, v_sel, nt, ptr_type);
                         v
                     };
-                    let iz = emit_is_zero(&mut builder, val, v_big_mode, v_sp_ctx);
+                    let iz = emit_is_zero(
+                        &mut builder,
+                        val,
+                        bigint,
+                        v_runtime_ctx,
+                        ptr_type,
+                        sig_sp_pop,
+                    );
                     builder.ins().brif(
                         iz,
                         cl.get(on_zero).copied().unwrap_or(halt_block),
@@ -2062,7 +2178,7 @@ pub mod jit {
                 Terminator::Halt => {
                     if sel.is_some_and(is_special) {
                         // For special storage, check depth > 0 then pop
-                        let ctx = builder.use_var(v_sp_ctx);
+                        let ctx = builder.use_var(v_runtime_ctx);
                         let depth_fn = builder.use_var(v_sp_depth);
                         let sv = builder.ins().iconst(I64, sel.unwrap() as i64);
                         let ci = builder
@@ -2078,7 +2194,7 @@ pub mod jit {
                         builder.switch_to_block(has_bb);
                         builder.seal_block(has_bb);
                         let pop_fn = builder.use_var(v_sp_pop);
-                        let ctx2 = builder.use_var(v_sp_ctx);
+                        let ctx2 = builder.use_var(v_runtime_ctx);
                         let sv2 = builder.ins().iconst(I64, sel.unwrap() as i64);
                         let ci2 = builder
                             .ins()
@@ -2088,7 +2204,8 @@ pub mod jit {
                         builder.switch_to_block(ret_bb);
                         builder.seal_block(ret_bb);
                         let ret = builder.block_params(ret_bb)[0];
-                        let ret = emit_to_i64(&mut builder, ret, v_sp_ctx, ptr_type, sig_sp_pop);
+                        let ret =
+                            emit_to_i64(&mut builder, ret, v_runtime_ctx, ptr_type, sig_sp_pop);
                         builder.ins().return_(&[ret]);
                     } else {
                         let top = load_top_slot(&mut builder, tops_slot, sel, v_sel, ptr_type);
@@ -2116,7 +2233,8 @@ pub mod jit {
                         builder.switch_to_block(ret_bb);
                         builder.seal_block(ret_bb);
                         let ret = builder.block_params(ret_bb)[0];
-                        let ret = emit_to_i64(&mut builder, ret, v_sp_ctx, ptr_type, sig_sp_pop);
+                        let ret =
+                            emit_to_i64(&mut builder, ret, v_runtime_ctx, ptr_type, sig_sp_pop);
                         builder.ins().return_(&[ret]);
                     }
                 }

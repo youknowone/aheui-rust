@@ -149,6 +149,12 @@ pub fn is_binary_op(op: u8) -> bool {
 ///
 /// `div_euclid` is a third convention — it forces a non-negative remainder —
 /// and is not this one.
+///
+/// # Preconditions
+///
+/// `b` must be non-zero, and `(a, b)` must not be `(i64::MIN, -1)`. The first
+/// case panics; the second returns the wrapped `i64::MIN` even though the true
+/// quotient does not fit in `i64`. Constant folders must decline both cases.
 #[inline]
 pub fn floor_div_i64(a: i64, b: i64) -> i64 {
     let q = a.wrapping_div(b);

@@ -249,13 +249,13 @@ fn generate_rs_dispatch(cfg: &Cfg, bigint: bool) -> String {
             if bigint {
                 match kind {
                     BinOpKind::Add => {
-                        format!("dual_add({a}, {b}, &mut _bm, &bases, &mut tops_snapshot)")
+                        format!("dual_add({a}, {b}, &mut _bm, &bases, &mut tops_snapshot, &mut sp)")
                     }
                     BinOpKind::Sub => {
-                        format!("dual_sub({a}, {b}, &mut _bm, &bases, &mut tops_snapshot)")
+                        format!("dual_sub({a}, {b}, &mut _bm, &bases, &mut tops_snapshot, &mut sp)")
                     }
                     BinOpKind::Mul => {
-                        format!("dual_mul({a}, {b}, &mut _bm, &bases, &mut tops_snapshot)")
+                        format!("dual_mul({a}, {b}, &mut _bm, &bases, &mut tops_snapshot, &mut sp)")
                     }
                     BinOpKind::Div => format!("Int::div({a}, {b}, _bm)"),
                     BinOpKind::Mod => format!("Int::rem({a}, {b}, _bm)"),
@@ -363,6 +363,7 @@ fn generate_rs_dispatch(cfg: &Cfg, bigint: bool) -> String {
                         let v2 = abs.fresh();
                         let vr = abs.fresh();
                         out.push_str(&format!("{ind}  {v1} = sp.pop({s}); {v2} = sp.pop({s});\n{ind}  {vr} = {};\n{ind}  sp.push({s}, {vr});\n", op_str_fn(kind, &v2, &v1)));
+                        emit_abs_promotion_fixup(&mut out, &abs, bigint, kind, ind);
                     } else if ds {
                         top_modified = true;
                         let v1 = abs.fresh();
@@ -370,40 +371,14 @@ fn generate_rs_dispatch(cfg: &Cfg, bigint: bool) -> String {
                         let vr = abs.fresh();
                         out.push_str(&format!("{ind}  if sel == {QUEUE} || sel == {PORT} {{\n{ind}    {v1} = dyn_pop_sp(&mut sp, sel); {v2} = dyn_pop_sp(&mut sp, sel);\n{ind}    {vr} = {};\n{ind}    dyn_push_sp(&mut sp, sel, {vr});\n{ind}  }} else {{\n{ind}    top = top.sub(2); {v2} = *top; {v1} = *top.add(1);\n{ind}    {vr} = {};\n{ind}    *top = {vr}; top = top.add(1);\n{ind}  }}\n", op_str_fn(kind, &v2, &v1), op_str_fn(kind, &v2, &v1)));
                         emit_dynamic_top_snapshot(&mut out, bigint, ind);
+                        emit_abs_promotion_fixup(&mut out, &abs, bigint, kind, ind);
                     } else {
                         ensure_depth(&mut out, &mut abs, 2, &format!("{ind}  "));
                         let r1 = abs.pop().unwrap();
                         let r2 = abs.pop().unwrap();
                         let vr = abs.fresh();
                         out.push_str(&format!("{ind}  {vr} = {};\n", op_str_fn(kind, &r2, &r1)));
-                        // When this op is the one that promoted, the live Abs vars
-                        // still hold raw i64 and have to be tagged. Only then —
-                        // `promote_val` on an already-tagged value tags it a second
-                        // time, so keying the fixup on `_bm` alone corrupts every
-                        // live var on every later op.
-                        if bigint
-                            && matches!(kind, BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul)
-                        {
-                            // One name can occupy two abstract slots — `Dup`
-                            // pushes the name it peeked, `Mov` carries a name to
-                            // another storage's stack — and `promote_val` tags,
-                            // so promoting a name twice would tag it twice.
-                            let mut live_vars: Vec<String> = Vec::new();
-                            for stack in abs.stacks.values() {
-                                for v in stack {
-                                    if !live_vars.contains(v) {
-                                        live_vars.push(v.clone());
-                                    }
-                                }
-                            }
-                            if !live_vars.is_empty() {
-                                out.push_str(&format!("{ind}  if _bm && !_bm_prev {{ "));
-                                for lv in &live_vars {
-                                    out.push_str(&format!("{lv} = promote_val({lv}); "));
-                                }
-                                out.push_str("}\n");
-                            }
-                        }
+                        emit_abs_promotion_fixup(&mut out, &abs, bigint, kind, ind);
                         abs.push(vr);
                     }
                 }
@@ -700,13 +675,23 @@ fn generate_rs_dispatch(cfg: &Cfg, bigint: bool) -> String {
             }
             Terminator::Halt => {
                 out.push_str(&format!("{ind}  w.flush().ok();\n"));
-                let base = match sel {
-                    Some(s) => format!("bases[{s}]"),
-                    None => "bases[sel]".into(),
-                };
-                out.push_str(&format!(
-                    "{ind}  return if {t} > {base} {{ *{t}.sub(1) }} else {{ {vz} }};\n"
-                ));
+                if let Some(s) = sel.filter(|s| is_special(*s)) {
+                    out.push_str(&format!(
+                        "{ind}  return if sp.depth({s}) > 0 {{ sp.pop({s}) }} else {{ {vz} }};\n"
+                    ));
+                } else if sel.is_none() && has_special {
+                    out.push_str(&format!(
+                        "{ind}  return if sel == {QUEUE} || sel == {PORT} {{ if sp.depth(sel) > 0 {{ sp.pop(sel) }} else {{ {vz} }} }} else if top > bases[sel] {{ *top.sub(1) }} else {{ {vz} }};\n"
+                    ));
+                } else {
+                    let base = match sel {
+                        Some(s) => format!("bases[{s}]"),
+                        None => "bases[sel]".into(),
+                    };
+                    out.push_str(&format!(
+                        "{ind}  return if {t} > {base} {{ *{t}.sub(1) }} else {{ {vz} }};\n"
+                    ));
+                }
             }
         }
 
@@ -737,11 +722,12 @@ fn generate_rs_dispatch(cfg: &Cfg, bigint: bool) -> String {
         var_decl.push_str(&format!("  let mut v{i}: Int = {var_init};\n"));
     }
     out = out.replacen("  /*VARDECL*/\n", &var_decl, 1);
-    if bigint {
-        out.push_str(MAIN_FN_DUAL);
-    } else {
-        out.push_str(MAIN_FN);
+    out.push_str("const USED_STORAGES: &[usize] = &[");
+    for storage in used.iter().copied().filter(|storage| !is_special(*storage)) {
+        out.push_str(&format!("{storage},"));
     }
+    out.push_str("];\n");
+    out.push_str(MAIN_FN);
     out
 }
 
@@ -751,6 +737,38 @@ fn emit_dynamic_top_snapshot(out: &mut String, bigint: bool, indent: &str) {
             "{indent}  if sel != {QUEUE} && sel != {PORT} {{ tops_snapshot[sel] = top; }}\n"
         ));
     }
+}
+
+fn emit_abs_promotion_fixup(
+    out: &mut String,
+    abs: &Abs,
+    bigint: bool,
+    kind: &BinOpKind,
+    indent: &str,
+) {
+    if !bigint || !matches!(kind, BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul) {
+        return;
+    }
+
+    // `do_promote` rewrites memory, but values held in generated locals are not
+    // in that range. A name can occupy multiple abstract slots after Dup/Mov,
+    // so promote each distinct local exactly once on the transition.
+    let mut live_vars: Vec<&str> = Vec::new();
+    for stack in abs.stacks.values() {
+        for value in stack {
+            if !live_vars.contains(&value.as_str()) {
+                live_vars.push(value);
+            }
+        }
+    }
+    if live_vars.is_empty() {
+        return;
+    }
+    out.push_str(&format!("{indent}  if _bm && !_bm_prev {{ "));
+    for value in live_vars {
+        out.push_str(&format!("{value} = promote_val({value}); "));
+    }
+    out.push_str("}\n");
 }
 
 fn emit_known_top_snapshot(out: &mut String, bigint: bool, indent: &str, storage: usize) {
@@ -880,10 +898,16 @@ impl SpecialStorage {
     fn swap(&mut self, sel: usize) { if sel == QUEUE && self.queue.len() >= 2 { let a = self.queue.pop_front().unwrap(); let b = self.queue.pop_front().unwrap(); self.queue.push_front(a); self.queue.push_front(b); } else if sel == PORT && self.port.len() >= 2 { let n = self.port.len(); self.port.swap(n-1, n-2); } }
     fn peek(&self, sel: usize) -> Int { if sel == QUEUE { self.queue.front().copied().unwrap_or(Int(0)) } else { self.port.last().copied().unwrap_or(Int(0)) } }
     fn scan_to_zero(&mut self) -> Int {
-        if let Some(pos) = self.queue.iter().position(|v| v.0 == 0) {
+        let zero = int_lit(0);
+        if let Some(pos) = self.queue.iter().position(|v| *v == zero) {
             self.queue.rotate_left(pos + 1);
-            Int(0)
-        } else { Int(0) }
+            zero
+        } else { zero }
+    }
+    fn promote(&mut self) {
+        for value in &mut self.queue { *value = promote_val(*value); }
+        for value in &mut self.port { *value = promote_val(*value); }
+        self.port_last = promote_val(self.port_last);
     }
 }
 #[inline(always)] fn write_i64(w: &mut impl Write, n: i64) { let mut buf = [0u8; 20]; let mut u = if n < 0 { w.write_all(b"-").ok(); (n as u64).wrapping_neg() } else { n as u64 }; let mut i = 20; loop { i -= 1; buf[i] = b'0' + (u % 10) as u8; u /= 10; if u == 0 { break; } } w.write_all(&buf[i..]).ok(); }
@@ -906,13 +930,21 @@ const SMALL_MAX: i64 = (1i64 << 62) - 1;
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 struct Int(i64);
+static BIGINT_ARENA: std::sync::Mutex<Vec<Box<BigInt>>> = std::sync::Mutex::new(Vec::new());
+fn clear_bigints() { BIGINT_ARENA.lock().unwrap_or_else(|e| e.into_inner()).clear(); }
+#[inline(never)] fn box_bigint(value: BigInt) -> Int {
+    let value = Box::new(value);
+    let ptr = (&*value as *const BigInt) as i64;
+    BIGINT_ARENA.lock().unwrap_or_else(|e| e.into_inner()).push(value);
+    Int(ptr)
+}
 #[inline(always)] fn promote_val(v: Int) -> Int {
     let r = v.0;
     if r >= SMALL_MIN && r <= SMALL_MAX { Int((r << 1) | 1) }
-    else { Int(Box::into_raw(Box::new(BigInt::from(r))) as i64) }
+    else { box_bigint(BigInt::from(r)) }
 }
 fn to_big(v: i64) -> BigInt { if v & 1 != 0 { BigInt::from(v >> 1) } else { unsafe { &*(v as *const BigInt) }.clone() } }
-fn normalize(b: BigInt) -> Int { match b.to_i64() { Some(v) if v >= SMALL_MIN && v <= SMALL_MAX => Int((v << 1) | 1), _ => Int(Box::into_raw(Box::new(b)) as i64) } }
+fn normalize(b: BigInt) -> Int { match b.to_i64() { Some(v) if v >= SMALL_MIN && v <= SMALL_MAX => Int((v << 1) | 1), _ => box_bigint(b) } }
 #[cold] #[inline(never)] fn big_add(a: Int, b: Int) -> Int { normalize(to_big(a.0) + to_big(b.0)) }
 #[cold] #[inline(never)] fn big_sub(a: Int, b: Int) -> Int { normalize(to_big(a.0) - to_big(b.0)) }
 #[cold] #[inline(never)] fn big_mul(a: Int, b: Int) -> Int { normalize(to_big(a.0) * to_big(b.0)) }
@@ -927,36 +959,37 @@ unsafe fn promote_stacks(bases: &[*mut Int; 28], tops: &[*mut Int; 28]) {
     }
 }
 #[cold] #[inline(never)]
-unsafe fn do_promote(bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28]) {
+unsafe fn do_promote(bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) {
     *bm = true; BM = true;
     promote_stacks(bases, tops);
+    sp.promote();
 }
 #[inline(always)]
-unsafe fn dual_add(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28]) -> Int {
+unsafe fn dual_add(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) -> Int {
     if !*bm {
-        match Int::raw_add(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops); Int::tag_add(promote_val(a), promote_val(b)) } }
+        match Int::raw_add(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops, sp); Int::tag_add(promote_val(a), promote_val(b)) } }
     } else { Int::tag_add(a, b) }
 }
 #[inline(always)]
-unsafe fn dual_sub(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28]) -> Int {
+unsafe fn dual_sub(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) -> Int {
     if !*bm {
-        match Int::raw_sub(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops); Int::tag_sub(promote_val(a), promote_val(b)) } }
+        match Int::raw_sub(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops, sp); Int::tag_sub(promote_val(a), promote_val(b)) } }
     } else { Int::tag_sub(a, b) }
 }
 #[inline(always)]
-unsafe fn dual_mul(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28]) -> Int {
+unsafe fn dual_mul(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) -> Int {
     if !*bm {
-        match Int::raw_mul(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops); Int::tag_mul(promote_val(a), promote_val(b)) } }
+        match Int::raw_mul(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops, sp); Int::tag_mul(promote_val(a), promote_val(b)) } }
     } else { Int::tag_mul(a, b) }
 }
 impl Int {
     // Mode-aware operations: _bm=false → raw i64, _bm=true → tagged
-    #[inline(always)] fn lit(v: i64, _bm: bool) -> Int { if _bm { Int((v << 1) | 1) } else { Int(v) } }
+    #[inline(always)] fn lit(v: i64, _bm: bool) -> Int { if _bm { promote_val(Int(v)) } else { Int(v) } }
     #[inline(always)] fn to_i64(v: Int, _bm: bool) -> i64 { if _bm { if v.0 & 1 != 0 { v.0 >> 1 } else { unsafe { &*(v.0 as *const BigInt) }.to_i64().unwrap_or(0) } } else { v.0 } }
 }
 // Static flag for free functions (PRELUDE_COMMON) to detect mode
 static mut BM: bool = false;
-#[inline(always)] fn int_lit(v: i64) -> Int { if unsafe { BM } { Int((v << 1) | 1) } else { Int(v) } }
+#[inline(always)] fn int_lit(v: i64) -> Int { if unsafe { BM } { promote_val(Int(v)) } else { Int(v) } }
 #[inline(always)] fn int_to_i64(v: Int) -> i64 { if unsafe { BM } { if v.0 & 1 != 0 { v.0 >> 1 } else { unsafe { &*(v.0 as *const BigInt) }.to_i64().unwrap_or(0) } } else { v.0 } }
 impl Int {
     #[inline(always)] fn is_zero(v: Int, _bm: bool) -> bool { if _bm { v.0 == 1 } else { v.0 == 0 } }
@@ -995,6 +1028,7 @@ fn write_num(w: &mut impl std::io::Write, v: Int) { if !unsafe { BM } { write_i6
 const PRELUDE_INT_I64: &str = r#"#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 struct Int(i64);
+#[inline(always)] fn clear_bigints() {}
 impl Int {
     const ZERO: Int = Int(0);
     const ONE: Int = Int(1);
@@ -1002,6 +1036,7 @@ impl Int {
 }
 #[inline(always)] fn int_lit(v: i64) -> Int { Int(v) }
 #[inline(always)] fn int_to_i64(v: Int) -> i64 { v.0 }
+#[inline(always)] fn promote_val(v: Int) -> Int { v }
 impl Int {
     #[inline(always)] fn is_zero(v: Int) -> bool { v.0 == 0 }
     #[inline(always)] fn ge(a: Int, b: Int) -> bool { a.0 >= b.0 }
@@ -1016,27 +1051,17 @@ impl Int {
 
 const MAIN_FN: &str = r#"
 fn main() {
-    let mut data: Vec<Vec<Int>> = (0..STORAGE_COUNT).map(|_| vec![Int(0); MAX_STACK]).collect();
+    let mut data: [Vec<Int>; STORAGE_COUNT] = std::array::from_fn(|_| Vec::new());
+    for &storage in USED_STORAGES { data[storage] = vec![Int(0); MAX_STACK]; }
     let mut bases: [*mut Int; 28] = { let mut b = [std::ptr::null_mut(); 28]; for i in 0..28 { b[i] = data[i].as_mut_ptr(); } b };
     let mut lengths = [0i32; 28];
     let stdout = std::io::stdout();
     let mut w = std::io::BufWriter::with_capacity(16384, stdout.lock());
     let result = unsafe { aheui_main(&mut bases, &mut lengths, &mut w) };
     w.flush().ok();
-    std::process::exit(int_to_i64(result) as i32);
-}
-"#;
-
-/// Dual-mode main: result may be raw or tagged. to_i64 handles both.
-const MAIN_FN_DUAL: &str = r#"
-fn main() {
-    let mut data: Vec<Vec<Int>> = (0..STORAGE_COUNT).map(|_| vec![Int(0); MAX_STACK]).collect();
-    let mut bases: [*mut Int; 28] = { let mut b = [std::ptr::null_mut(); 28]; for i in 0..28 { b[i] = data[i].as_mut_ptr(); } b };
-    let mut lengths = [0i32; 28];
-    let stdout = std::io::stdout();
-    let mut w = std::io::BufWriter::with_capacity(16384, stdout.lock());
-    let result = unsafe { aheui_main(&mut bases, &mut lengths, &mut w) };
-    w.flush().ok();
-    std::process::exit(int_to_i64(result) as i32);
+    let exit_code = int_to_i64(result) as i32;
+    drop(w);
+    clear_bigints();
+    std::process::exit(exit_code);
 }
 "#;

@@ -1,12 +1,9 @@
 //! Fixture-path resolution shared by the integration tests.
 //!
-//! The corpus is `github.com/aheui/snippets`, pinned by this repo's `snippets`
-//! gitlink, so the tests read the submodule. Resolution matches
-//! `scripts/jitstats.py find_snippets` and `check.sh`: the submodule first
-//! because it is the only candidate that names a commit, then
-//! `$AHEUI_SNIPPETS`, then a sibling `rpaheui/snippets` checkout for a tree
-//! cloned without `--recurse-submodules`. The two trees are not
-//! interchangeable — a sibling checkout is whatever that machine last pulled.
+//! The corpus is `github.com/aheui/snippets`. Resolution matches `check.sh`:
+//! `$AHEUI_SNIPPETS` first, then this repo's tracked `tests -> snippets` link,
+//! then a sibling `rpaheui/snippets` checkout. The latter is whatever that
+//! machine last pulled, so it is not interchangeable with a pinned checkout.
 //!
 //! The `aheui.aheui` self-interpreter is a separate project and is in none of
 //! them, so its caller gets an `Option` and skips loudly rather than failing.
@@ -73,10 +70,10 @@ pub fn compile_c_bigint(scratch: &Path, name: &str, c_code: &str) -> PathBuf {
 name = {package:?}
 version = "0.0.0"
 edition = "2024"
+rust-version = "1.85"
 
 [dependencies]
 {}
-num-traits = "0.2"
 
 [profile.release]
 opt-level = 1
@@ -126,19 +123,18 @@ opt-level = 1
 pub fn snippets_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        // The submodule, found by walking up so this works from any crate.
-        // `.git` — a file holding `gitdir:` for a submodule — is what tells an
-        // initialized checkout from the empty mount point.
+        if let Some(p) = std::env::var_os("AHEUI_SNIPPETS") {
+            return PathBuf::from(p);
+        }
+        // The tracked `tests -> snippets` link, found by walking up so this
+        // works from any crate. `is_dir` also rejects an uninitialized target.
         let mut dir = Some(Path::new(env!("CARGO_MANIFEST_DIR")));
         while let Some(d) = dir {
-            let candidate = d.join("snippets");
-            if candidate.join(".git").exists() {
+            let candidate = d.join("tests");
+            if candidate.is_dir() {
                 return candidate;
             }
             dir = d.parent();
-        }
-        if let Some(p) = std::env::var_os("AHEUI_SNIPPETS") {
-            return PathBuf::from(p);
         }
         let mut dir = Some(Path::new(env!("CARGO_MANIFEST_DIR")));
         while let Some(d) = dir {

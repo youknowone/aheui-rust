@@ -3,12 +3,12 @@ mod common;
 use std::process::Command;
 use std::time::Instant;
 
-fn compile_and_run_c(name: &str, source: &str) -> (String, f64, f64) {
+fn compile_and_run_c(name: &str, source: &str) -> (String, i32, f64, f64) {
     let c_code = compaheuiler::compile_to_c(source);
     compile_and_run_c_code(name, &c_code)
 }
 
-fn compile_and_run_c_code(name: &str, c_code: &str) -> (String, f64, f64) {
+fn compile_and_run_c_code(name: &str, c_code: &str) -> (String, i32, f64, f64) {
     let c_path = format!("/tmp/aheui_{name}.c");
     let bin_path = format!("/tmp/aheui_{name}_c");
     std::fs::write(&c_path, c_code).unwrap();
@@ -30,7 +30,12 @@ fn compile_and_run_c_code(name: &str, c_code: &str) -> (String, f64, f64) {
         .unwrap();
     let run_ms = t.elapsed().as_secs_f64() * 1000.0;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    (stdout, compile_ms, run_ms)
+    (
+        stdout,
+        output.status.code().unwrap_or(-1),
+        compile_ms,
+        run_ms,
+    )
 }
 
 fn compile_and_run_c_bigint_code(name: &str, c_code: &str) -> (String, f64, f64) {
@@ -73,9 +78,54 @@ fn test_post_promotion_ops_c_bigint() {
     assert_eq!(out, common::DUAL_MODE_POST_PROMOTION_OUTPUT);
 }
 
+#[cfg(feature = "bigint")]
+#[test]
+fn test_halt_reads_c_special_storage() {
+    let scratch = common::scratch_dir("halt_special_bigint");
+    let c_code = compaheuiler::compile_to_c_bigint_opt("상밝하", ahsembler::OptimizationLevel::O0);
+    let bin = common::compile_c_bigint(scratch.path(), "halt_special_bigint", &c_code);
+    let output = Command::new(bin).output().unwrap();
+    assert_eq!(output.status.code(), Some(7));
+}
+
+#[test]
+fn test_halt_reads_c_special_storage_i64() {
+    let (out, exit, _, _) = compile_and_run_c("halt_special_i64", "상밝하");
+    assert_eq!(out, "");
+    assert_eq!(exit, 7);
+}
+
+#[cfg(feature = "bigint")]
+#[test]
+fn test_read_num_boxes_large_i64_after_c_promotion() {
+    use std::io::Write;
+
+    let scratch = common::scratch_dir("read_large_bigint");
+    let source = "반빠따빠따빠따빠따빠따빠따마방망하";
+    let c_code = compaheuiler::compile_to_c_bigint_opt(source, ahsembler::OptimizationLevel::O0);
+    let bin = common::compile_c_bigint(scratch.path(), "read_large_bigint", &c_code);
+    let mut child = Command::new(bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"5000000000000000000\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "5000000000000000000"
+    );
+}
+
 #[test]
 fn test_add_c() {
-    let (out, compile_ms, _) = compile_and_run_c("add", "반받다망희");
+    let (out, _, compile_ms, _) = compile_and_run_c("add", "반받다망희");
     eprintln!("add(c): cc={compile_ms:.0}ms out={out:?}");
     assert_eq!(out, "5");
 }
@@ -83,7 +133,7 @@ fn test_add_c() {
 #[test]
 fn test_hello_c() {
     let source = common::require_snippet("hello-world/hello-world.puzzlet.aheui");
-    let (out, compile_ms, run_ms) = compile_and_run_c("hello", &source);
+    let (out, _, compile_ms, run_ms) = compile_and_run_c("hello", &source);
     eprintln!("hello(c): cc={compile_ms:.0}ms  run={run_ms:.0}ms  out={out:?}");
     let expected = common::require_snippet("hello-world/hello-world.puzzlet.out");
     assert_eq!(out, expected);
@@ -92,7 +142,7 @@ fn test_hello_c() {
 #[test]
 fn test_logo_c() {
     let source = common::require_snippet("logo/logo.aheui");
-    let (out, compile_ms, run_ms) = compile_and_run_c("logo", &source);
+    let (out, _, compile_ms, run_ms) = compile_and_run_c("logo", &source);
     eprintln!(
         "logo(c): cc={compile_ms:.0}ms  run={run_ms:.0}ms  output={}bytes",
         out.len()

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <errno.h>
 
 #define STORAGE_COUNT 28
 #define MAX_STACK 65536
@@ -76,10 +77,11 @@ typedef struct {
     int big_mode;
 } SpecialStorage;
 static void sp_init(SpecialStorage *s) { s->q_head=0; s->q_len=0; s->p_len=0; s->port_last=0; s->big_mode=0; }
-static void sp_push(SpecialStorage *s, size_t sel, int64_t v) { if (sel==21) { s->queue[(s->q_head+s->q_len)%QUEUE_CAP]=v; s->q_len++; } else { s->port_last=v; s->port[s->p_len++]=v; } }
+static void sp_overflow(void) { fputs("compaheuiler: special storage capacity exceeded\n", stderr); exit(1); }
+static void sp_push(SpecialStorage *s, size_t sel, int64_t v) { if (sel==21) { if(s->q_len>=QUEUE_CAP)sp_overflow(); s->queue[(s->q_head+s->q_len)%QUEUE_CAP]=v; s->q_len++; } else { if(s->p_len>=PORT_CAP)sp_overflow(); s->port_last=v; s->port[s->p_len++]=v; } }
 static int64_t sp_pop(SpecialStorage *s, size_t sel) { if (sel==21) { if (!s->q_len) return s->big_mode ? 1 : 0; int64_t v=s->queue[s->q_head]; s->q_head=(s->q_head+1)%QUEUE_CAP; s->q_len--; return v; } if (!s->p_len) return s->big_mode ? 1 : 0; return s->port[--s->p_len]; }
 static size_t sp_depth(SpecialStorage *s, size_t sel) { return sel==21 ? s->q_len : s->p_len; }
-static void sp_dup(SpecialStorage *s, size_t sel) { if (sel==21) { if (s->q_len) { int64_t v=s->queue[s->q_head]; s->q_head=(s->q_head+QUEUE_CAP-1)%QUEUE_CAP; s->queue[s->q_head]=v; s->q_len++; } } else s->port[s->p_len++]=s->port_last; }
+static void sp_dup(SpecialStorage *s, size_t sel) { if (sel==21) { if (s->q_len) { if(s->q_len>=QUEUE_CAP)sp_overflow(); int64_t v=s->queue[s->q_head]; s->q_head=(s->q_head+QUEUE_CAP-1)%QUEUE_CAP; s->queue[s->q_head]=v; s->q_len++; } } else { if(s->p_len>=PORT_CAP)sp_overflow(); s->port[s->p_len++]=s->port_last; } }
 static void sp_swap(SpecialStorage *s, size_t sel) { if (sel==21 && s->q_len>=2) { size_t a=s->q_head,b=(a+1)%QUEUE_CAP; int64_t t=s->queue[a];s->queue[a]=s->queue[b];s->queue[b]=t; } else if (sel==27 && s->p_len>=2) { int64_t t=s->port[s->p_len-1];s->port[s->p_len-1]=s->port[s->p_len-2];s->port[s->p_len-2]=t; } }
 static void sp_scan_to_zero(SpecialStorage *s) { int64_t z=s->big_mode?1:0; for(size_t i=0;i<s->q_len;i++){size_t k=(s->q_head+i)%QUEUE_CAP;if(s->queue[k]==z){s->q_head=(s->q_head+i+1)%QUEUE_CAP;return;}} }
 static void sp_promote(SpecialStorage *s) { for(size_t i=0;i<s->q_len;i++){size_t k=(s->q_head+i)%QUEUE_CAP;s->queue[k]=promote_val(s->queue[k]);} for(size_t i=0;i<s->p_len;i++)s->port[i]=promote_val(s->port[i]); s->port_last=promote_val(s->port_last);s->big_mode=1; }
@@ -121,5 +123,5 @@ static void _emit_u8(uint8_t c){_emit((char)c);}
 static void write_i64(int64_t n){uint64_t u;if(n<0){_emit('-');u=(uint64_t)(-(n+1))+1;}else u=n;char b[20];int i=20;do{b[--i]='0'+u%10;u/=10;}while(u);while(i<20)_emit(b[i++]);}
 static void write_num(int64_t v,int bm){if(!bm){write_i64(v);return;}if(v&1){write_i64(v>>1);return;}cbig_write_num(v,_emit_u8);}
 static void write_char(int64_t v,int bm){uint32_t c=(uint32_t)int_to_i64(v,bm);if(c<=0x7f)_emit((char)c);else if(c<=0x7ff){_emit(0xc0|(c>>6));_emit(0x80|(c&63));}else if(c<=0xffff){_emit(0xe0|(c>>12));_emit(0x80|((c>>6)&63));_emit(0x80|(c&63));}else if(c<=0x10ffff){_emit(0xf0|(c>>18));_emit(0x80|((c>>12)&63));_emit(0x80|((c>>6)&63));_emit(0x80|(c&63));}}
-static int64_t read_num(int bm){char b[64];if(!fgets(b,sizeof(b),stdin))return int_lit(0,bm);return int_lit((int64_t)atoll(b),bm);}
+static int64_t read_num(int bm){char b[64],*end;long long v;if(!fgets(b,sizeof(b),stdin))return int_lit(0,bm);errno=0;v=strtoll(b,&end,10);if(errno==ERANGE||end==b)return int_lit(0,bm);return bm?promote_val((int64_t)v):(int64_t)v;}
 static int64_t read_char_(int bm){int b=getchar();if(b==EOF)return int_lit(-1,bm);if(b<0x80)return int_lit(b,bm);int n;int32_t v;if((b>>5)==6){n=1;v=b&31;}else if((b>>4)==14){n=2;v=b&15;}else if((b>>3)==30){n=3;v=b&7;}else return int_lit(-1,bm);while(n--){int c=getchar();if(c==EOF)return int_lit(-1,bm);v=(v<<6)|(c&63);}return int_lit(v,bm);}

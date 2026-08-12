@@ -9,6 +9,11 @@ use crate::compiler::Program;
 use crate::consts::*;
 
 /// Linearize a CFG into a flat Program.
+///
+/// Every [`Inst::Push`] operand must fit in `i32`. In practice this means the
+/// CFG must either be unfolded or have been folded with
+/// [`crate::cfg_optimize::ConstWidth::I32`]; the wider AOT CFG is not a valid
+/// input to this representation.
 pub fn linearize(cfg: &Cfg) -> Program {
     let order = compute_layout(cfg);
     let mut block_pc: HashMap<BlockId, usize> = HashMap::new();

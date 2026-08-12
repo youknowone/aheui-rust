@@ -12,8 +12,16 @@ use std::time::Instant;
 static PROJ: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn compile_and_run_bigint(source: &str, stdin_data: &str) -> (String, i32, f64, f64) {
+    compile_and_run_bigint_with_opt(source, stdin_data, ahsembler::OptimizationLevel::O3)
+}
+
+fn compile_and_run_bigint_with_opt(
+    source: &str,
+    stdin_data: &str,
+    opt: ahsembler::OptimizationLevel,
+) -> (String, i32, f64, f64) {
     let _guard = PROJ.lock().unwrap_or_else(|e| e.into_inner());
-    let rs = compaheuiler::compile_to_rs_bigint(source);
+    let rs = compaheuiler::compile_to_rs_bigint_opt(source, opt);
 
     // Create temp cargo project
     let dir = "/tmp/aheui_bigint_proj";
@@ -80,6 +88,39 @@ opt-level = 2
         compile_ms,
         run_ms,
     )
+}
+
+#[test]
+fn test_special_storage_promotion_updates_live_registers() {
+    // Keep 7 and 8 in storage 0's generated locals, overflow 2^32 * 2^32 on
+    // the queue, then consume those locals after the representation changes.
+    let source = "밝밣상박빠따빠따빠따빠따빠따빠따사다망하";
+    let (out, exit, _, _) =
+        compile_and_run_bigint_with_opt(source, "", ahsembler::OptimizationLevel::O0);
+    assert_eq!(out, "15");
+    assert_eq!(exit, 0);
+}
+
+#[test]
+fn test_halt_reads_special_storage() {
+    let (out, exit, _, _) =
+        compile_and_run_bigint_with_opt("상밝하", "", ahsembler::OptimizationLevel::O0);
+    assert_eq!(out, "");
+    assert_eq!(exit, 7);
+}
+
+#[test]
+fn test_read_num_boxes_large_i64_after_promotion() {
+    // Promote with 2^64, discard that value, then read an i64 which is outside
+    // the tagged immediate range. It must be boxed rather than shifted.
+    let source = "반빠따빠따빠따빠따빠따빠따마방망하";
+    let (out, exit, _, _) = compile_and_run_bigint_with_opt(
+        source,
+        "5000000000000000000\n",
+        ahsembler::OptimizationLevel::O0,
+    );
+    assert_eq!(out, "5000000000000000000");
+    assert_eq!(exit, 0);
 }
 
 #[test]

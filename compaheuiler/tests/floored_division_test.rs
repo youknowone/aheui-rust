@@ -258,6 +258,46 @@ WebAssembly.instantiate(fs.readFileSync(process.argv[2]), {env: {
     }
 }
 
+#[test]
+fn wat_wasi_reuses_buffered_input_across_number_reads() {
+    let scratch = common::scratch_dir("floor_wat_wasi");
+    let wasm_path = scratch.path().join("div.wasm");
+    let wasm = wat::parse_str(compaheuiler::compile_to_wat_wasi(DIV_TWO_INPUTS)).unwrap();
+    std::fs::write(&wasm_path, wasm).unwrap();
+    let runner = scratch.path().join("run.js");
+    std::fs::write(
+        &runner,
+        r#"const fs = require('fs');
+const { WASI } = require('wasi');
+const wasi = new WASI({ version: 'preview1' });
+WebAssembly.instantiate(fs.readFileSync(process.argv[2]), {
+  wasi_snapshot_preview1: wasi.wasiImport,
+}).then(({ instance }) => wasi.start(instance)).catch(error => {
+  console.error(error);
+  process.exit(1);
+});
+"#,
+    )
+    .unwrap();
+
+    let mut child = Command::new("node")
+        .arg(&runner)
+        .arg(&wasm_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"7\t-2\r\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "Node WASI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "-4");
+}
+
 #[cfg(feature = "cranelift")]
 mod cranelift {
     use super::*;
@@ -267,16 +307,28 @@ mod cranelift {
 
     static INPUT: Mutex<VecDeque<i64>> = Mutex::new(VecDeque::new());
     static OUTPUT: Mutex<String> = Mutex::new(String::new());
+    static RUN_LOCK: Mutex<()> = Mutex::new(());
 
-    extern "C" fn write_char(_: i64) {}
+    extern "C" fn write_char(value: i64) {
+        if let Some(ch) = char::from_u32(value as u32) {
+            OUTPUT.lock().unwrap_or_else(|e| e.into_inner()).push(ch);
+        }
+    }
     extern "C" fn write_num(value: i64) {
-        OUTPUT.lock().unwrap().push_str(&value.to_string());
+        OUTPUT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_str(&value.to_string());
     }
     extern "C" fn read_char() -> i64 {
         -1
     }
     extern "C" fn read_num() -> i64 {
-        INPUT.lock().unwrap().pop_front().unwrap_or(0)
+        INPUT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
+            .unwrap_or(0)
     }
 
     fn compile(program: &str) -> JitFunction {
@@ -285,11 +337,12 @@ mod cranelift {
     }
 
     fn run(jit: &JitFunction, input: &str) -> String {
-        *INPUT.lock().unwrap() = input
+        let _run = RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        *INPUT.lock().unwrap_or_else(|e| e.into_inner()) = input
             .split_whitespace()
             .map(|s| s.parse().unwrap())
             .collect();
-        OUTPUT.lock().unwrap().clear();
+        OUTPUT.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let mut data: Vec<Vec<i64>> = (0..28).map(|_| vec![0; 65536]).collect();
         let mut bases = [std::ptr::null_mut(); 28];
         for (base, storage) in bases.iter_mut().zip(&mut data) {
@@ -313,7 +366,7 @@ mod cranelift {
                 compaheuiler::jit::sp_swap,
             );
         }
-        OUTPUT.lock().unwrap().clone()
+        OUTPUT.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     #[test]
@@ -323,6 +376,10 @@ mod cranelift {
         let wide_div = compile(DIV_THREE_INPUTS);
         let wide_rem = compile(MOD_THREE_INPUTS);
         for case in CASES {
+            #[cfg(not(feature = "bigint"))]
+            if case.wide_input.is_some() {
+                continue;
+            }
             let (input, div_jit, rem_jit) = match case.wide_input {
                 Some(input) => (input, &wide_div, &wide_rem),
                 None => (case.input, &div, &rem),
@@ -330,5 +387,39 @@ mod cranelift {
             assert_eq!(run(div_jit, input), case.div, "cranelift div {input:?}");
             assert_eq!(run(rem_jit, input), case.rem, "cranelift rem {input:?}");
         }
+    }
+
+    #[cfg(feature = "bigint")]
+    #[test]
+    fn cranelift_promotes_overflowing_min_division() {
+        let div = compile(DIV_TWO_INPUTS);
+        let rem = compile(MOD_TWO_INPUTS);
+        assert_eq!(
+            run(&div, "-9223372036854775808\n-1\n"),
+            "9223372036854775808"
+        );
+        assert_eq!(run(&rem, "-9223372036854775808\n-1\n"), "0");
+    }
+
+    #[cfg(feature = "bigint")]
+    #[test]
+    fn cranelift_boxes_folded_literals_after_promotion() {
+        let mut source = String::from("방방나박");
+        for _ in 0..61 {
+            source.push_str("박따");
+        }
+        source.push_str("망하");
+
+        let cfg = compaheuiler::pipeline::optimize(&source, ahsembler::OptimizationLevel::O3);
+        assert!(cfg.blocks.iter().any(|block| {
+            block
+                .instructions
+                .contains(&ahsembler::cfg::Inst::Push(1_i64 << 62))
+        }));
+        let program = compaheuiler::jit::compile_cfg(&cfg).unwrap();
+        assert_eq!(
+            run(&program, "-9223372036854775808\n-1\n"),
+            "4611686018427387904"
+        );
     }
 }

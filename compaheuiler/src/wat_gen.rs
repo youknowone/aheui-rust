@@ -15,6 +15,8 @@ const IO_BUF: i32 = 0x0000; // 256 bytes I/O buffer
 const IOVEC: i32 = 0x0100; // 8 bytes: ptr(i32) + len(i32)
 const NWRITTEN: i32 = 0x0108; // 4 bytes: nwritten result
 const DIGIT_SCRATCH: i32 = 0x0110; // 24 bytes: digit conversion scratch area
+const INPUT_BUFFER: i32 = 0x0180; // 128 bytes: persistent WASI stdin buffer
+const INPUT_BUFFER_CAPACITY: i32 = 128;
 const TOPS: i32 = 0x0200; // 28 * 4 = 112 bytes: tops array
 const Q_HEAD: i32 = 0x0300; // 4 bytes
 const Q_LEN: i32 = 0x0304; // 4 bytes
@@ -122,8 +124,8 @@ fn generate_wat_dispatch(cfg: &Cfg, wasi: bool) -> String {
         out.push_str("  (import \"env\" \"read_byte\" (func $read_byte_import (result i32)))\n\n");
     }
 
-    // Memory: 224 pages = ~14.6MB
-    out.push_str("  (memory (export \"memory\") 224)\n\n");
+    // Memory: 225 pages, enough for all 28 fixed storage regions.
+    out.push_str("  (memory (export \"memory\") 225)\n\n");
 
     // Helper functions
     emit_helpers(&mut out, has_queue, has_port, has_io, wasi);
@@ -675,9 +677,13 @@ fn emit_terminator(
 /// Push a value onto storage `s`.
 fn emit_stack_push(out: &mut String, ind: &str, s: usize, val_expr: &str) {
     let toff = tops_offset(s);
+    let limit = storage_base(s) + STORAGE_SIZE;
     // addr = tops[s]; store val at addr; tops[s] += 8
     out.push_str(&format!(
         "{ind}(local.set $addr (i32.load (i32.const {toff})))\n"
+    ));
+    out.push_str(&format!(
+        "{ind}(if (i32.ge_u (local.get $addr) (i32.const {limit})) (then (unreachable)))\n"
     ));
     out.push_str(&format!("{ind}(i64.store (local.get $addr) {val_expr})\n"));
     out.push_str(&format!(
@@ -690,6 +696,9 @@ fn emit_stack_push_dyn(out: &mut String, ind: &str, val_expr: &str) {
     // addr = tops[sel]; store val; tops[sel] += 8
     out.push_str(&format!(
         "{ind}(local.set $addr (call $tops_get_dyn (local.get $sel)))\n"
+    ));
+    out.push_str(&format!(
+        "{ind}(if (i32.ge_u (local.get $addr) (i32.add (i32.const {STORAGE_BASE}) (i32.mul (i32.add (local.get $sel) (i32.const 1)) (i32.const {STORAGE_SIZE})))) (then (unreachable)))\n"
     ));
     out.push_str(&format!("{ind}(i64.store (local.get $addr) {val_expr})\n"));
     out.push_str(&format!(
@@ -744,12 +753,16 @@ fn emit_stack_pop_dyn_to_v0(out: &mut String, ind: &str) {
 /// Dup on storage `s`.
 fn emit_stack_dup(out: &mut String, ind: &str, s: usize) {
     let toff = tops_offset(s);
+    let limit = storage_base(s) + STORAGE_SIZE;
     // v0 = load(tops[s] - 8); store v0 at tops[s]; tops[s] += 8
     out.push_str(&format!(
         "{ind}(local.set $v0 (i64.load (i32.sub (i32.load (i32.const {toff})) (i32.const 8))))\n"
     ));
     out.push_str(&format!(
         "{ind}(local.set $addr (i32.load (i32.const {toff})))\n"
+    ));
+    out.push_str(&format!(
+        "{ind}(if (i32.ge_u (local.get $addr) (i32.const {limit})) (then (unreachable)))\n"
     ));
     out.push_str(&format!(
         "{ind}(i64.store (local.get $addr) (local.get $v0))\n"
@@ -763,6 +776,9 @@ fn emit_stack_dup(out: &mut String, ind: &str, s: usize) {
 fn emit_stack_dup_dyn(out: &mut String, ind: &str) {
     out.push_str(&format!(
         "{ind}(local.set $addr (call $tops_get_dyn (local.get $sel)))\n"
+    ));
+    out.push_str(&format!(
+        "{ind}(if (i32.ge_u (local.get $addr) (i32.add (i32.const {STORAGE_BASE}) (i32.mul (i32.add (local.get $sel) (i32.const 1)) (i32.const {STORAGE_SIZE})))) (then (unreachable)))\n"
     ));
     out.push_str(&format!(
         "{ind}(local.set $v0 (i64.load (i32.sub (local.get $addr) (i32.const 8))))\n"
@@ -985,6 +1001,8 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
     (local $idx i32)
     (if (i32.eq (local.get $s) (i32.const {QUEUE}))
       (then
+        (if (i32.ge_u (i32.load (i32.const {Q_LEN})) (i32.const {QUEUE_CAP}))
+          (then (unreachable)))
         ;; queue[(q_head + q_len) % CAP] = v; q_len++
         (local.set $idx
           (i32.rem_u
@@ -999,6 +1017,8 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
         (i32.store (i32.const {Q_LEN}) (i32.add (i32.load (i32.const {Q_LEN})) (i32.const 1)))
       )
       (else
+        (if (i32.ge_u (i32.load (i32.const {P_LEN})) (i32.const {QUEUE_CAP}))
+          (then (unreachable)))
         ;; port[p_len++] = v; port_last = v
         (i64.store
           (i32.add (i32.const {STORAGE_BASE_P}) (i32.mul (i32.load (i32.const {P_LEN})) (i32.const 8)))
@@ -1057,6 +1077,8 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
     (if (i32.eq (local.get $s) (i32.const {QUEUE}))
       (then
         (if (i32.eqz (i32.load (i32.const {Q_LEN}))) (then (return)))
+        (if (i32.ge_u (i32.load (i32.const {Q_LEN})) (i32.const {QUEUE_CAP}))
+          (then (unreachable)))
         ;; peek front
         (local.set $v
           (i64.load (i32.add (i32.const {STORAGE_BASE_Q}) (i32.mul (i32.load (i32.const {Q_HEAD})) (i32.const 8))))
@@ -1075,6 +1097,8 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
         (i32.store (i32.const {Q_LEN}) (i32.add (i32.load (i32.const {Q_LEN})) (i32.const 1)))
       )
       (else
+        (if (i32.ge_u (i32.load (i32.const {P_LEN})) (i32.const {QUEUE_CAP}))
+          (then (unreachable)))
         ;; port: push port_last
         (i64.store
           (i32.add (i32.const {STORAGE_BASE_P}) (i32.mul (i32.load (i32.const {P_LEN})) (i32.const 8)))
@@ -1116,15 +1140,15 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
         ));
     } else {
         // Stubs for when special storages are unused but still called dynamically
-        out.push_str(&format!(
+        out.push_str(
             r#"  (func $sp_push (param $s i32) (param $v i64))
   (func $sp_pop (param $s i32) (result i64) (i64.const 0))
   (func $sp_depth (param $s i32) (result i32) (i32.const 0))
   (func $sp_dup (param $s i32))
   (func $sp_swap (param $s i32))
 
-"#
-        ));
+"#,
+        );
     }
 
     // --- I/O: output ---
@@ -1133,11 +1157,23 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
             r#"  (global $out_pos (mut i32) (i32.const 0))
 
   (func $flush_out
+    (local $off i32) (local $rc i32)
     (if (i32.gt_s (global.get $out_pos) (i32.const 0))
       (then
-        (i32.store (i32.const {IOVEC}) (i32.const {IO_BUF}))
-        (i32.store (i32.const {IOVEC_LEN}) (global.get $out_pos))
-        (drop (call $fd_write (i32.const 1) (i32.const {IOVEC}) (i32.const 1) (i32.const {NWRITTEN})))
+        (block $write_done
+          (loop $write_again
+            (br_if $write_done (i32.ge_u (local.get $off) (global.get $out_pos)))
+            (i32.store (i32.const {IOVEC}) (i32.add (i32.const {IO_BUF}) (local.get $off)))
+            (i32.store (i32.const {IOVEC_LEN}) (i32.sub (global.get $out_pos) (local.get $off)))
+            (local.set $rc (call $fd_write (i32.const 1) (i32.const {IOVEC}) (i32.const 1) (i32.const {NWRITTEN})))
+            (if (i32.ne (local.get $rc) (i32.const 0))
+              (then (call $proc_exit (i32.const 1)) (unreachable)))
+            (if (i32.eqz (i32.load (i32.const {NWRITTEN})))
+              (then (call $proc_exit (i32.const 1)) (unreachable)))
+            (local.set $off (i32.add (local.get $off) (i32.load (i32.const {NWRITTEN}))))
+            (br $write_again)
+          )
+        )
         (global.set $out_pos (i32.const 0))
       )
     )
@@ -1244,42 +1280,61 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
     );
 
     // --- read_num / read_char ---
+    out.push_str(
+        r#"  (func $is_space (param $b i32) (result i32)
+    (i32.or
+      (i32.eq (local.get $b) (i32.const 32))
+      (i32.and
+        (i32.ge_u (local.get $b) (i32.const 9))
+        (i32.le_u (local.get $b) (i32.const 13))))
+  )
+
+"#,
+    );
     if wasi {
         out.push_str(&format!(
-            r#"  (func $read_num (result i64)
-    (local $nread i32) (local $pos i32) (local $b i32)
-    (local $result i64) (local $neg i32)
-    (i32.store (i32.const {IOVEC}) (i32.const {IO_BUF}))
-    (i32.store (i32.const {IOVEC_LEN}) (i32.const 64))
-    (drop (call $fd_read (i32.const 0) (i32.const {IOVEC}) (i32.const 1) (i32.const {NWRITTEN})))
-    (local.set $nread (i32.load (i32.const {NWRITTEN})))
-    (if (i32.eqz (local.get $nread)) (then (return (i64.const 0))))
+            r#"  (global $in_pos (mut i32) (i32.const 0))
+  (global $in_len (mut i32) (i32.const 0))
+
+  (func $read_byte_wasi (result i32)
+    (local $b i32) (local $rc i32)
+    (if (i32.ge_u (global.get $in_pos) (global.get $in_len))
+      (then
+        (i32.store (i32.const {IOVEC}) (i32.const {INPUT_BUFFER}))
+        (i32.store (i32.const {IOVEC_LEN}) (i32.const {INPUT_BUFFER_CAPACITY}))
+        (local.set $rc (call $fd_read (i32.const 0) (i32.const {IOVEC}) (i32.const 1) (i32.const {NWRITTEN})))
+        (if (i32.ne (local.get $rc) (i32.const 0)) (then (return (i32.const -1))))
+        (global.set $in_len (i32.load (i32.const {NWRITTEN})))
+        (global.set $in_pos (i32.const 0))
+        (if (i32.eqz (global.get $in_len)) (then (return (i32.const -1))))
+      )
+    )
+    (local.set $b (i32.load8_u (i32.add (i32.const {INPUT_BUFFER}) (global.get $in_pos))))
+    (global.set $in_pos (i32.add (global.get $in_pos) (i32.const 1)))
+    (local.get $b)
+  )
+
+  (func $read_num (result i64)
+    (local $b i32) (local $result i64) (local $neg i32)
     (block $ws_done (loop $ws_loop
-      (br_if $ws_done (i32.ge_u (local.get $pos) (local.get $nread)))
-      (local.set $b (i32.load8_u (i32.add (i32.const {IO_BUF}) (local.get $pos))))
-      (br_if $ws_done (i32.and (i32.ne (local.get $b) (i32.const 32)) (i32.ne (local.get $b) (i32.const 10))))
-      (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+      (local.set $b (call $read_byte_wasi))
+      (if (i32.lt_s (local.get $b) (i32.const 0)) (then (return (i64.const 0))))
+      (br_if $ws_done (i32.eqz (call $is_space (local.get $b))))
       (br $ws_loop)))
-    (if (i32.lt_u (local.get $pos) (local.get $nread))
-      (then (if (i32.eq (i32.load8_u (i32.add (i32.const {IO_BUF}) (local.get $pos))) (i32.const 45))
-        (then (local.set $neg (i32.const 1)) (local.set $pos (i32.add (local.get $pos) (i32.const 1)))))))
+    (if (i32.eq (local.get $b) (i32.const 45))
+      (then (local.set $neg (i32.const 1)) (local.set $b (call $read_byte_wasi))))
     (block $pd (loop $pl
-      (br_if $pd (i32.ge_u (local.get $pos) (local.get $nread)))
-      (local.set $b (i32.load8_u (i32.add (i32.const {IO_BUF}) (local.get $pos))))
       (br_if $pd (i32.or (i32.lt_u (local.get $b) (i32.const 48)) (i32.gt_u (local.get $b) (i32.const 57))))
       (local.set $result (i64.add (i64.mul (local.get $result) (i64.const 10)) (i64.extend_i32_u (i32.sub (local.get $b) (i32.const 48)))))
-      (local.set $pos (i32.add (local.get $pos) (i32.const 1)))
+      (local.set $b (call $read_byte_wasi))
       (br $pl)))
     (if (result i64) (local.get $neg) (then (i64.sub (i64.const 0) (local.get $result))) (else (local.get $result)))
   )
 
   (func $read_char (result i64)
     (local $b i32) (local $n i32) (local $val i32) (local $i i32)
-    (i32.store (i32.const {IOVEC}) (i32.const {IO_BUF}))
-    (i32.store (i32.const {IOVEC_LEN}) (i32.const 1))
-    (drop (call $fd_read (i32.const 0) (i32.const {IOVEC}) (i32.const 1) (i32.const {NWRITTEN})))
-    (if (i32.eqz (i32.load (i32.const {NWRITTEN}))) (then (return (i64.const -1))))
-    (local.set $b (i32.load8_u (i32.const {IO_BUF})))
+    (local.set $b (call $read_byte_wasi))
+    (if (i32.lt_s (local.get $b) (i32.const 0)) (then (return (i64.const -1))))
     (if (i32.lt_u (local.get $b) (i32.const 0x80)) (then (return (i64.extend_i32_u (local.get $b)))))
     (if (i32.eq (i32.shr_u (local.get $b) (i32.const 5)) (i32.const 6))
       (then (local.set $n (i32.const 1)) (local.set $val (i32.and (local.get $b) (i32.const 0x1F))))
@@ -1290,11 +1345,9 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
           (else (return (i64.const -1))))))))
     (block $cd (loop $cl
       (br_if $cd (i32.ge_u (local.get $i) (local.get $n)))
-      (i32.store (i32.const {IOVEC}) (i32.const {IO_BUF}))
-      (i32.store (i32.const {IOVEC_LEN}) (i32.const 1))
-      (drop (call $fd_read (i32.const 0) (i32.const {IOVEC}) (i32.const 1) (i32.const {NWRITTEN})))
-      (if (i32.eqz (i32.load (i32.const {NWRITTEN}))) (then (return (i64.const -1))))
-      (local.set $val (i32.or (i32.shl (local.get $val) (i32.const 6)) (i32.and (i32.load8_u (i32.const {IO_BUF})) (i32.const 0x3F))))
+      (local.set $b (call $read_byte_wasi))
+      (if (i32.lt_s (local.get $b) (i32.const 0)) (then (return (i64.const -1))))
+      (local.set $val (i32.or (i32.shl (local.get $val) (i32.const 6)) (i32.and (local.get $b) (i32.const 0x3F))))
       (local.set $i (i32.add (local.get $i) (i32.const 1)))
       (br $cl)))
     (i64.extend_i32_u (local.get $val))
@@ -1312,7 +1365,7 @@ fn emit_helpers(out: &mut String, has_queue: bool, has_port: bool, _has_io: bool
     (block $ws_done (loop $ws_loop
       (local.set $b (call $read_byte_import))
       (br_if $ws_done (i32.lt_s (local.get $b) (i32.const 0)))
-      (br_if $ws_done (i32.and (i32.ne (local.get $b) (i32.const 32)) (i32.ne (local.get $b) (i32.const 10)) ))
+      (br_if $ws_done (i32.eqz (call $is_space (local.get $b))))
       (br $ws_loop)))
     (if (i32.lt_s (local.get $b) (i32.const 0)) (then (return (i64.const 0))))
     (if (i32.eq (local.get $b) (i32.const 45))
