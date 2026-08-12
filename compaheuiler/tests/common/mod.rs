@@ -1,7 +1,7 @@
 //! Fixture-path resolution shared by the integration tests.
 //!
 //! The corpus is `github.com/aheui/snippets`. Resolution matches `check.sh`:
-//! `$AHEUI_SNIPPETS` first, then this repo's tracked `tests -> snippets` link,
+//! `$AHEUI_SNIPPETS` first, then this repo's pinned `snippets` submodule,
 //! then a sibling `rpaheui/snippets` checkout. The latter is whatever that
 //! machine last pulled, so it is not interchangeable with a pinned checkout.
 //!
@@ -126,11 +126,11 @@ pub fn snippets_dir() -> &'static Path {
         if let Some(p) = std::env::var_os("AHEUI_SNIPPETS") {
             return PathBuf::from(p);
         }
-        // The tracked `tests -> snippets` link, found by walking up so this
-        // works from any crate. `is_dir` also rejects an uninitialized target.
+        // The pinned submodule, found by walking up so this works from any
+        // crate. `is_dir` also rejects an uninitialized submodule.
         let mut dir = Some(Path::new(env!("CARGO_MANIFEST_DIR")));
         while let Some(d) = dir {
-            let candidate = d.join("tests");
+            let candidate = d.join("snippets");
             if candidate.is_dir() {
                 return candidate;
             }

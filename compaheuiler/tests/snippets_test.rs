@@ -95,7 +95,6 @@ fn test_standard_snippets() {
         "standard/hieut-pop",
         "standard/ieunghieut",
         "standard/jieut",
-        // "standard/loop", // exit code mismatch — skip for now
         "standard/mieum",
         "standard/nieun",
         "standard/pieup",

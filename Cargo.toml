@@ -4,19 +4,24 @@ version = "0.0.1"
 edition = "2024"
 
 [workspace]
-members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler"]
+members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler", "aheui-wasm"]
 
 [features]
 default = ["jit", "malachite-bigint"]
 naive = ["dep:aheuinterpreter"]
 jit = ["dep:aheui-jit"]
-num-bigint = ["aheuinterpreter?/num-bigint", "aheui-jit?/num-bigint"]
-malachite-bigint = ["aheuinterpreter?/malachite-bigint", "aheui-jit?/malachite-bigint"]
+# `build --codegen cranelift`, compaheuiler's AOT backend. Separate from the JIT
+# selector above — they share a name and nothing else, and enabling `cranelift`
+# to reach this one would drag the JIT onto a second backend.
+aot-cranelift = ["compaheuiler/cranelift"]
+num-bigint = ["aheuinterpreter?/num-bigint", "aheui-jit?/num-bigint", "compaheuiler/num-bigint"]
+malachite-bigint = ["aheuinterpreter?/malachite-bigint", "aheui-jit?/malachite-bigint", "compaheuiler/malachite-bigint"]
 
 [dependencies]
 aheuinterpreter = { path = "aheuinterpreter", optional = true }
 aheui-jit = { path = "aheui-jit", optional = true }
 ahsembler = { path = "ahsembler" }
+compaheuiler = { path = "compaheuiler", default-features = false }
 clap = { version = "4.5.32", features = ["derive"] }
 
 [profile.release]

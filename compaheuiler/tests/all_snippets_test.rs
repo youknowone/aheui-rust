@@ -20,7 +20,7 @@ fn compile_and_run(source: &str, stdin_data: &[u8]) -> (String, i32) {
     };
     let rs_path = "/tmp/aheui_allsnip.rs";
     let bin_path = "/tmp/aheui_allsnip";
-    // Save for debugging
+    // Preserve the generated source for failure diagnosis.
     std::fs::write("/tmp/aheui_allsnip_debug.rs", &rs_code).ok();
     std::fs::write(rs_path, &rs_code).unwrap();
     let status = Command::new("rustc")
@@ -192,7 +192,7 @@ fn test_snippet(
     let expected_exit: Option<i32> =
         exitcode_path.and_then(|p| std::fs::read_to_string(p).ok()?.trim().parse().ok());
 
-    // Save generated code for debugging
+    // Preserve each generated source under a stable snippet-specific name.
     if let Ok(rs) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         compaheuiler::compile_to_rs(&source)
     })) {

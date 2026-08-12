@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>아희 웹 — Aheui in the browser</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --fg: #d4d4d4;
+    --accent: #4ec9b0;
+    --muted: #858585;
+    --panel: #252526;
+    --border: #3c3c3c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+  header h1 { margin: 0; font-size: 18px; color: var(--accent); }
+  header .sub { color: var(--muted); font-size: 13px; }
+  header a { color: var(--muted); text-decoration: none; font-size: 12px; margin-left: auto; }
+  header a:hover { color: var(--accent); }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr auto;
+    gap: 12px;
+    padding: 12px 20px;
+    flex: 1;
+    min-height: 0;
+  }
+  main > .stdin-panel { grid-column: 1 / 2; grid-row: 2; }
+  main > .output-panel { grid-column: 2 / 3; grid-row: 1 / 3; }
+  .panel {
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    min-height: 0;
+  }
+  .stdin-panel { max-height: 140px; }
+  .panel-header {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .panel-header select, .panel-header button {
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 4px 10px;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .panel-header button:hover:not(:disabled) { border-color: var(--accent); }
+  .panel-header button:disabled { opacity: 0.5; cursor: wait; }
+  .panel-header button.primary {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .panel-header .spacer { flex: 1; }
+  textarea, pre {
+    flex: 1;
+    margin: 0;
+    padding: 10px 12px;
+    border: 0;
+    background: var(--panel);
+    color: var(--fg);
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: none;
+    outline: none;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    min-height: 0;
+  }
+  #stdin { font-size: 12px; }
+  #status {
+    padding: 6px 20px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    font-family: "SF Mono", Menlo, monospace;
+    flex-shrink: 0;
+  }
+  #status.error { color: #f48771; }
+  #status.ok { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>아희 웹</h1>
+  <span class="sub">Aheui → WAT → wasm → 브라우저 실행</span>
+  <a href="https://github.com/youknowone/aheui-rust" target="_blank">github.com/youknowone/aheui-rust</a>
+</header>
+<main>
+  <section class="panel" style="grid-column: 1; grid-row: 1;">
+    <div class="panel-header">
+      <span>소스</span>
+      <select id="sample">
+        <option value="">예제 고르기…</option>
+        <option value="snippets/hello-world/hello.puzzlet.aheui">hello — 안녕하세요?</option>
+        <option value="snippets/hello-world/hello-world.puzzlet.aheui">hello-world — Hello, world!</option>
+        <option value="snippets/factorial/factorial.aheui">factorial — 입력 필요 (예: 5)</option>
+        <option value="snippets/fibonacci/fibonacci.codroc.aheui">fibonacci — 피보나치 수열</option>
+        <option value="snippets/99bottles/99bottles.aheui">99 bottles</option>
+        <option value="snippets/logo/logo.aheui">logo — PGM 이미지 (느림)</option>
+      </select>
+      <div class="spacer"></div>
+      <button id="share" title="현재 소스/입력을 URL 해시로 인코딩한 링크를 클립보드에 복사">링크 복사</button>
+      <button id="run-interp">인터프리터</button>
+      <button id="run-wasm" class="primary" title="Ctrl/Cmd+Enter">WAT → wasm 실행</button>
+    </div>
+    <textarea id="source" spellcheck="false" placeholder="아희 소스를 입력하거나 예제를 고르세요 (Ctrl/Cmd+Enter 로 실행)"></textarea>
+  </section>
+  <section class="panel stdin-panel">
+    <div class="panel-header">
+      <span>stdin (입력)</span>
+      <span class="spacer"></span>
+      <span style="font-size: 11px;">프로그램이 숫자/문자를 읽을 때 여기서 소비됩니다</span>
+    </div>
+    <textarea id="stdin" spellcheck="false" placeholder="예: 5"></textarea>
+  </section>
+  <section class="panel output-panel">
+    <div class="panel-header">
+      <span id="out-label">출력</span>
+      <div class="spacer"></div>
+      <button id="download" title="현재 출력을 파일로 저장" disabled>다운로드</button>
+      <button id="show-wat">WAT</button>
+      <button id="show-asm">Asm</button>
+      <button id="show-c">C</button>
+      <button id="show-rust">Rust</button>
+      <button id="show-out" class="primary">출력</button>
+    </div>
+    <pre id="output"></pre>
+  </section>
+</main>
+<div id="status">초기화 중…</div>
+
+<script type="module">
+import init, {
+  interpret,
+  compile_to_wat_web,
+  compile_to_c,
+  compile_to_rust,
+  compile_to_asm,
+  compile_to_wasm_web,
+} from "../pkg/aheui_wasm.js";
+
+const $ = (id) => document.getElementById(id);
+const status = $("status");
+const output = $("output");
+const outLabel = $("out-label");
+
+function setStatus(msg, kind = "") {
+  status.textContent = msg;
+  status.className = kind;
+}
+
+async function loadSample(name) {
+  try {
+    setStatus(`${name} 로딩 중…`);
+    // The local demo is served from the repository root; GitHub Pages stages
+    // the same snippets tree beside index.html.
+    const candidates = [`../../${name}`, name];
+    let resp;
+    for (const url of candidates) {
+      resp = await fetch(url);
+      if (resp.ok) break;
+    }
+    if (!resp?.ok) throw new Error(`HTTP ${resp?.status ?? "network error"}`);
+    $("source").value = await resp.text();
+    setStatus(`${name} 로드 완료`, "ok");
+  } catch (e) {
+    setStatus(`샘플 로드 실패: ${e.message}`, "error");
+  }
+}
+
+$("sample").addEventListener("change", (e) => {
+  if (e.target.value) loadSample(e.target.value);
+});
+
+function disableAll(disabled) {
+  for (const id of ["run-interp", "run-wasm", "show-wat", "show-asm", "show-c", "show-rust", "share"]) {
+    $(id).disabled = disabled;
+  }
+}
+
+// 공유 링크는 #v=1&s=<base64url(utf8(source))>[&i=<base64url(utf8(stdin))>]
+// 형식으로 소스와 입력을 보존한다.
+// 해시는 서버로 전송되지 않으므로 호스팅 측 부담 없이 링크 공유 가능.
+
+function toBase64Url(text) {
+  const bytes = new TextEncoder().encode(text);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(s) {
+  const padded = s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4);
+  const bin = atob(padded);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+function loadFromHash() {
+  const hash = location.hash.replace(/^#/, "");
+  if (!hash) return false;
+  const params = new URLSearchParams(hash);
+  if (params.get("v") !== "1" || !params.get("s")) return false;
+  try {
+    $("source").value = fromBase64Url(params.get("s"));
+    if (params.get("i")) $("stdin").value = fromBase64Url(params.get("i"));
+    return true;
+  } catch (e) {
+    console.warn("해시 디코드 실패:", e);
+    return false;
+  }
+}
+
+async function shareLink() {
+  const src = $("source").value;
+  const stdin = $("stdin").value;
+  const params = new URLSearchParams();
+  params.set("v", "1");
+  params.set("s", toBase64Url(src));
+  if (stdin) params.set("i", toBase64Url(stdin));
+  const url = `${location.origin}${location.pathname}#${params}`;
+  try {
+    await navigator.clipboard.writeText(url);
+    setStatus(`링크 복사됨 (${url.length} chars)`, "ok");
+  } catch (e) {
+    // Clipboard API가 실패해도 주소창에서 링크를 복사할 수 있게 hash를 갱신한다.
+    location.hash = params.toString();
+    setStatus(`클립보드 접근 실패 — 주소창 URL 을 직접 복사하세요`, "error");
+  }
+}
+
+let currentDownloadExt = "txt";
+
+function triggerDownload(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function setDownload(ext) {
+  currentDownloadExt = ext;
+  $("download").disabled = !ext || !output.textContent;
+}
+
+async function runInterp() {
+  disableAll(true);
+  try {
+    setStatus("인터프리터 실행 중…");
+    const t0 = performance.now();
+    // 동기식 mainloop를 호출하기 전에 상태 메시지를 그릴 수 있도록 한 tick 양보한다.
+    await new Promise((r) => setTimeout(r, 0));
+    const result = interpret($("source").value, $("stdin").value);
+    const elapsed = (performance.now() - t0).toFixed(1);
+    output.textContent = result;
+    outLabel.textContent = "인터프리터 출력";
+    setDownload("txt");
+    setStatus(`인터프리터 완료 — ${elapsed}ms, ${result.length} chars`, "ok");
+  } catch (e) {
+    setStatus(`인터프리터 오류: ${e}`, "error");
+  } finally {
+    disableAll(false);
+  }
+}
+
+async function runWasm() {
+  disableAll(true);
+  try {
+    setStatus("소스 → WAT → wasm 컴파일 중…");
+    await new Promise((r) => setTimeout(r, 0));
+    const src = $("source").value;
+    const t0 = performance.now();
+    const bytes = compile_to_wasm_web(src);
+    const tCompile = (performance.now() - t0).toFixed(1);
+    setStatus(`wasm 인스턴스화 중 (${bytes.length} bytes)…`);
+    const module = await WebAssembly.compile(bytes);
+
+    // WebAssembly의 read_byte import가 소비하도록 stdin을 UTF-8 바이트로 인코딩한다.
+    const stdinBytes = Array.from(new TextEncoder().encode($("stdin").value));
+    let readIdx = 0;
+
+    // write_byte가 전달한 UTF-8 바이트열은 실행이 끝난 뒤 한 번에 디코딩한다.
+    const outBytes = [];
+    const imports = {
+      env: {
+        write_byte: (b) => {
+          outBytes.push(b & 0xff);
+        },
+        read_byte: () => {
+          if (readIdx < stdinBytes.length) return stdinBytes[readIdx++];
+          return -1;
+        },
+      },
+    };
+
+    const instance = await WebAssembly.instantiate(module, imports);
+    const t1 = performance.now();
+    const exit = instance.exports.run();
+    const tRun = (performance.now() - t1).toFixed(1);
+
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(outBytes));
+    output.textContent = text;
+    outLabel.textContent = "wasm 출력";
+    setDownload("txt");
+    setStatus(
+      `wasm 실행 완료 — 컴파일 ${tCompile}ms, 실행 ${tRun}ms, exit=${exit}, ${text.length} chars`,
+      "ok",
+    );
+  } catch (e) {
+    setStatus(`wasm 오류: ${e.message || e}`, "error");
+  } finally {
+    disableAll(false);
+  }
+}
+
+function showGenerated(kind, fn, label, ext) {
+  try {
+    output.textContent = fn($("source").value);
+    outLabel.textContent = label;
+    setDownload(ext);
+    setStatus(`${kind} 생성 완료`, "ok");
+  } catch (e) {
+    setStatus(`${kind} 오류: ${e}`, "error");
+  }
+}
+
+$("run-interp").addEventListener("click", runInterp);
+$("run-wasm").addEventListener("click", runWasm);
+$("share").addEventListener("click", shareLink);
+$("download").addEventListener("click", () => {
+  if (!output.textContent) return;
+  triggerDownload(`aheui-output.${currentDownloadExt}`, output.textContent);
+});
+$("show-wat").addEventListener("click", () =>
+  showGenerated("WAT", (s) => compile_to_wat_web(s), "WAT (wasm32-web)", "wat"),
+);
+$("show-asm").addEventListener("click", () =>
+  showGenerated("Asm", (s) => compile_to_asm(s, 3), "ahsembly -O3", "asm"),
+);
+$("show-c").addEventListener("click", () =>
+  showGenerated("C", (s) => compile_to_c(s), "C 소스", "c"),
+);
+$("show-rust").addEventListener("click", () =>
+  showGenerated("Rust", (s) => compile_to_rust(s, 3), "Rust 소스 -O3", "rs"),
+);
+$("show-out").addEventListener("click", () => {
+  outLabel.textContent = "출력";
+  output.textContent = "";
+  setDownload(null);
+});
+
+// Ctrl/Cmd+Enter는 현재 소스를 WebAssembly로 실행한다.
+function onKey(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    e.preventDefault();
+    if (!$("run-wasm").disabled) runWasm();
+  }
+}
+$("source").addEventListener("keydown", onKey);
+$("stdin").addEventListener("keydown", onKey);
+
+try {
+  await init();
+  if (!loadFromHash()) {
+    await loadSample("snippets/hello-world/hello.puzzlet.aheui");
+  }
+  setStatus("준비됨 — Ctrl/Cmd+Enter 로 실행, '링크 복사' 로 공유", "ok");
+} catch (e) {
+  setStatus(`초기화 실패: ${e}`, "error");
+}
+</script>
+</body>
+</html>

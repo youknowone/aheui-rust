@@ -1,0 +1,82 @@
+name: Deploy aheui-wasm demo to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "aheui-wasm/**"
+      - "aheui-runtime/**"
+      - "aheuinterpreter/**"
+      - "ahsembler/**"
+      - "compaheuiler/**"
+      - "snippets"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# 동시에 여러 배포가 도는 걸 방지하되, 진행 중 배포는 자연스럽게 끝나도록
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Rust (wasm32-unknown-unknown)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm-
+
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+
+      - name: Build aheui-wasm
+        run: ./aheui-wasm/build.sh
+
+      - name: Stage site
+        run: |
+          mkdir -p _site
+          cp -R aheui-wasm/web/. _site/
+          cp -R snippets _site/snippets
+          mkdir -p _site/pkg
+          cp aheui-wasm/pkg/aheui_wasm.js     _site/pkg/
+          cp aheui-wasm/pkg/aheui_wasm_bg.wasm _site/pkg/
+          ls -lR _site | head -60
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
