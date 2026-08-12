@@ -19,6 +19,8 @@ cranelift = ["aheui-jit?/cranelift"]
 aot-cranelift = ["compaheuiler/cranelift"]
 num-bigint = ["aheuinterpreter?/num-bigint", "aheui-jit?/num-bigint", "compaheuiler/num-bigint"]
 malachite-bigint = ["aheuinterpreter?/malachite-bigint", "aheui-jit?/malachite-bigint", "compaheuiler/malachite-bigint"]
+# compaheuiler is deliberately absent because its bigint features select AOT-generated arithmetic, not the interpreter runtime.
+runtime-rbigint = ["aheuinterpreter?/runtime-rbigint", "aheui-jit?/runtime-rbigint"]
 
 [dependencies]
 aheuinterpreter = { path = "aheuinterpreter", optional = true, default-features = false }

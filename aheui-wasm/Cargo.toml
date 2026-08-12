@@ -23,6 +23,7 @@ malachite-bigint = [
     "compaheuiler/malachite-bigint",
     "aheui-runtime/malachite-bigint",
 ]
+runtime-rbigint = ["aheuinterpreter/runtime-rbigint", "aheui-runtime/runtime-rbigint"]
 
 [dependencies]
 ahsembler = { path = "../ahsembler" }

@@ -7,6 +7,7 @@ edition = "2024"
 default = ["malachite-bigint", "dynasm"]
 num-bigint = ["aheui-runtime/num-bigint"]
 malachite-bigint = ["aheui-runtime/malachite-bigint"]
+runtime-rbigint = ["aheui-runtime/runtime-rbigint"]
 cranelift = ["dep:majit-backend-cranelift", "majit-metainterp/cranelift"]
 dynasm = ["dep:majit-backend-dynasm", "majit-metainterp/dynasm"]
 
