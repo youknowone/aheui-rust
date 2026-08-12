@@ -131,7 +131,7 @@ fn publish_jit_stats(
     *LAST_ABORT_REASONS.lock().unwrap() = Some(profiler);
 }
 
-#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[cfg(feature = "bigint-backend")]
 mod bigint_gc {
     use aheui_runtime::value::bigint::AheuiBigInt;
     use majit_gc::GcAllocator;
@@ -245,7 +245,7 @@ mod bigint_gc {
         }
     }
 
-    #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+    #[cfg(feature = "bigint-backend")]
     fn walk_aheui_bigint_roots(visit: &mut dyn FnMut(&mut GcRef)) {
         aheui_runtime::storage::walk_bigint_root_values(&mut |value| {
             if let Some(addr) = aheui_runtime::value::val_bigint_addr(value) {
@@ -305,7 +305,7 @@ mod bigint_gc {
     }
 }
 
-#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[cfg(not(feature = "bigint-backend"))]
 mod bigint_gc {
     pub fn init() {}
 }
@@ -809,13 +809,13 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
 /// Unlike its sibling it keeps the full `i64`. The truncation there predates
 /// dual mode and only bites on an input number wider than 32 bits; mode 0 has
 /// no reason to inherit it.
-#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[cfg(feature = "bigint-backend")]
 extern "C" fn jit_tag_val_raw(raw: i64) -> Val {
     aheui_runtime::value::val_from_raw_i64(raw)
 }
 
 #[inline(always)]
-#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[cfg(feature = "bigint-backend")]
 fn jit_retag_small(untagged: i64) -> Val {
     aheui_runtime::value::val_retag_small(untagged)
 }

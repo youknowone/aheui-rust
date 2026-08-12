@@ -5,9 +5,11 @@ edition = "2024"
 
 [features]
 default = ["malachite-bigint", "dynasm"]
-num-bigint = ["aheui-runtime/num-bigint"]
-malachite-bigint = ["aheui-runtime/malachite-bigint"]
-runtime-rbigint = ["aheui-runtime/runtime-rbigint"]
+# Set by the three backend features; means a big-integer backend is selected. Nothing enables it directly.
+bigint-backend = []
+num-bigint = ["aheui-runtime/num-bigint", "bigint-backend"]
+malachite-bigint = ["aheui-runtime/malachite-bigint", "bigint-backend"]
+runtime-rbigint = ["aheui-runtime/runtime-rbigint", "bigint-backend"]
 cranelift = ["dep:majit-backend-cranelift", "majit-metainterp/cranelift"]
 dynasm = ["dep:majit-backend-dynasm", "majit-metainterp/dynasm"]
 
