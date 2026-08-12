@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use crate::aheui::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
 use crate::value::*;
 
-// ── Nursery bump allocator for StackNode ─────────────────────────────
+// StackNode nursery bump allocator.
 //
 // RPython-style nursery: a large contiguous buffer where alloc() is just
 // a pointer bump (~1 cycle).  free() is a no-op — memory is never
@@ -380,7 +380,7 @@ impl AheuiStack {
         unsafe { (*self.head).value }
     }
 
-    // ── Arithmetic ops (rpaheui linkedlist.py parity) ──
+    // These arithmetic operations match rpaheui's linked-list storage semantics.
 
     pub fn len(&self) -> usize {
         self.size
@@ -721,7 +721,7 @@ impl StorageOps for AheuiPort {
     }
 }
 
-// ── RPython parity: Storage layout ───────────────────────────────────
+// This storage layout matches rpaheui/aheui/aheui.py.
 //
 // rpaheui/aheui/aheui.py:
 //   Storage.pools = [Stack(), Queue(), Port(), Stack(), ...]

@@ -8,8 +8,6 @@ use std::io::{self, Read};
 
 use crate::value::*;
 
-// ── wasm32-unknown-unknown: thread-local buffered I/O ──────────────
-//
 // `wasm32-unknown-unknown` 타겟에는 실제 stdin/stdout 이 없으므로
 // thread-local 버퍼로 I/O 를 대신한다. 호스트 코드 (예: aheui-wasm)
 // 에서 `set_input` 으로 입력을 주입하고 `take_output` 으로 출력을
@@ -152,7 +150,7 @@ pub fn output_flush() {
     let _ = stdout.lock().flush();
 }
 
-// ── JIT I/O shims (stack-allocated decimal encoding) ────────────────
+// Generated and JIT-compiled code writes through caller-provided buffers.
 
 pub fn write_number(value: &Val, writer: &mut impl Write) {
     #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
@@ -180,8 +178,6 @@ pub fn write_utf8(value: &Val, writer: &mut impl Write) {
         let _ = writer.write_all(s.as_bytes());
     }
 }
-
-// ── Buffered input ──────────────────────────────────────────────────
 
 /// Buffered input for Aheui I/O operations.
 pub struct InputBuffer {

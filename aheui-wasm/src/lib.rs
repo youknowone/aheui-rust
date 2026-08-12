@@ -6,10 +6,8 @@
 //!
 //! wasm32-unknown-unknown 타겟에는 실제 stdin/stdout 이 없으므로
 //! `aheui_runtime::io::wasm_buf` 의 thread-local 버퍼를 통해 I/O 를 주고받는다.
-//! 그 버퍼는 `aheui-runtime/src/io.rs` 에서 같은 타겟에서만 컴파일되므로
-//! `interpret` 도 같은 cfg 로 묶는다. 나머지 컴파일러 API 는 타겟과
-//! 무관하므로 호스트에서도 그대로 빌드된다 (`cargo check` 가 이 크레이트를
-//! 계속 검사할 수 있도록).
+//! `interpret` 와 버퍼는 이 타겟에서만 컴파일되고, 타겟과 무관한 컴파일러
+//! API 는 호스트 빌드에서도 사용할 수 있다.
 
 use wasm_bindgen::prelude::*;
 

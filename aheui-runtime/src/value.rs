@@ -8,7 +8,7 @@
 #[cfg(all(feature = "num-bigint", feature = "malachite-bigint"))]
 compile_error!("features `num-bigint` and `malachite-bigint` are mutually exclusive");
 
-// ── Plain i64 mode ──────────────────────────────────────────────────
+// Plain i64 mode.
 
 #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
 pub type Val = i64;
@@ -92,7 +92,7 @@ pub fn val_from_str(s: &str) -> Option<Val> {
     s.parse::<i64>().ok()
 }
 
-// ── Tagged-pointer bigint mode ──────────────────────────────────────
+// Tagged-pointer bigint mode.
 //
 // Layout of the 64-bit word:
 //   bit 0 = 1  →  small integer, value = word >> 1  (arithmetic shift)
@@ -220,8 +220,6 @@ impl std::fmt::Debug for Val {
     }
 }
 
-// ── Public API ──────────────────────────────────────────────────────
-
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
 pub fn val_from_i32(v: i32) -> Val {
@@ -262,8 +260,6 @@ pub fn val_to_i32_saturating(v: &Val) -> i32 {
         i32::MIN
     }
 }
-
-// ── Arithmetic ──────────────────────────────────────────────────────
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
@@ -365,7 +361,7 @@ pub fn val_ge(a: &Val, b: &Val) -> bool {
     if a.is_small() & b.is_small() {
         return a.as_i64_unchecked() >= b.as_i64_unchecked();
     }
-    // Debug: detect Val(0) which is an invalid tagged pointer
+    // Zero is not a valid tagged representation.
     assert!(
         a.0 != 0,
         "val_ge: a is Val(0) — invalid tagged pointer! b.0={}",
@@ -402,8 +398,6 @@ pub fn val_from_str(s: &str) -> Option<Val> {
     }
     s.parse::<BigInt>().ok().map(Val::normalize_big)
 }
-
-// ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -213,9 +213,8 @@ function disableAll(disabled) {
   }
 }
 
-// ── URL hash 공유 ─────────────────────────────────────────────
-//
-// hash 포맷: #v=1&s=<base64url(utf8(source))>[&i=<base64url(utf8(stdin))>]
+// 공유 링크는 #v=1&s=<base64url(utf8(source))>[&i=<base64url(utf8(stdin))>]
+// 형식으로 소스와 입력을 보존한다.
 // 해시는 서버로 전송되지 않으므로 호스팅 측 부담 없이 링크 공유 가능.
 
 function toBase64Url(text) {
@@ -260,13 +259,11 @@ async function shareLink() {
     await navigator.clipboard.writeText(url);
     setStatus(`링크 복사됨 (${url.length} chars)`, "ok");
   } catch (e) {
-    // clipboard API 실패 시 hash 만 갱신
+    // Clipboard API가 실패해도 주소창에서 링크를 복사할 수 있게 hash를 갱신한다.
     location.hash = params.toString();
     setStatus(`클립보드 접근 실패 — 주소창 URL 을 직접 복사하세요`, "error");
   }
 }
-
-// ── 생성 결과 다운로드 ────────────────────────────────────────
 
 let currentDownloadExt = "txt";
 
@@ -293,7 +290,7 @@ async function runInterp() {
   try {
     setStatus("인터프리터 실행 중…");
     const t0 = performance.now();
-    // mainloop 호출은 동기이므로 UI 업데이트가 안 보이는 걸 피하기 위해 1 tick 양보
+    // 동기식 mainloop를 호출하기 전에 상태 메시지를 그릴 수 있도록 한 tick 양보한다.
     await new Promise((r) => setTimeout(r, 0));
     const result = interpret($("source").value, $("stdin").value);
     const elapsed = (performance.now() - t0).toFixed(1);
@@ -320,11 +317,11 @@ async function runWasm() {
     setStatus(`wasm 인스턴스화 중 (${bytes.length} bytes)…`);
     const module = await WebAssembly.compile(bytes);
 
-    // stdin 을 UTF-8 바이트로 인코딩해 큐에 넣어둔다.
+    // WebAssembly의 read_byte import가 소비하도록 stdin을 UTF-8 바이트로 인코딩한다.
     const stdinBytes = Array.from(new TextEncoder().encode($("stdin").value));
     let readIdx = 0;
 
-    // write_byte 는 UTF-8 연속 바이트 경계를 존중하여 누적 후 decode
+    // write_byte가 전달한 UTF-8 바이트열은 실행이 끝난 뒤 한 번에 디코딩한다.
     const outBytes = [];
     const imports = {
       env: {
@@ -394,7 +391,7 @@ $("show-out").addEventListener("click", () => {
   setDownload(null);
 });
 
-// Ctrl/Cmd+Enter 로 wasm 실행
+// Ctrl/Cmd+Enter는 현재 소스를 WebAssembly로 실행한다.
 function onKey(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
     e.preventDefault();

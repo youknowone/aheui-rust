@@ -53,14 +53,11 @@ print(int((time.monotonic() - t0) * 1000))
     MEASURE_MEDIAN=$(printf '%s\n' "${times[@]}" | sort -n | sed -n "$((($n+1)/2))p")
 }
 
-# ── Build ──
 echo -e "${CYAN}Building compaheuiler (rgen + cranelift)...${RESET}"
 cargo build -p compaheuiler --features cranelift --release 2>/dev/null
 
-# ════════════════════════════════════════════════════
 echo ""
 echo -e "${CYAN}══ RGEN BACKEND (rustc/LLVM) ══${RESET}"
-# ════════════════════════════════════════════════════
 
 RUSTC_OPT="-C opt-level=3 -C target-cpu=native"
 
@@ -147,10 +144,8 @@ else
     fail "bigint_test failed (see /tmp/compaheuiler_bigint.log)"
 fi
 
-# ════════════════════════════════════════════════════
 echo ""
 echo -e "${CYAN}══ CRANELIFT BACKEND (JIT) ══${RESET}"
-# ════════════════════════════════════════════════════
 
 echo ""
 echo "═══ 4. Cranelift unit tests ═══"
@@ -166,7 +161,6 @@ else
     tail -10 /tmp/compaheuiler_cl.log
 fi
 
-# ════════════════════════════════════════════════════
 echo ""
 echo "════════════════════════════════"
 TOTAL=$((PASS + FAIL))
