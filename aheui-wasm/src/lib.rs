@@ -6,10 +6,16 @@
 //!
 //! wasm32-unknown-unknown 타겟에는 실제 stdin/stdout 이 없으므로
 //! `aheui_runtime::io::wasm_buf` 의 thread-local 버퍼를 통해 I/O 를 주고받는다.
+//! 그 버퍼는 `aheui-runtime/src/io.rs` 에서 같은 타겟에서만 컴파일되므로
+//! `interpret` 도 같은 cfg 로 묶는다. 나머지 컴파일러 API 는 타겟과
+//! 무관하므로 호스트에서도 그대로 빌드된다 (`cargo check` 가 이 크레이트를
+//! 계속 검사할 수 있도록).
 
 use wasm_bindgen::prelude::*;
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use aheui_runtime::io::wasm_buf;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use aheuinterpreter::interp;
 use ahsembler::OptimizationLevel;
 
@@ -26,6 +32,7 @@ fn parse_opt(level: u8) -> OptimizationLevel {
 ///
 /// `input` 은 stdin 으로 주입될 바이트열 (UTF-8),
 /// 반환값은 stdout 에 쓰인 바이트열을 UTF-8 문자열로 해석한 것.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen]
 pub fn interpret(source: &str, input: &str) -> String {
     wasm_buf::set_input(input.as_bytes());
