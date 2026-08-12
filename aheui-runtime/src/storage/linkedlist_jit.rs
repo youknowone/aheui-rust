@@ -1624,6 +1624,7 @@ mod tests {
 
     #[test]
     fn stack_push_pop_roundtrip() {
+        let _lock = crate::storage::nursery_test_lock();
         let mut s = Stack::new();
         let p = &mut s as *mut Stack as usize;
         unsafe {
@@ -1638,6 +1639,7 @@ mod tests {
 
     #[test]
     fn stack_arith_dispatches_through_pointer() {
+        let _lock = crate::storage::nursery_test_lock();
         let mut s = Stack::new();
         let p = &mut s as *mut Stack as usize;
         unsafe {
@@ -1651,6 +1653,7 @@ mod tests {
 
     #[test]
     fn queue_push_pop_fifo_order() {
+        let _lock = crate::storage::nursery_test_lock();
         let mut q = Queue::new();
         let p = &mut q as *mut Queue as usize;
         unsafe {
@@ -1665,6 +1668,7 @@ mod tests {
 
     #[test]
     fn queue_add_pushes_sum_to_back() {
+        let _lock = crate::storage::nursery_test_lock();
         let mut q = Queue::new();
         let p = &mut q as *mut Queue as usize;
         unsafe {
