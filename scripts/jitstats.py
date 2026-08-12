@@ -48,26 +48,20 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 BINARY = REPO / "target" / "release" / "aheui"
-SAMPLES = REPO / "aheui-wasm" / "web" / "samples"
+SNIPPETS = REPO / "snippets"
 BENCH = REPO / "bench"
 
-# The fixtures live in-tree (`aheui-wasm/web/samples/`). The rpaheui corpus is
-# gated only when it comes from `snippets/`, this repo's pinned submodule; the
-# fallback sources stay survey-only because they name no commit. `logo` is the
-# only sample that reaches the 1039 back-edge threshold and actually compiles;
-# the rest are carried anyway because their badness counters start at 0, and a
-# rise off 0 is exactly what the floor exists to catch.
-#
-# This is EVERY `.aheui` under that directory. Keep it that way — a sample
-# present in the tree and absent here is a file that looks covered and is not.
-FIXTURES = [
-    "logo",
-    "99bottles",
-    "factorial",
-    "fibonacci",
-    "hello",
-    "hello-world",
-]
+# These paths preserve the six programs that originally established the
+# committed baselines. The files live in the pinned snippets submodule, so the
+# fixture names remain stable without keeping duplicate samples in the tree.
+FIXTURES = {
+    "logo": "logo/logo.aheui",
+    "99bottles": "99bottles/99bottles.aheui",
+    "factorial": "factorial/factorial.aheui",
+    "fibonacci": "fibonacci/fibonacci.codroc.aheui",
+    "hello": "hello-world/hello.puzzlet.aheui",
+    "hello-world": "hello-world/hello-world.puzzlet.aheui",
+}
 
 # `pyre/check.py` JITSTATS_BADNESS_FIELDS / RISE_BOUNDED / FALL.
 BADNESS_FIELDS = ("loops_aborted", "internal_compile_panics")
@@ -109,7 +103,7 @@ MAJIT_REPO = REPO.parent
 
 
 def fixture_path(name: str) -> Path:
-    return SAMPLES / f"{name}.aheui"
+    return SNIPPETS / FIXTURES[name]
 
 
 def baseline_path(name: str) -> Path:
