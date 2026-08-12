@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>아희 웹 — Aheui in the browser</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --fg: #d4d4d4;
+    --accent: #4ec9b0;
+    --muted: #858585;
+    --panel: #252526;
+    --border: #3c3c3c;
+  }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  header {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+  }
+  header h1 { margin: 0; font-size: 18px; color: var(--accent); }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 12px 20px;
+    height: calc(100vh - 110px);
+  }
+  .panel {
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    min-height: 0;
+  }
+  .panel-header {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .panel-header select, .panel-header button {
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 4px 10px;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .panel-header button:hover {
+    border-color: var(--accent);
+  }
+  .panel-header button.primary {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  .panel-header .spacer { flex: 1; }
+  textarea, pre {
+    flex: 1;
+    margin: 0;
+    padding: 10px 12px;
+    border: 0;
+    background: var(--panel);
+    color: var(--fg);
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    resize: none;
+    outline: none;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  #status {
+    padding: 6px 20px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+    font-family: "SF Mono", Menlo, monospace;
+  }
+  #status.error { color: #f48771; }
+  #status.ok { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>아희 웹</h1>
+  <span class="sub">Aheui → WAT → wasm → 브라우저 실행</span>
+</header>
+<main>
+  <section class="panel">
+    <div class="panel-header">
+      <span>소스</span>
+      <select id="sample">
+        <option value="">예제 고르기…</option>
+        <option value="hello">hello</option>
+        <option value="add">1+2 출력</option>
+        <option value="echo">echo (숫자 입력)</option>
+      </select>
+      <div class="spacer"></div>
+      <button id="run-interp">인터프리터</button>
+      <button id="run-wasm" class="primary">WAT → wasm 실행</button>
+    </div>
+    <textarea id="source" spellcheck="false">밤밣따빠밣밟따뿌
+빠맣파빨받밤뚜뭏
+돋밬탕빠맣붏두붇
+볻뫃박발뚷투뭏붖
+뫃도뫃희멓뭏뭏붘
+뫃봌토범더벌뿌뚜
+뽑뽀멓멓더벓뻐뚠
+뽀덩벐멓뻐덕더벒</textarea>
+  </section>
+  <section class="panel">
+    <div class="panel-header">
+      <span id="out-label">출력</span>
+      <div class="spacer"></div>
+      <button id="show-wat">WAT 보기</button>
+      <button id="show-c">C 보기</button>
+      <button id="show-rust">Rust 보기</button>
+      <button id="show-out" class="primary">출력 보기</button>
+    </div>
+    <pre id="output"></pre>
+  </section>
+</main>
+<div id="status">초기화 중…</div>
+
+<script type="module">
+import init, {
+  interpret,
+  compile_to_wat_web,
+  compile_to_wat_wasi,
+  compile_to_c,
+  compile_to_rust,
+  compile_to_asm,
+  wat_to_wasm,
+  compile_to_wasm_web,
+} from "../pkg/aheui_wasm.js";
+
+const $ = (id) => document.getElementById(id);
+const status = $("status");
+const output = $("output");
+const outLabel = $("out-label");
+
+function setStatus(msg, kind = "") {
+  status.textContent = msg;
+  status.className = kind;
+}
+
+const samples = {
+  hello: "밤밣따빠밣밟따뿌\n빠맣파빨받밤뚜뭏\n돋밬탕빠맣붏두붇\n볻뫃박발뚷투뭏붖\n뫃도뫃희멓뭏뭏붘\n뫃봌토범더벌뿌뚜\n뽑뽀멓멓더벓뻐뚠\n뽀덩벐멓뻐덕더벒",
+  add: "반받나망희",
+  echo: "밚반나망희",
+};
+
+$("sample").addEventListener("change", (e) => {
+  const v = e.target.value;
+  if (v && samples[v]) $("source").value = samples[v];
+});
+
+// stdin 은 간단히 textarea 로 받지 않고, prompt() 로 처리한다.
+// (인터프리터 모드에서는 사전에 한꺼번에 주입하고, wasm 모드에서는
+//  호출 시점마다 JS 가 프롬프트로 받아서 한 바이트씩 돌려준다.)
+let pendingInput = "";
+function ensureInput() {
+  if (pendingInput.length === 0) {
+    const got = prompt("stdin 입력 (빈 값이면 EOF)");
+    if (got != null) pendingInput = got + "\n";
+  }
+}
+
+function makeEnvImports(onByte) {
+  let outBytes = [];
+  return {
+    env: {
+      write_byte: (b) => {
+        outBytes.push(b & 0xff);
+        onByte && onByte(b & 0xff);
+      },
+      read_byte: () => {
+        ensureInput();
+        if (pendingInput.length === 0) return -1;
+        // UTF-8 encode one char and return bytes one at a time
+        if (!readQueue || readQueue.length === 0) {
+          const enc = new TextEncoder().encode(pendingInput[0]);
+          pendingInput = pendingInput.slice(1);
+          readQueue = Array.from(enc);
+        }
+        return readQueue.shift();
+      },
+    },
+    _getOutput: () => outBytes,
+  };
+}
+let readQueue = [];
+
+async function runInterp() {
+  try {
+    setStatus("인터프리터 실행 중…");
+    const t0 = performance.now();
+    const src = $("source").value;
+    const stdin = prompt("stdin 입력 (빈 값이면 EOF)", "") || "";
+    const result = interpret(src, stdin);
+    const elapsed = (performance.now() - t0).toFixed(1);
+    output.textContent = result;
+    outLabel.textContent = "인터프리터 출력";
+    setStatus(`인터프리터 완료 — ${elapsed}ms, ${result.length} chars`, "ok");
+  } catch (e) {
+    setStatus(`인터프리터 오류: ${e}`, "error");
+  }
+}
+
+async function runWasm() {
+  try {
+    setStatus("WAT 생성…");
+    const src = $("source").value;
+    const t0 = performance.now();
+    const bytes = compile_to_wasm_web(src);
+    const tCompile = (performance.now() - t0).toFixed(1);
+    setStatus(`wasm 컴파일 중… (${bytes.length} bytes)`);
+    const module = await WebAssembly.compile(bytes);
+    readQueue = [];
+    pendingInput = "";
+    let outText = "";
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    // 바이트를 누적했다가 UTF-8 경계에서 flush
+    let pending = [];
+    const imports = {
+      env: {
+        write_byte: (b) => {
+          pending.push(b & 0xff);
+          // UTF-8 continuation byte (0b10xxxxxx) 는 아직 미완성
+          if ((b & 0xc0) !== 0x80) {
+            // 새 문자 시작 바이트가 왔으면 직전까지의 버퍼를 flush
+            if (pending.length > 1) {
+              const complete = pending.slice(0, -1);
+              outText += decoder.decode(new Uint8Array(complete), { stream: true });
+              pending = [pending[pending.length - 1]];
+            }
+          }
+        },
+        read_byte: () => {
+          if (readQueue.length > 0) return readQueue.shift();
+          if (pendingInput.length === 0) {
+            const got = prompt("stdin 입력 (취소=EOF)");
+            if (got == null) return -1;
+            pendingInput = got + "\n";
+          }
+          if (pendingInput.length === 0) return -1;
+          const enc = new TextEncoder().encode(pendingInput);
+          pendingInput = "";
+          readQueue = Array.from(enc);
+          return readQueue.shift();
+        },
+      },
+    };
+    const instance = await WebAssembly.instantiate(module, imports);
+    const t1 = performance.now();
+    const exit = instance.exports.run();
+    const tRun = (performance.now() - t1).toFixed(1);
+    if (pending.length > 0) {
+      outText += decoder.decode(new Uint8Array(pending));
+    }
+    output.textContent = outText;
+    outLabel.textContent = "wasm 출력";
+    setStatus(
+      `wasm 실행 완료 — 컴파일 ${tCompile}ms, 실행 ${tRun}ms, exit=${exit}, ${outText.length} chars`,
+      "ok",
+    );
+  } catch (e) {
+    setStatus(`wasm 오류: ${e.message || e}`, "error");
+  }
+}
+
+$("run-interp").addEventListener("click", runInterp);
+$("run-wasm").addEventListener("click", runWasm);
+
+$("show-wat").addEventListener("click", () => {
+  try {
+    output.textContent = compile_to_wat_web($("source").value);
+    outLabel.textContent = "WAT (wasm32-web)";
+    setStatus("WAT 생성 완료", "ok");
+  } catch (e) { setStatus(`오류: ${e}`, "error"); }
+});
+$("show-c").addEventListener("click", () => {
+  try {
+    output.textContent = compile_to_c($("source").value);
+    outLabel.textContent = "C 소스";
+    setStatus("C 생성 완료", "ok");
+  } catch (e) { setStatus(`오류: ${e}`, "error"); }
+});
+$("show-rust").addEventListener("click", () => {
+  try {
+    output.textContent = compile_to_rust($("source").value, 3);
+    outLabel.textContent = "Rust 소스";
+    setStatus("Rust 생성 완료", "ok");
+  } catch (e) { setStatus(`오류: ${e}`, "error"); }
+});
+$("show-out").addEventListener("click", () => {
+  outLabel.textContent = "출력";
+  output.textContent = "";
+});
+
+try {
+  await init();
+  setStatus("준비됨 — 버튼을 누르세요.", "ok");
+} catch (e) {
+  setStatus(`초기화 실패: ${e}`, "error");
+}
+</script>
+</body>
+</html>
