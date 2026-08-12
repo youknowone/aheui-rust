@@ -50,7 +50,7 @@ jobs:
             ${{ runner.os }}-cargo-wasm-
 
       - name: Install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli --version 0.2.117 --locked
+        run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
 
       - name: Build aheui-wasm
         run: ./aheui-wasm/build.sh

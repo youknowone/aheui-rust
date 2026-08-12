@@ -29,7 +29,7 @@ wasm-bindgen 라이브러리, 브라우저 데모, 그리고 `wasm32-wasip1` CLI
 
 ```sh
 rustup target add wasm32-unknown-unknown wasm32-wasip1
-cargo install wasm-bindgen-cli --version 0.2.117
+cargo install wasm-bindgen-cli --version 0.2.127
 ```
 
 라이브러리 (+ 브라우저/Node glue) 한 번에 빌드:
