@@ -1,12 +1,11 @@
+mod common;
+
 use std::process::Command;
 use std::time::Instant;
 
 #[test]
 fn test_quine40() {
-    let source = std::fs::read_to_string(
-        "snippets/quine/quine.puzzlet.40col.aheui",
-    )
-    .unwrap();
+    let source = common::require_snippet("quine/quine.puzzlet.40col.aheui");
 
     // Generate Rust code
     let rs_code = compaheuiler::compile_to_rs(&source);
@@ -44,7 +43,14 @@ fn test_quine40() {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     eprintln!("run: {run_ms:.0}ms  output={}bytes", stdout.len());
 
-    // Quine check: output should equal source
-    assert_eq!(stdout, source, "Not a quine! Output differs from source.");
+    // Quine check: output should equal source. The file on disk ends with a
+    // newline the program itself never emits, so allow that one byte — the
+    // same tolerance `all_snippets_test` applies to the `.out` references.
+    assert!(
+        stdout == source || format!("{stdout}\n") == source,
+        "Not a quine! Output differs from source ({} vs {} bytes)",
+        stdout.len(),
+        source.len(),
+    );
     eprintln!("✓ Quine verified!");
 }

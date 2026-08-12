@@ -12,40 +12,97 @@ use crate::consts::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
 
 // ── Pass 1: Fixed-point stack depth analysis ─────────────────────────
 
+/// Exact fixed-point rounds allowed before widening kicks in.
+///
+/// `Depth::AtLeast(i32)` under `meet = min` has an unbounded descending chain,
+/// so a loop that drains a deep stack one element per trip costs one whole
+/// round per unit of depth. Round counts measured over the snippets corpus:
+/// quine.puzzlet 587, pi.puzzlet 180, logo 54, vowel-advanced 14, everything
+/// else <= 11. The two outliers are small CFGs draining a deep stack (46 and
+/// 14 blocks), where the extra rounds buy at most one guard.
+///
+/// 64 clears logo, the largest round count that still pays for itself, and cuts
+/// quine's analysis 9x and pi.puzzlet's 3x. Both come out faster end to end even
+/// though pi.puzzlet retains one more `BRPOP2` as a result.
+///
+/// Widening is sound in one direction only, which is why it is safe here: the
+/// result feeds `eliminate_guards` via [`Depth::is_at_least`], and `AtLeast(0)`
+/// is the weakest claim, so widening can only keep a guard that would otherwise
+/// have been removed — never remove one that is not proven safe.
+const STACK_DEPTH_WIDENING_BUDGET: usize = 64;
+
 /// Run abstract interpretation to compute stack depth at each block entry.
-/// Uses two RPO passes: sufficient for acyclic CFGs, and good enough for
-/// loops where the O2 pre-pass already handled most guard elimination.
+/// Sweeps dirty blocks in RPO to a fixed point, widening past
+/// [`STACK_DEPTH_WIDENING_BUDGET`] rounds.
 pub fn analyze_stack_depths(cfg: &Cfg) -> Vec<AbstractState> {
     let n = cfg.num_blocks();
     let mut states: Vec<AbstractState> = vec![AbstractState::bottom(); n];
     states[cfg.entry as usize] = AbstractState::initial();
 
     let rpo = cfg.reverse_postorder();
+    let has_guard_depth: Vec<bool> = cfg
+        .blocks
+        .iter()
+        .map(|block| {
+            block
+                .instructions
+                .iter()
+                .any(|inst| matches!(inst, Inst::GuardDepth { .. }))
+        })
+        .collect();
+    let mut dirty = vec![false; n];
+    dirty[cfg.entry as usize] = true;
+    let mut successors = Vec::new();
+    let mut round = 0;
 
     // Iterate until fixed point. Depth values decrease monotonically (meet = min)
-    // and are bounded below by 0, so convergence is guaranteed.
+    // and are bounded below by 0, so convergence is guaranteed; widening past the
+    // budget bounds how many rounds that takes.
     loop {
+        round += 1;
+        let widen = round > STACK_DEPTH_WIDENING_BUDGET;
         let mut changed = false;
         for &block_id in &rpo {
             let idx = block_id as usize;
-            let entry_state = states[idx].clone();
+            if !dirty[idx] {
+                continue;
+            }
+            dirty[idx] = false;
+
+            let entry_state = &states[idx];
 
             if entry_state.is_bottom() {
                 continue;
             }
 
-            let exit_state = transfer_block(cfg.block(block_id), &entry_state);
+            let exit_state = transfer_block(cfg.block(block_id), entry_state);
 
-            for (succ_id, succ_state) in
-                successor_states(cfg.block(block_id), &entry_state, &exit_state)
-            {
+            successor_states(
+                cfg.block(block_id),
+                entry_state,
+                &exit_state,
+                has_guard_depth[idx],
+                &mut successors,
+            );
+            for (succ_id, succ_state) in successors.drain(..) {
                 let succ_idx = succ_id as usize;
                 if succ_idx >= n {
                     continue;
                 }
-                let merged = states[succ_idx].meet(&succ_state);
+                let mut merged = states[succ_idx].meet(&succ_state);
+                if widen {
+                    // AtLeast(0) is the weakest claim: widening can only make
+                    // is_at_least false and retain a guard, never eliminate an
+                    // unproven guard.
+                    for (old, new) in states[succ_idx].depths.iter().zip(merged.depths.iter_mut()) {
+                        if matches!((*old, *new), (Depth::AtLeast(a), Depth::AtLeast(b)) if b < a) {
+                            *new = Depth::AtLeast(0);
+                        }
+                    }
+                }
                 if merged != states[succ_idx] {
                     states[succ_idx] = merged;
+                    dirty[succ_idx] = true;
                     changed = true;
                 }
             }
@@ -114,20 +171,21 @@ fn successor_states(
     block: &CfgBlock,
     entry: &AbstractState,
     exit_state: &AbstractState,
-) -> Vec<(BlockId, AbstractState)> {
+    has_guard_depth: bool,
+    result: &mut Vec<(BlockId, AbstractState)>,
+) {
+    result.clear();
     // GuardDepth instructions within the block create additional successors.
-    let mut extra: Vec<(BlockId, AbstractState)> = Vec::new();
-    {
+    if has_guard_depth {
         let mut state = entry.clone();
         for inst in &block.instructions {
             if let Inst::GuardDepth { fail, .. } = inst {
-                extra.push((*fail, state.clone()));
+                result.push((*fail, state.clone()));
             }
             transfer_inst(inst, &mut state);
         }
     }
 
-    let mut result = extra;
     match &block.terminator {
         Terminator::Goto(target) => {
             result.push((*target, exit_state.clone()));
@@ -164,7 +222,6 @@ fn successor_states(
         }
         Terminator::Halt => {}
     }
-    result
 }
 
 // ── Pass 2: Guard elimination ────────────────────────────────────────
@@ -373,8 +430,37 @@ pub fn merge_guard_ok(cfg: &mut Cfg) -> usize {
 
 // ── Pass 4: Iterative constant folding ───────────────────────────────
 
+/// Range a folded constant has to fit for whoever will emit it.
+///
+/// `Inst::Push` carries an `i64`, but `cfg_linearize` writes the result into
+/// `Program::values`, a `Vec<i32>`. A fold headed there may not leave the i32
+/// range: the value would be truncated on the way out and the program would
+/// then compute with the truncated constant. The AOT backends read
+/// `Inst::Push` out of the CFG and emit it as an `i64` literal, so nothing
+/// bounds them.
+///
+/// A rejected fold is not an error — the original instructions stay in place
+/// and the value is computed at run time, where it is a bigint and exact.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConstWidth {
+    /// Destined for `cfg_linearize` / `Program::values`.
+    I32,
+    /// Consumed straight off the CFG by an AOT backend.
+    I64,
+}
+
+impl ConstWidth {
+    /// Whether a folded constant may be written back as `Inst::Push(v)`.
+    fn holds(self, v: i64) -> bool {
+        match self {
+            ConstWidth::I32 => i32::try_from(v).is_ok(),
+            ConstWidth::I64 => true,
+        }
+    }
+}
+
 /// Fold constants within basic blocks. Returns number of folds performed.
-pub fn fold_constants(cfg: &mut Cfg, states: &[AbstractState]) -> usize {
+pub fn fold_constants(cfg: &mut Cfg, states: &[AbstractState], width: ConstWidth) -> usize {
     let mut total_folds = 0;
 
     for block_id in 0..cfg.num_blocks() as BlockId {
@@ -389,7 +475,7 @@ pub fn fold_constants(cfg: &mut Cfg, states: &[AbstractState]) -> usize {
             continue; // Skip constant folding for queue/port
         }
 
-        total_folds += fold_block_constants(cfg.block_mut(block_id));
+        total_folds += fold_block_constants(cfg.block_mut(block_id), width);
     }
 
     total_folds
@@ -410,7 +496,7 @@ fn is_queue_block(block: &CfgBlock, entry: &AbstractState) -> bool {
     false
 }
 
-fn fold_block_constants(block: &mut CfgBlock) -> usize {
+fn fold_block_constants(block: &mut CfgBlock, width: ConstWidth) -> usize {
     let mut folds = 0;
     let mut changed = true;
 
@@ -425,7 +511,7 @@ fn fold_block_constants(block: &mut CfgBlock) -> usize {
                 block.instructions[i + 1],
                 block.instructions[i + 2],
             ) {
-                if let Some(result) = eval_binop(kind, a, b) {
+                if let Some(result) = eval_binop(kind, a, b).filter(|r| width.holds(*r)) {
                     block.instructions[i] = Inst::Push(result);
                     block.instructions.remove(i + 2);
                     block.instructions.remove(i + 1);
@@ -445,7 +531,7 @@ fn fold_block_constants(block: &mut CfgBlock) -> usize {
                 block.instructions[i + 1],
                 block.instructions[i + 2],
             ) {
-                if let Some(result) = eval_binop(kind, v, v) {
+                if let Some(result) = eval_binop(kind, v, v).filter(|r| width.holds(*r)) {
                     block.instructions[i] = Inst::Push(result);
                     block.instructions.remove(i + 2);
                     block.instructions.remove(i + 1);
@@ -504,14 +590,15 @@ fn eval_binop(kind: BinOpKind, lhs: i64, rhs: i64) -> Option<i64> {
         BinOpKind::Mul => lhs.checked_mul(rhs)?,
         BinOpKind::Div => {
             if rhs != 0 {
-                lhs.wrapping_div(rhs)
+                lhs.checked_div(rhs)?;
+                crate::consts::floor_div_i64(lhs, rhs)
             } else {
                 0
             }
         }
         BinOpKind::Mod => {
             if rhs != 0 {
-                lhs.wrapping_rem(rhs)
+                crate::consts::floor_mod_i64(lhs, rhs)
             } else {
                 0
             }
@@ -755,8 +842,11 @@ pub fn eliminate_loop_guards(cfg: &mut Cfg) -> usize {
 
     // 1. Find natural loops: back-edge = edge where succ RPO pos <= src RPO pos
     //    header = succ, latch = src
-    let mut loop_headers: std::collections::HashMap<BlockId, Vec<BlockId>> =
-        std::collections::HashMap::new();
+    // `BTreeMap`, not `HashMap`: the header order below is a decision order, and
+    // a `HashMap`'s is seeded per process, so the pass would strip a different
+    // set of guards from one run to the next.
+    let mut loop_headers: std::collections::BTreeMap<BlockId, Vec<BlockId>> =
+        std::collections::BTreeMap::new();
     for (idx, &bid) in rpo.iter().enumerate() {
         for &succ in &cfg.blocks[bid as usize].all_successors() {
             if let Some(succ_pos) = rpo_pos[succ as usize] {
@@ -774,7 +864,13 @@ pub fn eliminate_loop_guards(cfg: &mut Cfg) -> usize {
     // Run normal analysis first to get entry states
     let states = analyze_stack_depths(cfg);
 
-    let mut total_removed = 0;
+    // Every header is judged against the same unmutated CFG and the `states`
+    // computed from it, and the strips are applied once at the end. Stripping
+    // inside the scan would let an earlier header's rewrite change a later
+    // header's `has_guards` / `max_guard_depth` / `guarded_storages` while
+    // `states` still described the CFG as it was, so the answer would depend on
+    // the order the headers happened to be visited in.
+    let mut strip = vec![false; cfg.num_blocks()];
 
     for (&header, latches) in &loop_headers {
         let header_state = &states[header as usize];
@@ -866,16 +962,24 @@ pub fn eliminate_loop_guards(cfg: &mut Cfg) -> usize {
         if entry_depth_ok
             && check_loop_consistent(cfg, header, &loop_blocks, &states, &guarded_storages)
         {
-            // 3. Strip all GuardDepth in the loop
+            // 3. Mark all GuardDepth in the loop for removal
             for &bid in &loop_blocks {
-                let block = cfg.block_mut(bid);
-                let before = block.instructions.len();
-                block
-                    .instructions
-                    .retain(|inst| !matches!(inst, Inst::GuardDepth { .. }));
-                total_removed += before - block.instructions.len();
+                strip[bid as usize] = true;
             }
         }
+    }
+
+    let mut total_removed = 0;
+    for bid in 0..cfg.num_blocks() {
+        if !strip[bid] {
+            continue;
+        }
+        let block = cfg.block_mut(bid as BlockId);
+        let before = block.instructions.len();
+        block
+            .instructions
+            .retain(|inst| !matches!(inst, Inst::GuardDepth { .. }));
+        total_removed += before - block.instructions.len();
     }
 
     total_removed
@@ -1402,7 +1506,10 @@ pub fn simplify_branches(cfg: &mut Cfg) -> usize {
 // ── Combined optimization pipeline ──────────────────────────────────
 
 /// Run the full CFG optimization pipeline. Returns the optimized CFG.
-pub fn optimize_cfg(mut cfg: Cfg) -> Cfg {
+///
+/// `width` is the range folded constants have to fit for whoever consumes the
+/// result — see [`ConstWidth`].
+pub fn optimize_cfg(mut cfg: Cfg, width: ConstWidth) -> Cfg {
     // Single analysis + guard elimination.
     let states = analyze_stack_depths(&cfg);
     eliminate_guards(&mut cfg, &states);
@@ -1414,7 +1521,7 @@ pub fn optimize_cfg(mut cfg: Cfg) -> Cfg {
 
     // Constant folding and peephole on the simplified CFG.
     let states = analyze_stack_depths(&cfg);
-    fold_constants(&mut cfg, &states);
+    fold_constants(&mut cfg, &states, width);
     peephole_cleanup(&mut cfg, &states);
 
     // Remove unreachable blocks.
@@ -1424,7 +1531,7 @@ pub fn optimize_cfg(mut cfg: Cfg) -> Cfg {
 
 /// AOT optimization: standard pipeline + iterated structural cleanup.
 pub fn optimize_cfg_aot(mut cfg: Cfg) -> Cfg {
-    cfg = optimize_cfg(cfg);
+    cfg = optimize_cfg(cfg, ConstWidth::I64);
     for _ in 0..10 {
         let before = cfg.num_blocks();
         let states = analyze_stack_depths(&cfg);
@@ -1518,7 +1625,7 @@ mod tests {
         merge_blocks(&mut cfg);
 
         let states2 = analyze_stack_depths(&cfg);
-        let folds = fold_constants(&mut cfg, &states2);
+        let folds = fold_constants(&mut cfg, &states2, ConstWidth::I32);
 
         assert!(folds > 0);
         // Should fold to [Push(5)] → Halt
@@ -1529,13 +1636,73 @@ mod tests {
     #[test]
     fn test_full_pipeline() {
         let cfg = make_push_add_halt();
-        let optimized = optimize_cfg(cfg);
+        let optimized = optimize_cfg(cfg, ConstWidth::I32);
 
         // Final: one block [Push(5)] → Halt, dead blocks removed
         assert!(optimized.num_blocks() <= 2);
         let entry = optimized.block(optimized.entry);
         assert_eq!(entry.instructions, vec![Inst::Push(5)]);
         assert_eq!(entry.terminator, Terminator::Halt);
+    }
+
+    #[test]
+    fn test_fold_stops_at_the_linearized_operand_width() {
+        // 65536 * 65536 = 2^32, which `Program::values` cannot carry. Under
+        // `I32` the fold has to leave the multiply for run time; under `I64`,
+        // where an AOT backend reads `Inst::Push` directly, it still folds.
+        let build = || {
+            let mut cfg = Cfg::new();
+            cfg.add_block(
+                vec![
+                    Inst::Push(65536),
+                    Inst::Push(65536),
+                    Inst::BinOp(BinOpKind::Mul),
+                ],
+                Terminator::Halt,
+            );
+            cfg
+        };
+
+        let mut narrow = build();
+        let states = analyze_stack_depths(&narrow);
+        assert_eq!(fold_constants(&mut narrow, &states, ConstWidth::I32), 0);
+        assert_eq!(
+            narrow.block(0).instructions,
+            vec![
+                Inst::Push(65536),
+                Inst::Push(65536),
+                Inst::BinOp(BinOpKind::Mul),
+            ]
+        );
+
+        let mut wide = build();
+        let states = analyze_stack_depths(&wide);
+        assert_eq!(fold_constants(&mut wide, &states, ConstWidth::I64), 1);
+        assert_eq!(wide.block(0).instructions, vec![Inst::Push(4294967296)]);
+    }
+
+    #[test]
+    fn test_fold_declines_overflowing_i64_division() {
+        let mut cfg = Cfg::new();
+        cfg.add_block(
+            vec![
+                Inst::Push(i64::MIN),
+                Inst::Push(-1),
+                Inst::BinOp(BinOpKind::Div),
+            ],
+            Terminator::Halt,
+        );
+
+        let states = analyze_stack_depths(&cfg);
+        assert_eq!(fold_constants(&mut cfg, &states, ConstWidth::I64), 0);
+        assert_eq!(
+            cfg.block(0).instructions,
+            vec![
+                Inst::Push(i64::MIN),
+                Inst::Push(-1),
+                Inst::BinOp(BinOpKind::Div),
+            ]
+        );
     }
 
     #[test]
@@ -1554,7 +1721,7 @@ mod tests {
         );
 
         let states = analyze_stack_depths(&cfg);
-        fold_constants(&mut cfg, &states);
+        fold_constants(&mut cfg, &states, ConstWidth::I32);
 
         assert_eq!(cfg.block(0).instructions, vec![Inst::Push(20)]);
     }
@@ -1569,7 +1736,7 @@ mod tests {
         );
 
         let states = analyze_stack_depths(&cfg);
-        fold_constants(&mut cfg, &states);
+        fold_constants(&mut cfg, &states, ConstWidth::I32);
 
         assert_eq!(cfg.block(0).instructions, vec![Inst::Push(25)]);
     }
@@ -1589,7 +1756,7 @@ mod tests {
         cfg.add_block(vec![Inst::Push(99)], Terminator::Halt);
 
         let states = analyze_stack_depths(&cfg);
-        fold_constants(&mut cfg, &states);
+        fold_constants(&mut cfg, &states, ConstWidth::I32);
 
         assert_eq!(cfg.block(0).terminator, Terminator::Goto(1));
         assert!(cfg.block(0).instructions.is_empty());
@@ -1610,7 +1777,7 @@ mod tests {
         cfg.add_block(vec![Inst::Push(99)], Terminator::Halt);
 
         let states = analyze_stack_depths(&cfg);
-        fold_constants(&mut cfg, &states);
+        fold_constants(&mut cfg, &states, ConstWidth::I32);
 
         assert_eq!(cfg.block(0).terminator, Terminator::Goto(2));
     }

@@ -154,15 +154,6 @@ pub fn compute_scopes(cfg: &Cfg, rpo: &[BlockId]) -> Vec<Scope> {
 
     scopes.sort_by(|a, b| a.open.cmp(&b.open).then(b.close.cmp(&a.close)));
 
-    // Debug: check for unclosed scopes or overlaps.
-    for (i, s) in scopes.iter().enumerate() {
-        let kind = if s.kind == ScopeKind::Loop {
-            "loop"
-        } else {
-            "fwd"
-        };
-    }
-
     scopes
 }
 

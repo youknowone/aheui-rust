@@ -1,9 +1,11 @@
+mod common;
+
 use std::process::Command;
 
-const SNIPPETS: &str = "snippets";
-
 /// Names that require bigint to produce correct output (i64 overflows).
-const BIGINT_SNIPPETS: &[&str] = &["integer/2e65-print"];
+/// `integer/64bit` prints 2^65 to probe the implementation's integer range;
+/// the corpus has carried it under both names, so both are listed.
+const BIGINT_SNIPPETS: &[&str] = &["integer/2e65-print", "integer/64bit"];
 
 fn needs_bigint(name: &str) -> bool {
     BIGINT_SNIPPETS.contains(&name)
@@ -90,8 +92,11 @@ fn compile_and_run_bigint(source: &str, stdin_data: &[u8]) -> (String, i32) {
         Ok(code) => code,
         Err(_) => return ("CODEGEN_PANIC".into(), -1),
     };
-    let dir = "/tmp/aheui_bigint_proj";
-    std::fs::create_dir_all(&format!("{dir}/src")).ok();
+    // Own scratch project: `bigint_test` builds against a different
+    // malachite-bigint version, and sharing one directory would make the two
+    // suites rebuild the dependency for each other on every alternation.
+    let dir = "/tmp/aheui_allsnip_bigint_proj";
+    std::fs::create_dir_all(format!("{dir}/src")).ok();
     std::fs::write(format!("{dir}/src/main.rs"), &rs_code).unwrap();
     std::fs::write(
         format!("{dir}/Cargo.toml"),
@@ -204,7 +209,7 @@ fn test_snippet(
     let out_ok = got == expected
         || format!("{got}\n") == expected
         || got == format!("{}\n", expected.trim_end());
-    let exit_ok = expected_exit.map_or(true, |e| e == exit);
+    let exit_ok = expected_exit.is_none_or(|e| e == exit);
 
     if out_ok && exit_ok {
         eprintln!("  ✓ {name}");
@@ -218,8 +223,8 @@ fn test_snippet(
                 expected.len()
             );
             if got.len() < 200 && expected.len() < 200 {
-                eprintln!("    got:  {:?}", &got);
-                eprintln!("    want: {:?}", &expected);
+                eprintln!("    got:  {:?}", got);
+                eprintln!("    want: {:?}", expected);
             }
         }
         if !exit_ok {
@@ -231,23 +236,22 @@ fn test_snippet(
 
 #[test]
 fn test_all_snippets() {
-    let snippets_dir = std::path::Path::new(SNIPPETS);
+    type SnippetEntry = (
+        String,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        Option<std::path::PathBuf>,
+        Option<std::path::PathBuf>,
+    );
+
+    let snippets_dir = common::snippets_dir();
     let mut tested = 0;
     let mut passed = 0;
     let mut failed = 0;
     let mut entries: Vec<_> = Vec::new();
 
     // Collect all .out files recursively
-    fn walk(
-        dir: &std::path::Path,
-        entries: &mut Vec<(
-            String,
-            std::path::PathBuf,
-            std::path::PathBuf,
-            Option<std::path::PathBuf>,
-            Option<std::path::PathBuf>,
-        )>,
-    ) {
+    fn walk(dir: &std::path::Path, entries: &mut Vec<SnippetEntry>) {
         if let Ok(rd) = std::fs::read_dir(dir) {
             for entry in rd {
                 let entry = entry.unwrap();
@@ -256,7 +260,7 @@ fn test_all_snippets() {
                     walk(&path, entries);
                     continue;
                 }
-                if path.extension().map_or(true, |e| e != "out") {
+                if path.extension().is_none_or(|e| e != "out") {
                     continue;
                 }
                 let base = path.file_stem().unwrap().to_str().unwrap().to_string();

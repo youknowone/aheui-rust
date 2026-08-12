@@ -1,14 +1,19 @@
 #![cfg(feature = "cranelift")]
 
+mod common;
+
 use compaheuiler::jit::SpecialStorage;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
 
 static STDOUT_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+static RUN_LOCK: Mutex<()> = Mutex::new(());
+static READ_NUM: AtomicI64 = AtomicI64::new(0);
 
 extern "C" fn write_char(v: i64) {
     let c = v as u32;
-    let mut buf = STDOUT_BUF.lock().unwrap();
+    let mut buf = STDOUT_BUF.lock().unwrap_or_else(|e| e.into_inner());
     if c <= 0x7f {
         buf.push(c as u8);
     } else if let Some(ch) = char::from_u32(c) {
@@ -16,71 +21,42 @@ extern "C" fn write_char(v: i64) {
         buf.extend_from_slice(ch.encode_utf8(&mut tmp).as_bytes());
     }
 }
+extern "C" fn write_bytes(data: *const u8, len: usize) {
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+    STDOUT_BUF
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .extend_from_slice(bytes);
+}
 extern "C" fn write_num(v: i64) {
     STDOUT_BUF
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .extend_from_slice(format!("{}", v).as_bytes());
 }
 extern "C" fn read_char() -> i64 {
     -1
 }
 extern "C" fn read_num() -> i64 {
-    0
+    READ_NUM.swap(0, Ordering::Relaxed)
 }
 
 fn run_cranelift(source: &str) -> (String, i64, f64) {
+    run_cranelift_with_num(source, 0)
+}
+
+fn run_cranelift_with_num(source: &str, input: i64) -> (String, i64, f64) {
+    let _run = RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    READ_NUM.store(input, Ordering::Relaxed);
     let t = Instant::now();
-    let mut cfg = ahsembler::compile_to_cfg_aot(source);
-    for _ in 0..10 {
-        let before = cfg.num_blocks();
-        let states = ahsembler::cfg_optimize::analyze_stack_depths(&cfg);
-        ahsembler::cfg_optimize::eliminate_guards(&mut cfg, &states);
-        ahsembler::cfg_optimize::eliminate_guard_depth(&mut cfg, &states);
-        ahsembler::cfg_optimize::thread_jumps(&mut cfg);
-        ahsembler::cfg_optimize::merge_guard_ok(&mut cfg);
-        ahsembler::cfg_optimize::merge_blocks(&mut cfg);
-        ahsembler::cfg_optimize::eliminate_dead_blocks(&mut cfg);
-        if cfg.num_blocks() == before {
-            break;
-        }
-    }
-    let removed = ahsembler::cfg_optimize::eliminate_loop_guards(&mut cfg);
-    if removed > 0 {
-        for _ in 0..10 {
-            let before = cfg.num_blocks();
-            let states = ahsembler::cfg_optimize::analyze_stack_depths(&cfg);
-            ahsembler::cfg_optimize::eliminate_guard_depth(&mut cfg, &states);
-            ahsembler::cfg_optimize::thread_jumps(&mut cfg);
-            ahsembler::cfg_optimize::merge_blocks(&mut cfg);
-            ahsembler::cfg_optimize::eliminate_dead_blocks(&mut cfg);
-            if cfg.num_blocks() == before {
-                break;
-            }
-        }
-        let states = ahsembler::cfg_optimize::analyze_stack_depths(&cfg);
-        ahsembler::cfg_optimize::fold_constants(&mut cfg, &states);
-        ahsembler::cfg_optimize::peephole_cleanup(&mut cfg, &states);
-    }
-    let chain_removed = ahsembler::cfg_optimize::eliminate_chain_guards(&mut cfg);
-    if chain_removed > 0 {
-        for _ in 0..10 {
-            let before = cfg.num_blocks();
-            ahsembler::cfg_optimize::thread_jumps(&mut cfg);
-            ahsembler::cfg_optimize::merge_blocks(&mut cfg);
-            ahsembler::cfg_optimize::eliminate_dead_blocks(&mut cfg);
-            if cfg.num_blocks() == before {
-                break;
-            }
-        }
-    }
+    // The same pipeline `aheui build --codegen cranelift` runs, so this test
+    // measures the CFG the CLI actually hands the backend.
+    let cfg = compaheuiler::pipeline::optimize(source, ahsembler::OptimizationLevel::O3);
 
     let cfg_ms = t.elapsed().as_secs_f64() * 1000.0;
     let t2 = Instant::now();
     let jit = compaheuiler::jit::compile_cfg(&cfg).expect("Cranelift compilation failed");
     let cl_ms = t2.elapsed().as_secs_f64() * 1000.0;
-    let compile_ms = t.elapsed().as_secs_f64() * 1000.0;
-
     let mut data: Vec<Vec<i64>> = (0..28).map(|_| vec![0i64; 65536]).collect();
     let mut bases: [*mut i64; 28] = {
         let mut b = [std::ptr::null_mut(); 28];
@@ -92,13 +68,14 @@ fn run_cranelift(source: &str) -> (String, i64, f64) {
     let mut lengths = [0i32; 28];
     let mut sp = SpecialStorage::new();
     let sp_ctx = &mut sp as *mut SpecialStorage as *mut u8;
-    STDOUT_BUF.lock().unwrap().clear();
+    STDOUT_BUF.lock().unwrap_or_else(|e| e.into_inner()).clear();
     let t3 = Instant::now();
     let exit = unsafe {
-        jit.execute(
+        jit.execute_buffered(
             &mut bases,
             &mut lengths,
             write_char,
+            write_bytes,
             write_num,
             read_char,
             read_num,
@@ -111,7 +88,8 @@ fn run_cranelift(source: &str) -> (String, i64, f64) {
         )
     };
     let run_ms = t3.elapsed().as_secs_f64() * 1000.0;
-    let out = String::from_utf8_lossy(&STDOUT_BUF.lock().unwrap()).to_string();
+    let out =
+        String::from_utf8_lossy(&STDOUT_BUF.lock().unwrap_or_else(|e| e.into_inner())).to_string();
     let total_ms = t.elapsed().as_secs_f64() * 1000.0;
     eprintln!(
         "  breakdown: cfg={cfg_ms:.1}ms cranelift={cl_ms:.1}ms run={run_ms:.1}ms total={total_ms:.1}ms"
@@ -126,12 +104,45 @@ fn test_add_cranelift() {
     assert_eq!(out, "5");
 }
 
+#[cfg(feature = "bigint")]
+#[test]
+fn test_2e65_cranelift_bigint() {
+    let source = common::require_snippet("integer/2e65-print.aheui");
+    let expected = common::require_snippet("integer/2e65-print.out");
+    let (out, exit, compile_ms) = run_cranelift(&source);
+    eprintln!("cranelift 2e65 bigint: {compile_ms:.1}ms exit={exit} out={out:?}");
+    assert_eq!(out.trim_end(), expected.trim_end());
+}
+
+#[cfg(feature = "bigint")]
+#[test]
+fn test_post_promotion_ops_cranelift_bigint() {
+    let (out, exit, _) = run_cranelift(common::DUAL_MODE_POST_PROMOTION_OPS);
+    assert_eq!(exit, 0);
+    assert_eq!(out, common::DUAL_MODE_POST_PROMOTION_OUTPUT);
+}
+
+#[cfg(feature = "bigint")]
+#[test]
+fn test_read_num_boxes_large_i64_after_cranelift_promotion() {
+    let source = "반빠따빠따빠따빠따빠따빠따마방망하";
+    let (out, exit, _) = run_cranelift_with_num(source, 5_000_000_000_000_000_000);
+    assert_eq!(out, "5000000000000000000");
+    assert_eq!(exit, 0);
+}
+
+#[cfg(feature = "bigint")]
+#[test]
+fn test_loop_carried_storage_survives_cranelift_promotion() {
+    let source = common::require_snippet("factorial/factorial.aheui");
+    let (out, exit, _) = run_cranelift_with_num(&source, 21);
+    assert_eq!(exit, 0);
+    assert_eq!(out, "51090942171709440000");
+}
+
 #[test]
 fn test_hello_cranelift() {
-    let source = std::fs::read_to_string(
-        "snippets/hello-world/hello.puzzlet.aheui",
-    )
-    .unwrap();
+    let source = common::require_snippet("hello-world/hello.puzzlet.aheui");
     let (out, _exit, compile_ms) = run_cranelift(&source);
     eprintln!(
         "cranelift hello: {compile_ms:.1}ms out={:?}",
@@ -146,9 +157,7 @@ fn test_hello_cranelift() {
 
 #[test]
 fn test_logo_cranelift() {
-    let source =
-        std::fs::read_to_string("snippets/logo/logo.aheui")
-            .unwrap();
+    let source = common::require_snippet("logo/logo.aheui");
     let (out, _exit, compile_ms) = run_cranelift(&source);
     eprintln!(
         "cranelift logo: total={compile_ms:.1}ms output={}bytes",
@@ -161,10 +170,7 @@ fn test_logo_cranelift() {
 #[test]
 fn test_queue_cranelift() {
     // standard/queue.aheui: tests queue (sel=21) operations
-    let source = std::fs::read_to_string(
-        "snippets/standard/queue.aheui",
-    )
-    .unwrap();
+    let source = common::require_snippet("standard/queue.aheui");
     let (out, _exit, compile_ms) = run_cranelift(&source);
     eprintln!("cranelift queue: {compile_ms:.1}ms out={out:?}");
     assert_eq!(out, "235223");
@@ -172,10 +178,7 @@ fn test_queue_cranelift() {
 
 #[test]
 fn test_99bottles_cranelift() {
-    let source = std::fs::read_to_string(
-        "snippets/99bottles/99bottles.aheui",
-    )
-    .unwrap();
+    let source = common::require_snippet("99bottles/99bottles.aheui");
     let (out, exit, compile_ms) = run_cranelift(&source);
     eprintln!(
         "cranelift 99bottles: {compile_ms:.1}ms exit={exit} out={}bytes",
@@ -187,11 +190,14 @@ fn test_99bottles_cranelift() {
 #[test]
 #[ignore] // aheui.aheui has 407 blocks — Cranelift compilation is slow
 fn test_aheui_interp_cranelift() {
-    let source = std::fs::read_to_string(
-        "tests/aheui.aheui",
-    )
-    .unwrap();
-    let (out, exit, _) = run_cranelift(&source);
+    let Some(source) = common::read_self_interp() else {
+        common::skip(
+            "test_aheui_interp_cranelift",
+            "aheui.aheui (set AHEUI_SELF_INTERP)",
+        );
+        return;
+    };
+    let (_out, exit, _) = run_cranelift(&source);
     eprintln!("cranelift aheui(밝희): exit={exit}");
     assert_eq!(exit, 7);
 }

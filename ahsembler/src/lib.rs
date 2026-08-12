@@ -40,37 +40,39 @@ impl OptimizationLevel {
 pub fn compile(source: &str, optimization: OptimizationLevel) -> Program {
     let mut compiler = Compiler::new();
     compiler.compile(source);
-    match optimization {
-        OptimizationLevel::O0 => return compiler.into_program(),
+    let mut program = match optimization {
+        OptimizationLevel::O0 => compiler.into_program(),
         OptimizationLevel::O1 | OptimizationLevel::O2 | OptimizationLevel::O3 => {
             compiler.optimize1();
+            match optimization {
+                OptimizationLevel::O1 => compiler.into_program(),
+                OptimizationLevel::O2 => {
+                    // Single-pass CFG: guard elimination + merge + linearize
+                    let mut cfg = cfg_build::build_cfg(&compiler);
+                    let states = cfg_optimize::analyze_stack_depths(&cfg);
+                    cfg_optimize::eliminate_guards(&mut cfg, &states);
+                    cfg_optimize::thread_jumps(&mut cfg);
+                    cfg_optimize::simplify_branches(&mut cfg);
+                    cfg_optimize::merge_blocks(&mut cfg);
+                    cfg_optimize::eliminate_dead_blocks(&mut cfg);
+                    cfg_linearize::linearize(&cfg)
+                }
+                OptimizationLevel::O3 => {
+                    // Iterated CFG: guard elimination + fold + peephole → re-linearize + polish
+                    let cfg = cfg_build::build_cfg(&compiler);
+                    let optimized = cfg_optimize::optimize_cfg(cfg, cfg_optimize::ConstWidth::I32);
+                    let program = cfg_linearize::linearize(&optimized);
+                    let mut post = Compiler::from_program(&program);
+                    post.remove_dead_labels();
+                    post.optimize1();
+                    post.into_program()
+                }
+                OptimizationLevel::O0 => unreachable!(),
+            }
         }
-    }
-    match optimization {
-        OptimizationLevel::O1 => compiler.into_program(),
-        OptimizationLevel::O2 => {
-            // Single-pass CFG: guard elimination + merge + linearize
-            let mut cfg = cfg_build::build_cfg(&compiler);
-            let states = cfg_optimize::analyze_stack_depths(&cfg);
-            cfg_optimize::eliminate_guards(&mut cfg, &states);
-            cfg_optimize::thread_jumps(&mut cfg);
-            cfg_optimize::simplify_branches(&mut cfg);
-            cfg_optimize::merge_blocks(&mut cfg);
-            cfg_optimize::eliminate_dead_blocks(&mut cfg);
-            cfg_linearize::linearize(&cfg)
-        }
-        OptimizationLevel::O3 => {
-            // Iterated CFG: guard elimination + fold + peephole → re-linearize + polish
-            let cfg = cfg_build::build_cfg(&compiler);
-            let optimized = cfg_optimize::optimize_cfg(cfg);
-            let program = cfg_linearize::linearize(&optimized);
-            let mut post = Compiler::from_program(&program);
-            post.remove_dead_labels();
-            post.optimize1();
-            post.into_program()
-        }
-        OptimizationLevel::O0 => unreachable!(),
-    }
+    };
+    program.resolve_jump_targets();
+    program
 }
 
 /// Compile using the hybrid optimizer pipeline:
@@ -86,7 +88,7 @@ pub fn compile_cfg(source: &str) -> Program {
 
     // Phase 2: Single CFG pass — lattice analysis, path splitting, merging.
     let cfg = cfg_build::build_cfg(&compiler);
-    let optimized = cfg_optimize::optimize_cfg(cfg);
+    let optimized = cfg_optimize::optimize_cfg(cfg, cfg_optimize::ConstWidth::I32);
     let program = cfg_linearize::linearize(&optimized);
 
     // Phase 3: Final O2 polish on the restructured layout.
@@ -96,7 +98,9 @@ pub fn compile_cfg(source: &str) -> Program {
     let mut post = Compiler::from_program(&program);
     post.remove_dead_labels();
     post.optimize2();
-    post.into_program()
+    let mut program = post.into_program();
+    program.resolve_jump_targets();
+    program
 }
 
 /// Compile source into an optimized CFG (for AOT compilation backends).
@@ -105,7 +109,7 @@ pub fn compile_to_cfg(source: &str) -> cfg::Cfg {
     compiler.compile(source);
     compiler.optimize2();
     let cfg = cfg_build::build_cfg(&compiler);
-    cfg_optimize::optimize_cfg(cfg)
+    cfg_optimize::optimize_cfg(cfg, cfg_optimize::ConstWidth::I64)
 }
 
 /// Aggressively optimized CFG for AOT backends.
