@@ -38,5 +38,5 @@ wasm-bindgen "${WASM}" --out-dir "${OUT_NODE}" --target nodejs --no-typescript
 
 echo
 echo "빌드 완료."
-echo "  브라우저 데모: cd aheui-wasm && python3 -m http.server 8000, 이후 http://localhost:8000/web/"
+echo "  브라우저 데모: python3 -m http.server 8000, 이후 http://localhost:8000/aheui-wasm/web/"
 echo "  node 테스트:   cd aheui-wasm && node test_e2e.mjs"

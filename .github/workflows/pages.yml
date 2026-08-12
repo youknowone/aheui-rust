@@ -9,6 +9,7 @@ on:
       - "aheuinterpreter/**"
       - "ahsembler/**"
       - "compaheuiler/**"
+      - "snippets"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/pages.yml"
@@ -29,6 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Install Rust (wasm32-unknown-unknown)
         run: |
@@ -56,6 +59,7 @@ jobs:
         run: |
           mkdir -p _site
           cp -R aheui-wasm/web/. _site/
+          cp -R snippets _site/snippets
           mkdir -p _site/pkg
           cp aheui-wasm/pkg/aheui_wasm.js     _site/pkg/
           cp aheui-wasm/pkg/aheui_wasm_bg.wasm _site/pkg/

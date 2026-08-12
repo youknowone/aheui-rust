@@ -126,12 +126,12 @@
       <span>소스</span>
       <select id="sample">
         <option value="">예제 고르기…</option>
-        <option value="hello.aheui">hello — 안녕하세요?</option>
-        <option value="hello-world.aheui">hello-world — Hello, world!</option>
-        <option value="factorial.aheui">factorial — 입력 필요 (예: 5)</option>
-        <option value="fibonacci.aheui">fibonacci — 피보나치 수열</option>
-        <option value="99bottles.aheui">99 bottles</option>
-        <option value="logo.aheui">logo — PGM 이미지 (느림)</option>
+        <option value="snippets/hello-world/hello.puzzlet.aheui">hello — 안녕하세요?</option>
+        <option value="snippets/hello-world/hello-world.puzzlet.aheui">hello-world — Hello, world!</option>
+        <option value="snippets/factorial/factorial.aheui">factorial — 입력 필요 (예: 5)</option>
+        <option value="snippets/fibonacci/fibonacci.codroc.aheui">fibonacci — 피보나치 수열</option>
+        <option value="snippets/99bottles/99bottles.aheui">99 bottles</option>
+        <option value="snippets/logo/logo.aheui">logo — PGM 이미지 (느림)</option>
       </select>
       <div class="spacer"></div>
       <button id="share" title="현재 소스/입력을 URL 해시로 인코딩한 링크를 클립보드에 복사">링크 복사</button>
@@ -186,11 +186,18 @@ function setStatus(msg, kind = "") {
 
 async function loadSample(name) {
   try {
-    setStatus(`samples/${name} 로딩 중…`);
-    const resp = await fetch(`samples/${name}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    setStatus(`${name} 로딩 중…`);
+    // The local demo is served from the repository root; GitHub Pages stages
+    // the same snippets tree beside index.html.
+    const candidates = [`../../${name}`, name];
+    let resp;
+    for (const url of candidates) {
+      resp = await fetch(url);
+      if (resp.ok) break;
+    }
+    if (!resp?.ok) throw new Error(`HTTP ${resp?.status ?? "network error"}`);
     $("source").value = await resp.text();
-    setStatus(`samples/${name} 로드 완료`, "ok");
+    setStatus(`${name} 로드 완료`, "ok");
   } catch (e) {
     setStatus(`샘플 로드 실패: ${e.message}`, "error");
   }
@@ -400,7 +407,7 @@ $("stdin").addEventListener("keydown", onKey);
 try {
   await init();
   if (!loadFromHash()) {
-    await loadSample("hello.aheui");
+    await loadSample("snippets/hello-world/hello.puzzlet.aheui");
   }
   setStatus("준비됨 — Ctrl/Cmd+Enter 로 실행, '링크 복사' 로 공유", "ok");
 } catch (e) {

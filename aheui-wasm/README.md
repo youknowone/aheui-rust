@@ -46,20 +46,21 @@ cargo install wasm-bindgen-cli --version 0.2.117
 
 ## 브라우저 데모
 
-빌드 후 정적 파일 서버로 `aheui-wasm/` 을 서빙하면 됩니다:
+빌드 후 저장소 루트를 정적 파일 서버로 서빙하면 됩니다. 웹 데모가 같은
+checkout의 `snippets` submodule을 직접 읽기 때문에 서버 루트도 저장소
+루트여야 합니다:
 
 ```sh
 ./aheui-wasm/build.sh
-cd aheui-wasm
 python3 -m http.server 8000
-# http://localhost:8000/web/
+# http://localhost:8000/aheui-wasm/web/
 ```
 
 데모는 다음을 지원합니다:
 
 - 소스 textarea + stdin textarea
 - `예제 고르기` 드롭다운: hello / hello-world / factorial / fibonacci /
-  99bottles / logo (`web/samples/` 에서 fetch)
+  99bottles / logo (`snippets/` submodule에서 fetch)
 - **인터프리터** 버튼: `interpret(source, stdin)` 호출
 - **WAT → wasm 실행** 버튼: `compile_to_wasm_web(source)` 로 wasm
   바이너리 생성 → `WebAssembly.instantiate` → `run()` 직접 실행
@@ -132,8 +133,9 @@ wasmtime run --dir .::/d \
 
 ## 샘플 출처
 
-`web/samples/` 안의 프로그램은 [`aheui/snippets`](https://github.com/aheui/snippets)
-저장소에서 가져온 것입니다.
+샘플 프로그램은 [`aheui/snippets`](https://github.com/aheui/snippets)
+submodule을 그대로 사용합니다. GitHub Pages 배포 단계도 이 디렉터리를
+사이트에 복사하므로 별도의 샘플 복사본을 관리하지 않습니다.
 
 ## 라이선스
 
