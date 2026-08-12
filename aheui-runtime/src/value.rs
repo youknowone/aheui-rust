@@ -64,13 +64,21 @@ pub fn val_mul(a: Val, b: Val) -> Val {
 #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
 #[inline(always)]
 pub fn val_div(a: Val, b: Val) -> Val {
-    if b == 0 { 0 } else { a.wrapping_div(b) }
+    if b == 0 {
+        0
+    } else {
+        ahsembler::consts::floor_div_i64(a, b)
+    }
 }
 
 #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
 #[inline(always)]
 pub fn val_mod(a: Val, b: Val) -> Val {
-    if b == 0 { 0 } else { a.wrapping_rem(b) }
+    if b == 0 {
+        0
+    } else {
+        ahsembler::consts::floor_mod_i64(a, b)
+    }
 }
 
 #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
@@ -277,6 +285,32 @@ fn binop_fast(
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[inline]
+fn floor_correction_needed_big(r: &BigInt, b: &BigInt) -> bool {
+    !r.is_zero() && (r.is_negative() != b.is_negative())
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+fn floor_div_big(a: BigInt, b: BigInt) -> BigInt {
+    let q = &a / &b;
+    if floor_correction_needed_big(&(a % &b), &b) {
+        q - BigInt::from(1)
+    } else {
+        q
+    }
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+fn floor_mod_big(a: BigInt, b: BigInt) -> BigInt {
+    let r = a % &b;
+    if floor_correction_needed_big(&r, &b) {
+        r + b
+    } else {
+        r
+    }
+}
+
+#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
 #[inline(always)]
 pub fn val_add(a: Val, b: Val) -> Val {
     binop_fast(a, b, |a, b| a.checked_add(b), |a, b| a + b)
@@ -300,7 +334,15 @@ pub fn val_div(a: Val, b: Val) -> Val {
     if val_is_zero(&b) {
         return Val::from_small(0);
     }
-    binop_fast(a, b, |a, b| Some(a.wrapping_div(b)), |a, b| a / b)
+    binop_fast(
+        a,
+        b,
+        |a, b| {
+            a.checked_div(b)
+                .map(|_| ahsembler::consts::floor_div_i64(a, b))
+        },
+        floor_div_big,
+    )
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -309,7 +351,12 @@ pub fn val_mod(a: Val, b: Val) -> Val {
     if val_is_zero(&b) {
         return Val::from_small(0);
     }
-    binop_fast(a, b, |a, b| Some(a.wrapping_rem(b)), |a, b| a % b)
+    binop_fast(
+        a,
+        b,
+        |a, b| Some(ahsembler::consts::floor_mod_i64(a, b)),
+        floor_mod_big,
+    )
 }
 
 #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
@@ -396,6 +443,24 @@ mod tests {
         let b = val_from_i32(0);
         let r = val_div(a, b);
         assert_eq!(val_to_i64(&r), 0);
+    }
+
+    #[test]
+    fn division_and_remainder_are_floored() {
+        let cases = [
+            (-7, 2, -4, 1),
+            (7, -2, -4, -1),
+            (-13, 10, -2, 7),
+            (13, -10, -2, -7),
+            (12, -3, -4, 0),
+        ];
+
+        for (a, b, quotient, remainder) in cases {
+            let a = val_from_str(&a.to_string()).unwrap();
+            let b = val_from_str(&b.to_string()).unwrap();
+            assert_eq!(val_to_i64(&val_div(a, b)), quotient);
+            assert_eq!(val_to_i64(&val_mod(a, b)), remainder);
+        }
     }
 
     #[test]

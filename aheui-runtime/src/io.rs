@@ -64,20 +64,19 @@ fn output_write_all(bytes: &[u8]) {
 }
 
 /// Fast decimal encoding for i64, avoids alloc.
-fn encode_decimal_i64(mut value: i64, buf: &mut [u8; 20]) -> &[u8] {
+fn encode_decimal_i64(value: i64, buf: &mut [u8; 20]) -> &[u8] {
     if value == 0 {
         buf[19] = b'0';
         return &buf[19..];
     }
     let negative = value < 0;
-    if negative {
-        value = -value;
-    }
+    // Take the magnitude unsigned because negating i64::MIN overflows.
+    let mut magnitude = value.unsigned_abs();
     let mut pos = 20;
-    while value > 0 {
+    while magnitude > 0 {
         pos -= 1;
-        buf[pos] = b'0' + (value % 10) as u8;
-        value /= 10;
+        buf[pos] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
     }
     if negative {
         pos -= 1;
@@ -103,6 +102,28 @@ pub fn output_write_number(value: &Val) {
     } else {
         let text = value.to_string();
         output_write_all(text.as_bytes());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_decimal_i64;
+
+    #[test]
+    fn encode_decimal_i64_handles_full_range_and_common_values() {
+        let cases = [
+            (i64::MIN, "-9223372036854775808"),
+            (i64::MAX, "9223372036854775807"),
+            (0, "0"),
+            (-1, "-1"),
+            (1, "1"),
+            (-10, "-10"),
+        ];
+
+        for (value, expected) in cases {
+            let mut buf = [0u8; 20];
+            assert_eq!(encode_decimal_i64(value, &mut buf), expected.as_bytes());
+        }
     }
 }
 
