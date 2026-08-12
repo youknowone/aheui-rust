@@ -910,9 +910,18 @@ impl StoragePool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn nursery_test_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn test_stack_basic() {
+        let _lock = nursery_test_lock();
         let mut s = AheuiStack::new();
         s.push(10_i64);
         s.push(20_i64);
@@ -922,6 +931,7 @@ mod tests {
 
     #[test]
     fn test_stack_binop() {
+        let _lock = nursery_test_lock();
         let mut s = AheuiStack::new();
         s.push(10_i64);
         s.push(3_i64);
@@ -933,6 +943,7 @@ mod tests {
 
     #[test]
     fn test_stack_dup_swap() {
+        let _lock = nursery_test_lock();
         let mut s = AheuiStack::new();
         s.push(5_i64);
         s.dup();
@@ -945,6 +956,7 @@ mod tests {
 
     #[test]
     fn test_queue_basic() {
+        let _lock = nursery_test_lock();
         let mut q = AheuiQueue::new();
         q.push(1_i64);
         q.push(2_i64);
@@ -955,6 +967,7 @@ mod tests {
 
     #[test]
     fn test_queue_binop() {
+        let _lock = nursery_test_lock();
         let mut q = AheuiQueue::new();
         q.push(10_i64);
         q.push(3_i64);
@@ -966,6 +979,7 @@ mod tests {
 
     #[test]
     fn test_port_dup() {
+        let _lock = nursery_test_lock();
         let mut p = AheuiPort::new();
         p.push(5_i64);
         p.push(10_i64);
@@ -977,6 +991,7 @@ mod tests {
 
     #[test]
     fn test_storage_pool() {
+        let _lock = nursery_test_lock();
         let pool = StoragePool::new();
         assert_eq!(pool.stacks.len(), STORAGE_COUNT);
         // Stack slots are AheuiStack
