@@ -1,9 +1,10 @@
-/// Buffered I/O for Aheui interpreter.
-///
-/// Ported from rpaheui/aheui/option.py and target/aheui IO routines.
+//! Buffered I/O for Aheui interpreter.
+//!
+//! Ported from rpaheui/aheui/option.py and target/aheui IO routines.
+
+use std::io::Write;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::io::{self, Read};
-use std::io::Write;
 
 use crate::value::*;
 
