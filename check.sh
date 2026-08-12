@@ -5,15 +5,15 @@ cd "$(dirname "$0")"
 
 if [ -n "${AHEUI_SNIPPETS:-}" ]; then
     SNIPPETS="$AHEUI_SNIPPETS"
-elif [ -d tests ]; then
-    SNIPPETS="tests"
+elif [ -d snippets ]; then
+    SNIPPETS="snippets"
 elif [ -d rpaheui/snippets ]; then
     SNIPPETS="rpaheui/snippets"
 else
     SNIPPETS=""
 fi
 if [ ! -d "$SNIPPETS" ]; then
-    echo "snippet corpus not found; initialize the tests link or set AHEUI_SNIPPETS" >&2
+    echo "snippet corpus not found; initialize the snippets submodule or set AHEUI_SNIPPETS" >&2
     exit 1
 fi
 PASS=0
