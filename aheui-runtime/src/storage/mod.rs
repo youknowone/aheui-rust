@@ -637,11 +637,7 @@ pub fn set_gc_roots(storage: *mut Storage) {
     GC_ROOTS.store(storage as usize, Ordering::Relaxed);
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 pub fn walk_bigint_root_values(visit: &mut dyn FnMut(&mut Val)) {
     fn walk_node_chain(mut node: *mut linkedlist::Node, visit: &mut dyn FnMut(&mut Val)) {
         // Deliberately walk to NULL to over-approximate liveness: bounding by
@@ -697,11 +693,7 @@ pub fn walk_bigint_root_values(visit: &mut dyn FnMut(&mut Val)) {
 /// converted, and the caller must not treat the flip as done: with no storage
 /// the walk reaches no value at all yet reports no error, so a mode switch on
 /// top of it leaves every live raw word to be reread as a tagged one.
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[must_use]
 pub fn promote_all_root_values() -> bool {
     if GC_ROOTS.load(Ordering::Relaxed) == 0 {
@@ -1132,21 +1124,13 @@ impl Storage {
         true
     }
 
-    #[cfg(not(any(
-        feature = "num-bigint",
-        feature = "malachite-bigint",
-        feature = "runtime-rbigint"
-    )))]
+    #[cfg(not(feature = "bigint-backend"))]
     #[inline(always)]
     pub fn all_jit_compatible(&self) -> bool {
         true
     }
 
-    #[cfg(any(
-        feature = "num-bigint",
-        feature = "malachite-bigint",
-        feature = "runtime-rbigint"
-    ))]
+    #[cfg(feature = "bigint-backend")]
     #[inline(always)]
     pub fn all_jit_compatible(&self) -> bool {
         true
@@ -1236,11 +1220,7 @@ mod tests {
     /// `port.last_push` — lives outside every node chain. Asserted through the
     /// walk itself, so a holder added to `Storage` later without being added
     /// to the walk fails here.
-    #[cfg(any(
-        feature = "num-bigint",
-        feature = "malachite-bigint",
-        feature = "runtime-rbigint"
-    ))]
+    #[cfg(feature = "bigint-backend")]
     #[test]
     fn test_promote_all_root_values_reaches_every_holder() {
         use crate::value::val_from_raw_i64;
@@ -1282,11 +1262,7 @@ mod tests {
     /// there walks a storage whose unvisited values are still raw words, and a
     /// raw even number is bit-identical to a bigint pointer, so it would be
     /// followed. Pinned with a hook that mimics that allocator.
-    #[cfg(any(
-        feature = "num-bigint",
-        feature = "malachite-bigint",
-        feature = "runtime-rbigint"
-    ))]
+    #[cfg(feature = "bigint-backend")]
     #[test]
     fn test_promote_all_root_values_suppresses_collection() {
         use crate::value::{AheuiBigInt, val_from_raw_i64};

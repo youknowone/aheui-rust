@@ -82,11 +82,7 @@ pub fn stack_pop(stack: usize) -> Val {
     value
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -128,11 +124,7 @@ pub fn stack_add(stack: usize) {
 }
 
 
-#[cfg(not(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-)))]
+#[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -167,11 +159,7 @@ pub fn stack_add(stack: usize) {
     next.value = val_add(r2, r1);
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -212,11 +200,7 @@ pub fn stack_sub(stack: usize) {
     };
 }
 
-#[cfg(not(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-)))]
+#[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -251,11 +235,7 @@ pub fn stack_sub(stack: usize) {
     next.value = val_sub(r2, r1);
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -305,11 +285,7 @@ pub fn stack_mul(stack: usize) {
         };
 }
 
-#[cfg(not(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-)))]
+#[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -412,11 +388,7 @@ pub fn stack_swap(stack: usize) {
     node2.value = v1;
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -456,11 +428,7 @@ pub fn stack_cmp(stack: usize) {
     };
 }
 
-#[cfg(not(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-)))]
+#[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -607,11 +575,7 @@ pub fn queue_pop(queue: usize) -> Val {
 // collect is safe (node-collect never moves values); the popped nodes are freed
 // before the alloc. `maybe_collect_bigints` is dropped, matching the inlined
 // stack arithmetic.
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -666,11 +630,7 @@ pub fn queue_add(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(not(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-)))]
+#[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -719,11 +679,7 @@ pub fn queue_add(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -778,11 +734,7 @@ pub fn queue_sub(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(not(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-)))]
+#[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -831,11 +783,7 @@ pub fn queue_sub(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -895,11 +843,7 @@ pub fn queue_mul(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(not(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-)))]
+#[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1020,11 +964,7 @@ pub fn queue_swap(queue: usize) {
     node2.value = v1;
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1078,11 +1018,7 @@ pub fn queue_cmp(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(not(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-)))]
+#[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1153,11 +1089,7 @@ pub fn queue_cmp(queue: usize) {
 // twins. It is written this way — rather than through an accessor — because an
 // unregistered call is silently skipped by the lowerer rather than rejected.
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1194,11 +1126,7 @@ pub fn stack_add_raw(stack: usize) {
     };
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1235,11 +1163,7 @@ pub fn stack_sub_raw(stack: usize) {
     };
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1276,11 +1200,7 @@ pub fn stack_mul_raw(stack: usize) {
     };
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1315,11 +1235,7 @@ pub fn stack_cmp_raw(stack: usize) {
     next.value = val_ge_raw(r2, r1);
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1363,11 +1279,7 @@ pub fn stack_div_raw(stack: usize) {
     };
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1402,11 +1314,7 @@ pub fn stack_mod_raw(stack: usize) {
     next.value = val_mod_raw(r2, r1);
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1457,11 +1365,7 @@ pub fn queue_add_raw(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1512,11 +1416,7 @@ pub fn queue_sub_raw(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1567,11 +1467,7 @@ pub fn queue_mul_raw(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1620,11 +1516,7 @@ pub fn queue_cmp_raw(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
@@ -1678,11 +1570,7 @@ pub fn queue_div_raw(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {

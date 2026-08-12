@@ -14,36 +14,16 @@
 #[cfg(all(feature = "num-bigint", feature = "malachite-bigint"))]
 compile_error!("features `num-bigint` and `malachite-bigint` are mutually exclusive");
 
-#[cfg(not(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-)))]
+#[cfg(not(feature = "bigint-backend"))]
 pub mod smallint;
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 pub mod bigint;
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 mod bigint_backend;
 
-#[cfg(not(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-)))]
+#[cfg(not(feature = "bigint-backend"))]
 pub use smallint::*;
-#[cfg(any(
-    feature = "num-bigint",
-    feature = "malachite-bigint",
-    feature = "runtime-rbigint"
-))]
+#[cfg(feature = "bigint-backend")]
 pub use bigint::*;
 
 // ── Floored division ────────────────────────────────────────────────
