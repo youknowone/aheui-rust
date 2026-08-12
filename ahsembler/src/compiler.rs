@@ -945,7 +945,7 @@ mod tests {
     }
 
     /// Locate the snippet corpus with the same precedence as `check.sh`:
-    /// `$AHEUI_SNIPPETS`, the tracked `tests -> snippets` link, then a sibling
+    /// `$AHEUI_SNIPPETS`, the pinned `snippets` submodule, then a sibling
     /// `rpaheui/snippets` checkout.
     fn snippets_dir() -> std::path::PathBuf {
         if let Some(p) = std::env::var_os("AHEUI_SNIPPETS") {
@@ -953,7 +953,7 @@ mod tests {
         }
         let mut dir = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")));
         while let Some(d) = dir {
-            let candidate = d.join("tests");
+            let candidate = d.join("snippets");
             if candidate.is_dir() {
                 return candidate;
             }
