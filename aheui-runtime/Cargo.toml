@@ -8,12 +8,14 @@ default = ["malachite-bigint"]
 jit = ["dep:majit-ir", "dep:majit-macros", "dep:majit-metainterp"]
 num-bigint = ["dep:num-bigint", "dep:num-traits"]
 malachite-bigint = ["dep:malachite-bigint", "dep:num-traits"]
+runtime-rbigint = ["dep:majit-rlib"]
 
 [dependencies]
 ahsembler = { path = "../ahsembler" }
 majit-ir = { path = "../../majit/majit-ir", optional = true }
 majit-macros = { path = "../../majit/majit-macros", optional = true }
 majit-metainterp = { path = "../../majit/majit-metainterp", features = ["dynasm"], optional = true }
+majit-rlib = { path = "../../majit/majit-rlib", optional = true }
 num-bigint = { version = "0.4", optional = true }
 malachite-bigint = { version = "0.9.1", optional = true }
 num-traits = { version = "0.2", optional = true }

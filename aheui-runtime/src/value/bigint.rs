@@ -5,23 +5,22 @@
 //! layout so the hot small-int path stays allocation-free:
 //!
 //!   bit 0 = 1  →  small integer, value = word >> 1  (arithmetic shift)
-//!   bit 0 = 0  →  pointer to a heap `BigInt` (always aligned)
+//!   bit 0 = 0  →  pointer to a heap big integer (always aligned)
 //!
 //! Small-integer range: −2^62 .. 2^62 − 1 (±4.6 × 10^18).
 
-#[cfg(feature = "malachite-bigint")]
-use malachite_bigint::BigInt;
-#[cfg(all(feature = "num-bigint", not(feature = "malachite-bigint")))]
-use num_bigint::BigInt;
-use num_traits::{Signed, ToPrimitive, Zero};
+use super::bigint_backend::{
+    Big, big_add, big_clone, big_floor_div, big_floor_mod, big_fmt, big_from_dec_str, big_from_i64,
+    big_ge, big_mul, big_sub, big_to_i64,
+};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const SMALL_MIN: i64 = -(1i64 << 62);
 const SMALL_MAX: i64 = (1i64 << 62) - 1;
 
-pub type AheuiBigInt = BigInt;
-pub type BigIntAllocHook = fn(BigInt) -> *mut BigInt;
+pub type AheuiBigInt = Big;
+pub type BigIntAllocHook = fn(Big) -> *mut Big;
 pub type BigIntMaybeCollectHook = fn();
 
 static BIGINT_ALLOC_HOOK: AtomicUsize = AtomicUsize::new(0);
@@ -110,7 +109,7 @@ impl Val {
     }
 
     #[inline(always)]
-    fn from_big(b: BigInt) -> Self {
+    fn from_big(b: Big) -> Self {
         let hook_addr = BIGINT_ALLOC_HOOK.load(Ordering::Relaxed);
         let ptr = if hook_addr != 0 {
             let hook: BigIntAllocHook = unsafe { std::mem::transmute(hook_addr) };
@@ -128,7 +127,7 @@ impl Val {
         if v >= SMALL_MIN && v <= SMALL_MAX {
             Self::from_small(v)
         } else {
-            Self::from_big(BigInt::from(v))
+            Self::from_big(big_from_i64(v))
         }
     }
 
@@ -146,11 +145,11 @@ impl Val {
         if self.is_small() {
             self.as_i64_unchecked()
         } else {
-            self.as_big().to_i64().expect("BigInt too large for i64")
+            big_to_i64(self.as_big()).expect("big integer too large for i64")
         }
     }
 
-    /// Try to convert to i64, returning None for BigInt values that overflow.
+    /// Try to convert to i64, returning None for big values that overflow.
     #[inline]
     pub fn try_to_i64(self) -> Option<i64> {
         if !bigint_mode() {
@@ -159,26 +158,26 @@ impl Val {
         if self.is_small() {
             Some(self.as_i64_unchecked())
         } else {
-            self.as_big().to_i64()
+            big_to_i64(self.as_big())
         }
     }
 
     #[inline(always)]
-    fn as_big(&self) -> &BigInt {
+    fn as_big(&self) -> &Big {
         debug_assert!(!self.is_small());
-        unsafe { &*(self.0 as *const BigInt) }
+        unsafe { &*(self.0 as *const Big) }
     }
 
-    fn to_bigint(self) -> BigInt {
+    fn to_bigint(self) -> Big {
         if self.is_small() {
-            BigInt::from(self.as_i64_unchecked())
+            big_from_i64(self.as_i64_unchecked())
         } else {
-            self.as_big().clone()
+            big_clone(self.as_big())
         }
     }
 
-    fn normalize_big(b: BigInt) -> Val {
-        match b.to_i64() {
+    fn normalize_big(b: Big) -> Val {
+        match big_to_i64(&b) {
             Some(v) if v >= SMALL_MIN && v <= SMALL_MAX => Val::from_small(v),
             _ => Val::from_big(b),
         }
@@ -204,7 +203,7 @@ impl std::fmt::Display for Val {
         if self.is_small() {
             write!(f, "{}", self.as_i64_unchecked())
         } else {
-            write!(f, "{}", self.as_big())
+            big_fmt(self.as_big(), f)
         }
     }
 }
@@ -217,7 +216,9 @@ impl std::fmt::Debug for Val {
         if self.is_small() {
             write!(f, "Val::Small({})", self.as_i64_unchecked())
         } else {
-            write!(f, "Val::Big({})", self.as_big())
+            write!(f, "Val::Big(")?;
+            big_fmt(self.as_big(), f)?;
+            write!(f, ")")
         }
     }
 }
@@ -548,7 +549,7 @@ pub fn val_is_zero(v: &Val) -> bool {
     if v.is_small() {
         v.0 == 1
     } else {
-        v.as_big().is_zero()
+        big_to_i64(v.as_big()) == Some(0)
     }
 }
 
@@ -574,7 +575,7 @@ pub fn val_to_i32_saturating(v: &Val) -> i32 {
         } else {
             raw as i32
         }
-    } else if v.as_big().is_positive() {
+    } else if big_ge(v.as_big(), &big_from_i64(0)) {
         i32::MAX
     } else {
         i32::MIN
@@ -588,7 +589,7 @@ fn binop_fast(
     a: Val,
     b: Val,
     f_small: impl FnOnce(i64, i64) -> Option<i64>,
-    f_big: impl FnOnce(BigInt, BigInt) -> BigInt,
+    f_big: impl FnOnce(&Big, &Big) -> Big,
 ) -> Val {
     if a.is_small() & b.is_small() {
         let av = a.as_i64_unchecked();
@@ -596,37 +597,11 @@ fn binop_fast(
         if let Some(r) = f_small(av, bv) {
             return Val::from_i64_promoting(r);
         }
-        return Val::normalize_big(f_big(BigInt::from(av), BigInt::from(bv)));
+        return Val::normalize_big(f_big(&big_from_i64(av), &big_from_i64(bv)));
     }
-    Val::normalize_big(f_big(a.to_bigint(), b.to_bigint()))
-}
-
-/// Whether a truncating division of a bignum needs the floor correction, the
-/// [`super::floor_correction_needed`] twin.
-#[inline]
-fn floor_correction_needed_big(r: &BigInt, b: &BigInt) -> bool {
-    !r.is_zero() && (r.is_negative() != b.is_negative())
-}
-
-/// `a // b` for a non-zero `b`, floored. `rbigint.div` is `floordiv`, which is
-/// `divmod`'s quotient; the backing crates' `/` truncates instead.
-fn floor_div_big(a: BigInt, b: BigInt) -> BigInt {
-    let q = &a / &b;
-    if floor_correction_needed_big(&(a % &b), &b) {
-        q - BigInt::from(1)
-    } else {
-        q
-    }
-}
-
-/// `a % b` for a non-zero `b`, floored. `rbigint.mod` is `divmod`'s remainder.
-fn floor_mod_big(a: BigInt, b: BigInt) -> BigInt {
-    let r = a % &b;
-    if floor_correction_needed_big(&r, &b) {
-        r + b
-    } else {
-        r
-    }
+    let a = a.to_bigint();
+    let b = b.to_bigint();
+    Val::normalize_big(f_big(&a, &b))
 }
 
 // Mode 0 is a plain `checked_*` on the machine word. The overflow arm is the
@@ -640,7 +615,7 @@ pub fn val_add(a: Val, b: Val) -> Val {
             None => promote_and_apply(a, b, val_add),
         };
     }
-    binop_fast(a, b, |a, b| a.checked_add(b), |a, b| a + b)
+    binop_fast(a, b, |a, b| a.checked_add(b), big_add)
 }
 
 #[inline(always)]
@@ -651,7 +626,7 @@ pub fn val_sub(a: Val, b: Val) -> Val {
             None => promote_and_apply(a, b, val_sub),
         };
     }
-    binop_fast(a, b, |a, b| a.checked_sub(b), |a, b| a - b)
+    binop_fast(a, b, |a, b| a.checked_sub(b), big_sub)
 }
 
 #[inline(always)]
@@ -662,7 +637,7 @@ pub fn val_mul(a: Val, b: Val) -> Val {
             None => promote_and_apply(a, b, val_mul),
         };
     }
-    binop_fast(a, b, |a, b| a.checked_mul(b), |a, b| a * b)
+    binop_fast(a, b, |a, b| a.checked_mul(b), big_mul)
 }
 
 #[inline(always)]
@@ -680,7 +655,7 @@ pub fn val_div(a: Val, b: Val) -> Val {
             None => promote_and_apply(a, b, val_div),
         };
     }
-    binop_fast(a, b, |a, b| Some(super::floor_div_i64(a, b)), floor_div_big)
+    binop_fast(a, b, |a, b| Some(super::floor_div_i64(a, b)), big_floor_div)
 }
 
 #[inline(always)]
@@ -695,7 +670,7 @@ pub fn val_mod(a: Val, b: Val) -> Val {
         // fit, floored or not, so mode 0 is never left here.
         return Val(super::floor_mod_i64(a.0, b.0));
     }
-    binop_fast(a, b, |a, b| Some(super::floor_mod_i64(a, b)), floor_mod_big)
+    binop_fast(a, b, |a, b| Some(super::floor_mod_i64(a, b)), big_floor_mod)
 }
 
 #[inline(always)]
@@ -723,16 +698,16 @@ pub fn val_ge(a: &Val, b: &Val) -> bool {
 #[cold]
 fn val_ge_slow(a: &Val, b: &Val) -> bool {
     let a = if a.is_small() {
-        BigInt::from(a.as_i64_unchecked())
+        big_from_i64(a.as_i64_unchecked())
     } else {
-        a.as_big().clone()
+        big_clone(a.as_big())
     };
     let b = if b.is_small() {
-        BigInt::from(b.as_i64_unchecked())
+        big_from_i64(b.as_i64_unchecked())
     } else {
-        b.as_big().clone()
+        big_clone(b.as_big())
     };
-    a >= b
+    big_ge(&a, &b)
 }
 
 pub fn val_from_str(s: &str) -> Option<Val> {
@@ -742,7 +717,7 @@ pub fn val_from_str(s: &str) -> Option<Val> {
         }
         // Input wider than a machine word leaves mode 0 on its own, with no
         // arithmetic involved. There is no popped operand to fix up here.
-        let big = s.parse::<BigInt>().ok()?;
+        let big = big_from_dec_str(s)?;
         return Some(with_no_collect(|| {
             leave_raw_mode();
             Val::normalize_big(big)
@@ -751,12 +726,87 @@ pub fn val_from_str(s: &str) -> Option<Val> {
     if let Ok(v) = s.parse::<i64>() {
         return Some(Val::from_i64_promoting(v));
     }
-    s.parse::<BigInt>().ok().map(Val::normalize_big)
+    big_from_dec_str(s).map(Val::normalize_big)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dec(s: &str) -> Val {
+        val_from_str(s).unwrap_or_else(|| panic!("invalid test integer: {s}"))
+    }
+
+    #[test]
+    fn test_backend_bignum_mixed_sign_floor_div_mod() {
+        let negative = dec("-16000000000000000000");
+        let positive = dec("16000000000000000000");
+        let seven = dec("7");
+        let negative_seven = dec("-7");
+
+        assert_eq!(val_div(negative, seven).to_string(), "-2285714285714285715");
+        assert_eq!(val_mod(negative, seven).to_string(), "5");
+        assert_eq!(
+            val_div(positive, negative_seven).to_string(),
+            "-2285714285714285715"
+        );
+        assert_eq!(val_mod(positive, negative_seven).to_string(), "-5");
+    }
+
+    #[test]
+    fn test_backend_bignum_same_sign_and_exact_division() {
+        let positive = dec("16000000000000000000");
+        let negative = dec("-16000000000000000000");
+        let seven = dec("7");
+        let negative_seven = dec("-7");
+        let eight = dec("8");
+
+        assert_eq!(val_div(positive, seven).to_string(), "2285714285714285714");
+        assert_eq!(val_mod(positive, seven).to_string(), "2");
+        assert_eq!(
+            val_div(negative, negative_seven).to_string(),
+            "2285714285714285714"
+        );
+        assert_eq!(val_mod(negative, negative_seven).to_string(), "-2");
+        assert_eq!(val_div(positive, eight).to_string(), "2000000000000000000");
+        assert_eq!(val_mod(positive, eight).to_string(), "0");
+    }
+
+    #[test]
+    fn test_backend_val_from_str_wider_than_i64_round_trips() {
+        let literal = "123456789012345678901234567890";
+        assert_eq!(dec(literal).to_string(), literal);
+    }
+
+    #[test]
+    fn test_backend_val_ge_small_big_both_orders() {
+        let small = dec("7");
+        let big = dec("16000000000000000000");
+
+        assert!(val_ge(&big, &small));
+        assert!(!val_ge(&small, &big));
+    }
+
+    #[test]
+    fn test_backend_multiplication_crosses_small_range_and_back() {
+        let factor = dec("4000000000");
+        let product = val_mul(factor, factor);
+        assert!(!product.is_small());
+        assert_eq!(product.to_string(), "16000000000000000000");
+
+        let reduced = val_div(product, factor);
+        assert!(reduced.is_small());
+        assert_eq!(reduced.to_string(), "4000000000");
+    }
+
+    #[test]
+    fn test_backend_bignum_add_sub_literals() {
+        let base = dec("16000000000000000000");
+        let delta = dec("9");
+
+        assert_eq!(val_add(base, delta).to_string(), "16000000000000000009");
+        assert_eq!(val_sub(base, delta).to_string(), "15999999999999999991");
+    }
 
     /// Every raw word that stays inside the small range becomes a tagged
     /// small; the ones that do not become heap bigints, and both readings

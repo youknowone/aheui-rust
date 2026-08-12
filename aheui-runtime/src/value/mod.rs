@@ -2,8 +2,8 @@
 //!
 //! Directory layout mirrors `rpaheui/aheui/int/`:
 //!   * [`smallint`] — `smallint.py`. Active when no bigint feature is set.
-//!   * [`bigint`] — `bigint.py`. Active with `num-bigint` or
-//!     `malachite-bigint`.
+//!   * [`bigint`] — `bigint.py`. Active with `num-bigint`,
+//!     `malachite-bigint`, or `runtime-rbigint`.
 //!
 //! rpaheui picks the backend at import time (`from aheui.int import bigint`
 //! when targeting RPython). We pick the backend at compile time via Cargo
@@ -14,14 +14,36 @@
 #[cfg(all(feature = "num-bigint", feature = "malachite-bigint"))]
 compile_error!("features `num-bigint` and `malachite-bigint` are mutually exclusive");
 
-#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[cfg(not(any(
+    feature = "num-bigint",
+    feature = "malachite-bigint",
+    feature = "runtime-rbigint"
+)))]
 pub mod smallint;
-#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[cfg(any(
+    feature = "num-bigint",
+    feature = "malachite-bigint",
+    feature = "runtime-rbigint"
+))]
 pub mod bigint;
+#[cfg(any(
+    feature = "num-bigint",
+    feature = "malachite-bigint",
+    feature = "runtime-rbigint"
+))]
+mod bigint_backend;
 
-#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[cfg(not(any(
+    feature = "num-bigint",
+    feature = "malachite-bigint",
+    feature = "runtime-rbigint"
+)))]
 pub use smallint::*;
-#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[cfg(any(
+    feature = "num-bigint",
+    feature = "malachite-bigint",
+    feature = "runtime-rbigint"
+))]
 pub use bigint::*;
 
 // ── Floored division ────────────────────────────────────────────────

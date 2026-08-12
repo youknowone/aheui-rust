@@ -124,12 +124,20 @@ fn output_write_number_i64(value: i64) {
     output_write_all(encode_decimal_i64(value, &mut buf));
 }
 
-#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[cfg(not(any(
+    feature = "num-bigint",
+    feature = "malachite-bigint",
+    feature = "runtime-rbigint"
+)))]
 pub fn output_write_number(value: &Val) {
     output_write_number_i64(*value);
 }
 
-#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[cfg(any(
+    feature = "num-bigint",
+    feature = "malachite-bigint",
+    feature = "runtime-rbigint"
+))]
 pub fn output_write_number(value: &Val) {
     if let Some(v) = value.try_to_i64() {
         output_write_number_i64(v);
@@ -192,12 +200,20 @@ pub fn output_flush() {
 // Generated and JIT-compiled code writes through caller-provided buffers.
 
 pub fn write_number(value: &Val, writer: &mut impl Write) {
-    #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+    #[cfg(not(any(
+        feature = "num-bigint",
+        feature = "malachite-bigint",
+        feature = "runtime-rbigint"
+    )))]
     {
         let mut buf = [0u8; 20];
         let _ = writer.write_all(encode_decimal_i64(*value, &mut buf));
     }
-    #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+    #[cfg(any(
+        feature = "num-bigint",
+        feature = "malachite-bigint",
+        feature = "runtime-rbigint"
+    ))]
     {
         if value.is_small() {
             let mut buf = [0u8; 20];
