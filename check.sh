@@ -170,7 +170,7 @@ echo ""
 echo -e "${CYAN}══ MAJIT JIT ══${RESET}"
 
 echo ""
-echo "═══ 5. JIT stats floor ═══"
+echo "═══ 5. JIT stats floor + threshold sweep ═══"
 # The other four sections are all compaheuiler (rgen/cranelift AOT); this is
 # the only one that runs the majit-driven interpreter. It gates the pinned
 # `snippets/` submodule through the corpus and jitstress baselines.
@@ -182,6 +182,18 @@ else
         pass "jit-stats floor + un-compiled A/B"
     else
         fail "jit-stats floor (record with scripts/jitstats.py record)"
+    fi
+
+    # `check` runs one threshold, the recorded one. Compilation shape is a
+    # function of the threshold — which loops get hot, in which order, and
+    # which of them a later trace closes into — so a threshold the baseline
+    # does not name is a whole region of that space nothing runs. The sweep
+    # is the same A/B against the un-compiled run at several thresholds, with
+    # no baseline of its own: nothing is recorded and nothing can be blessed.
+    if python3 scripts/jitstats.py sweep; then
+        pass "jit A/B across thresholds"
+    else
+        fail "jit A/B across thresholds"
     fi
 fi
 
