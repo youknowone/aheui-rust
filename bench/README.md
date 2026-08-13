@@ -18,11 +18,10 @@ Record and gate with:
 cargo build -p aheui --release
 python3 scripts/jitstats.py record        # rewrite every baseline
 python3 scripts/jitstats.py check         # what check.sh section 5 runs
-python3 scripts/jitstats.py record logo   # one fixture
-python3 scripts/jitstats.py record pi/pi.jinseo  # one corpus program
+python3 scripts/jitstats.py record logo/logo  # one corpus program
+python3 scripts/jitstats.py record pi/pi.jinseo
 python3 scripts/jitstats.py record --jitstress pi/pi.jinseo  # its jitstress row
 python3 scripts/jitstats.py survey        # the rpaheui corpus, ungated
-python3 scripts/jitstats.py dump          # check + survey, appended to the ledger
 python3 scripts/jitstats.py trend         # what moved between runs, per program
 ```
 
@@ -31,7 +30,7 @@ only says PASS says nothing about what the JIT did. Any gated counter that moved
 is listed with the headroom left before its gate, so a number sitting one step
 below the threshold is visible before the run that trips it.
 
-A fixture that aborted also gets its `Counters.ABORT_*` breakdown. Those are
+A program that aborted also gets its `Counters.ABORT_*` breakdown. Those are
 diagnosis, not part of the recorded surface: pinning them would gate the same
 event twice through `loops_aborted`. They exist because `JitStats` carries only
 the total and the profiler's own `print_stats` is behind `MAJIT_LOG`, which is
@@ -76,11 +75,11 @@ Measured over the pinned corpus, production `1039` engaged 3 programs and hit
 and zero A/B mismatches, so the jitstress axis closes the coverage gap without
 turning the unpinned fork into a gate.
 
-Fixtures are six named programs in the pinned `snippets/` submodule. The corpus
-and jitstress axes use every snippet with a reference output; fallback snippet
-sources remain survey-only because they do not identify a pinned commit.
+The corpus and jitstress axes use every pinned snippet with a reference output;
+fallback snippet sources remain survey-only because they do not identify a
+pinned commit.
 
-## The ledger — `dump` and `trend`
+## The ledger and `trend`
 
 A baseline states what the JIT does *today*. It says nothing about the run
 before it, so without a record every "did that change help?" costs a rebuild of
@@ -88,17 +87,16 @@ the old tree. The ledger is that record, and it fills itself: `check` and
 `survey` each append one row per program they run.
 
 ```sh
-python3 scripts/jitstats.py dump -m "merge-point segmenting trigger"
+python3 scripts/jitstats.py check -m "merge-point segmenting trigger"
 python3 scripts/jitstats.py trend                 # every program, change points only
 python3 scripts/jitstats.py trend pi/pi.jinseo    # one program
-python3 scripts/jitstats.py trend logo --all      # every row, not just the changes
+python3 scripts/jitstats.py trend logo/logo --all # every row, not just the changes
 python3 scripts/jitstats.py check --no-log        # opt out for one run
 ```
 
-`dump` is the exploratory command to run after a change: it gates the fixtures
-and then sweeps the whole corpus, so the programs that actually stress the JIT
-(`pi/pi.jinseo`) are in the record even when a fallback source means they
-cannot be gated.
+`check` is the exploratory command to run after a change. It gates both corpus
+axes when the pinned submodule is present; with a fallback source it records an
+ungated survey instead.
 
 Corpus survey rows are checked against the `.out` committed beside each
 program, in three states rather than a pass/fail with a tolerance: `ok`, `+nl` when the
@@ -108,9 +106,9 @@ just means they read stdin and the survey gives them none (`bahmanghui` prints
 `-1` for the integer it cannot read). Folding `+nl` into `ok` would also hide a
 real newline change, so it stays its own state. Pinned corpus and jitstress
 gating are stricter: the baseline records stdout's SHA prefix and the exit
-code, and any change in either fails. The fixtures' and pinned corpus/jitstress
-own A/B is exact by contrast — it compares one interpreter against itself, so
-even a newline difference there is a miscompile.
+code, and any change in either fails. The pinned corpus and jitstress A/B is
+exact — it compares one interpreter against itself, so even a newline
+difference there is a miscompile.
 
 Each row carries the counters, the full `ABORT_*` breakdown, the `mc_diag`
 decline census, stdout's length/sha/exit, the wall times, and the `-m` note —
@@ -127,7 +125,7 @@ whatever they held earlier. When the majit tree moves in between — a peer
 rebasing it is enough — the numbers get attributed to a commit that never
 produced them, which is the one failure this ledger exists to prevent. So the
 binary's mtime is compared against both HEAD commit times and the row carries
-`stale_build`; `dump` says so loudly and `trend` marks the row. Rebuild and
+`stale_build`; `check` says so loudly and `trend` marks the row. Rebuild and
 re-run rather than reading a flagged row.
 
 `trend` prints only the runs where something moved, with a `Δ` naming what.
@@ -164,7 +162,7 @@ number is understood and intended.
 
 ## The correctness half
 
-Before comparing counters, every fixture and pinned corpus program runs twice
+Before comparing counters, every pinned corpus program runs twice
 — once normally and once with `MAJIT_THRESHOLD` raised out of reach so the
 tracer never fires — and the two runs must agree byte-for-byte on stdout and on
 the exit code. Without that, a baseline can go green on a run that miscompiled.

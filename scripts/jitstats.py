@@ -10,24 +10,23 @@ threshold raised out of reach — and the two runs must agree byte-for-byte on
 stdout and on the exit code. That A/B is the correctness half: without it a
 baseline can go green on a run that miscompiled.
 
-    scripts/jitstats.py record [--jitstress] [fixture | corpus/program ...]
-    scripts/jitstats.py check  [--jitstress] [fixture | corpus/program ...]
+    scripts/jitstats.py record [--jitstress] [corpus/program ...]
+    scripts/jitstats.py check  [--jitstress] [corpus/program ...]
     scripts/jitstats.py survey
-    scripts/jitstats.py dump  [-m NOTE]
     scripts/jitstats.py trend [program ...] [--all]
 
-With no arguments both modes cover the whole committed set: in-tree fixtures,
-plus corpus programs when `snippets/` is present as this repo's pinned
-submodule, plus a JIT-stressed copy of that pinned corpus at the same threshold
-`pyre/check.py` uses for its `*_jitstress` axis. `survey` is the ungated view
-for every rpaheui corpus program with a reference output; it is also what
-`check` falls back to when the corpus came from `$AHEUI_SNIPPETS` or a sibling
-checkout instead of the submodule.
+With no arguments both modes cover the whole committed set: corpus programs
+when `snippets/` is present as this repo's pinned submodule, plus a JIT-stressed
+copy of that corpus at the same threshold `pyre/check.py` uses for its
+`*_jitstress` axis. `survey` is the ungated view for every rpaheui corpus
+program with a reference output; it is also what `check` falls back to when the
+corpus came from `$AHEUI_SNIPPETS` or a sibling checkout instead of the
+submodule.
 
 `check` and `survey` each append one row per program run to a local ledger
-(`bench/history.jsonl`; `AHEUI_JITSTATS_HISTORY` moves it), and `dump` is the
-two of them in one command. `trend` reads the ledger back and prints, per
-program, only the runs where a counter actually moved.
+(`bench/history.jsonl`; `AHEUI_JITSTATS_HISTORY` moves it). `trend` reads the
+ledger back and prints, per program, only the runs where a counter actually
+moved.
 
 That is the whole methodology: a baseline states what the JIT does *today* and
 says nothing about the run before it, so without a ledger every "did that
@@ -51,18 +50,6 @@ BINARY = REPO / "target" / "release" / "aheui"
 SNIPPETS = REPO / "snippets"
 BENCH = REPO / "bench"
 
-# These paths preserve the six programs that originally established the
-# committed baselines. The files live in the pinned snippets submodule, so the
-# fixture names remain stable without keeping duplicate samples in the tree.
-FIXTURES = {
-    "logo": "logo/logo.aheui",
-    "99bottles": "99bottles/99bottles.aheui",
-    "factorial": "factorial/factorial.aheui",
-    "fibonacci": "fibonacci/fibonacci.codroc.aheui",
-    "hello": "hello-world/hello.puzzlet.aheui",
-    "hello-world": "hello-world/hello-world.puzzlet.aheui",
-}
-
 # `pyre/check.py` JITSTATS_BADNESS_FIELDS / RISE_BOUNDED / FALL.
 BADNESS_FIELDS = ("loops_aborted", "internal_compile_panics")
 RISE_BOUNDED_FIELDS = ("guard_failures",)
@@ -76,7 +63,7 @@ SNAPSHOT_FIELDS = (
     "bridges_compiled",
 )
 
-# High enough that no fixture reaches it, so `mainloop` runs with the tracer
+# High enough that no corpus program reaches it, so `mainloop` runs with the tracer
 # never firing. This is the right control: `--no-jit` would run a DIFFERENT
 # interpreter (aheuinterpreter), and it only exists on a `naive` build.
 NO_COMPILE_THRESHOLD = "1000000000"
@@ -102,14 +89,6 @@ HISTORY = Path(os.environ.get("AHEUI_JITSTATS_HISTORY", BENCH / "history.jsonl")
 MAJIT_REPO = REPO.parent
 
 
-def fixture_path(name: str) -> Path:
-    return SNIPPETS / FIXTURES[name]
-
-
-def baseline_path(name: str) -> Path:
-    return BENCH / f"{name}.jitstats"
-
-
 def corpus_baseline_path(name: str) -> Path:
     return BENCH / "corpus" / f"{name}.jitstats"
 
@@ -119,7 +98,7 @@ def jitstress_baseline_path(name: str) -> Path:
 
 
 class Run:
-    """One execution of a fixture."""
+    """One execution of an Aheui program."""
 
     def __init__(
         self,
@@ -179,16 +158,6 @@ def run_path(path: Path, *, compile_: bool, threshold: str | None = None) -> Run
     return Run(proc.stdout, proc.returncode, fields, elapsed, comparable_env(env))
 
 
-def run(name: str, *, compile_: bool) -> Run:
-    return run_path(fixture_path(name), compile_=compile_)
-
-
-def snapshot(fields: dict[str, str]) -> str:
-    return "".join(
-        f"{k}={fields[k]}\n" for k in sorted(SNAPSHOT_FIELDS) if k in fields
-    )
-
-
 def corpus_snapshot(jit: "Run") -> str:
     fields = {**jit.fields, "exit": str(jit.code), "out_sha": stdout_sha(jit.stdout)}
     keys = sorted((*SNAPSHOT_FIELDS, "exit", "out_sha"))
@@ -236,7 +205,7 @@ def floor_regression(old: dict[str, str], new: dict[str, str]) -> list[str]:
 
 
 HEADER = (
-    f"  {'fixture':<14}{'loops':>6}{'bridges':>8}{'aborted':>8}"
+    f"  {'program':<14}{'loops':>6}{'bridges':>8}{'aborted':>8}"
     f"{'guards':>8}{'panics':>7}{'out':>9}{'exit':>5}{'jit':>8}{'nojit':>8}{'x':>6}"
 )
 
@@ -422,67 +391,6 @@ def load_history() -> list[dict]:
         if line.strip():
             rows.append(json.loads(line))
     return rows
-
-
-def check_one(name: str, *, record: bool) -> tuple[bool, dict | None]:
-    """Run the A/B, then either record or gate. True on success, plus its row."""
-    if not fixture_path(name).exists():
-        print(f"  FAIL: {name}: no such fixture ({fixture_path(name)})")
-        return False, None
-
-    jit = run(name, compile_=True)
-    control = run(name, compile_=False)
-    # Exact, deliberately: this A/B is one interpreter against itself, so even
-    # a trailing-newline difference is a miscompile, not a file convention.
-    out_ok = "ok" if jit.stdout == control.stdout and jit.code == control.code else "≠"
-    # Built before the verdict, and returned on every path: a run that
-    # miscompiled is precisely the row the ledger must not be missing.
-    row = ledger_row("fixture", name, jit, control, out_ok)
-
-    if jit.stdout != control.stdout:
-        print(
-            f"  FAIL: {name}: JIT stdout differs from the un-compiled run "
-            f"({len(jit.stdout)} vs {len(control.stdout)} bytes)"
-        )
-        return False, row
-    if jit.code != control.code:
-        print(
-            f"  FAIL: {name}: JIT exit {jit.code} != un-compiled exit {control.code}"
-        )
-        return False, row
-    if not jit.fields:
-        print(f"  FAIL: {name}: no [jit-stats] line (is MAJIT_STATS honored?)")
-        return False, row
-
-    # The counters themselves, always — a run that only says PASS tells you
-    # nothing about what the JIT actually did, and the numbers are the point.
-    print(counter_row(name, jit.fields, jit, control))
-    for line in abort_breakdown(jit.fields):
-        print(f"      {line}")
-
-    current = snapshot(jit.fields)
-    path = baseline_path(name)
-    if record:
-        BENCH.mkdir(exist_ok=True)
-        path.write_text(current)
-        print(f"      recorded {path.relative_to(REPO)}")
-        return True, row
-
-    if not path.exists():
-        print(
-            f"      FAIL: no committed baseline ({path.relative_to(REPO)})"
-            f" — record it with scripts/jitstats.py record {name}"
-        )
-        return False, row
-    baseline = parse(path.read_text())
-    parsed = parse(current)
-    for line in movement(baseline, parsed):
-        print(f"      moved: {line}")
-    failures = floor_regression(baseline, parsed)
-    if failures:
-        print(f"      FAIL: jit-stats regression: {', '.join(failures)}")
-        return False, row
-    return True, row
 
 
 def check_corpus_one(
@@ -688,7 +596,7 @@ def trend(programs: list[str], *, show_all: bool) -> int:
     """Per program, the runs where something moved — and what moved."""
     rows = load_history()
     if not rows:
-        print(f"  ledger is empty ({HISTORY}) — run scripts/jitstats.py dump")
+        print(f"  ledger is empty ({HISTORY}) — run scripts/jitstats.py check")
         return 1
 
     by_program: dict[str, list[dict]] = {}
@@ -790,52 +698,11 @@ def run_corpus_checks(
     return failed if gated else 0, rows
 
 
-def fixture_or_corpus(name: str, corpus: dict[str, Path]) -> tuple[str, Path | None]:
-    if name in FIXTURES:
-        return "fixture", None
-    if name in corpus:
-        return "corpus", corpus[name]
-    return "missing", None
-
-
 def jitstress_requested(name: str) -> str:
     return name.removesuffix(" [jitstress]")
 
 
-def dump(note: str, *, log: bool) -> int:
-    """Gate the fixtures, survey the corpus, append every row.
-
-    The exploratory command to run after a change: it leaves behind the corpus
-    rows that make the NEXT change measurable, without turning that sweep into
-    a verdict.
-    """
-    print(HEADER)
-    rows: list[dict] = []
-    failed = 0
-    for name in FIXTURES:
-        ok, row = check_one(name, record=False)
-        failed += 0 if ok else 1
-        if row is not None:
-            rows.append(row)
-    print(f"  {len(FIXTURES)} checked, {failed} failed")
-
-    found = corpus_paths()
-    if found is None:
-        print("\n  rpaheui corpus not found (set AHEUI_SNIPPETS) — fixtures only")
-    else:
-        paths, _, _ = found
-        print(f"\n  corpus survey ({len(paths)} programs, informational — nothing gated)")
-        print(SURVEY_HEADER)
-        rows.extend(survey(paths))
-        print("  * = the JIT engaged")
-
-    if log:
-        print()
-        append_rows("dump", note, rows)
-    return 1 if failed else 0
-
-
-MODES = ("record", "check", "survey", "dump", "trend")
+MODES = ("record", "check", "survey", "trend")
 
 
 def take_option(args: list[str], *names: str) -> str | None:
@@ -875,9 +742,6 @@ def main(argv: list[str]) -> int:
         print(f"aheui binary not built: {BINARY}", file=sys.stderr)
         return 1
 
-    if mode == "dump":
-        return dump(note, log=log)
-
     if mode == "survey":
         found = corpus_paths()
         if found is None:
@@ -895,17 +759,14 @@ def main(argv: list[str]) -> int:
 
     record = mode == "record"
     found = corpus_paths()
-    paths: list[Path] = []
-    source = ""
-    corpus: dict[str, Path] = {}
-    if found is not None:
-        paths, source, _ = found
-        corpus = corpus_map(paths)
+    if found is None:
+        print("rpaheui snippet corpus not found; set AHEUI_SNIPPETS")
+        return 1
+    paths, source, _ = found
+    corpus = corpus_map(paths)
 
-    print(HEADER)
     rows = []
     failed = 0
-    fixture_count = 0
     corpus_items: list[tuple[str, Path]] = []
     jitstress_items: list[tuple[str, Path]] = []
 
@@ -915,40 +776,23 @@ def main(argv: list[str]) -> int:
                 jitstress_target = jitstress_requested(name)
                 path = corpus.get(jitstress_target)
                 if path is None:
-                    corpus_hint = "corpus program" if found is not None else "fixture"
-                    print(f"  FAIL: {name}: no such jitstress {corpus_hint}")
+                    print(f"  FAIL: {name}: no such jitstress corpus program")
                     failed += 1
                 else:
                     jitstress_items.append((jitstress_target, path))
                 continue
-            kind, path = fixture_or_corpus(name, corpus)
-            if kind == "fixture":
-                ok, row = check_one(name, record=record)
-                fixture_count += 1
-                failed += 0 if ok else 1
-                if row is not None:
-                    rows.append(row)
-            elif kind == "corpus" and path is not None:
+            path = corpus.get(name)
+            if path is not None:
                 corpus_items.append((name, path))
             else:
-                fixture = fixture_path(name)
-                corpus_hint = " or corpus program" if found is not None else ""
-                print(f"  FAIL: {name}: no such fixture{corpus_hint} ({fixture})")
+                print(f"  FAIL: {name}: no such corpus program")
                 failed += 1
     else:
-        if paths:
-            all_corpus_items = [(corpus_name(path), path) for path in paths]
-            if source == "submodule":
-                jitstress_items = all_corpus_items
-            if not jitstress_only:
-                corpus_items = all_corpus_items
+        all_corpus_items = [(corpus_name(path), path) for path in paths]
+        if source == "submodule":
+            jitstress_items = all_corpus_items
         if not jitstress_only:
-            for name in FIXTURES:
-                ok, row = check_one(name, record=record)
-                fixture_count += 1
-                failed += 0 if ok else 1
-                if row is not None:
-                    rows.append(row)
+            corpus_items = all_corpus_items
 
     corpus_failed = 0
     if corpus_items:
@@ -974,17 +818,17 @@ def main(argv: list[str]) -> int:
     jitstress_verb = verb if source == "submodule" else "skipped"
     if corpus_items and jitstress_items and source == "submodule":
         print(
-            f"  {fixture_count} fixtures + {len(corpus_items)} corpus"
-            f" + {len(jitstress_items)} jitstress {verb}, {failed} failed"
+            f"  {len(corpus_items)} corpus + {len(jitstress_items)} jitstress"
+            f" {verb}, {failed} failed"
         )
     elif corpus_items:
-        print(f"  {fixture_count} fixtures + {len(corpus_items)} corpus {corpus_verb}, {failed} failed")
+        print(f"  {len(corpus_items)} corpus {corpus_verb}, {failed} failed")
     elif jitstress_items:
         print(
             f"  {len(jitstress_items)} jitstress {jitstress_verb}, {failed} failed"
         )
     else:
-        print(f"  {fixture_count} fixtures {verb}, {failed} failed")
+        print(f"  0 programs {verb}, {failed} failed")
     if log:
         append_rows(mode, note, rows)
     return 1 if failed else 0
