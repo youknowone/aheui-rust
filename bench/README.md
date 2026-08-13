@@ -20,7 +20,7 @@ python3 scripts/jitstats.py record        # rewrite every baseline
 python3 scripts/jitstats.py check         # what check.sh section 5 runs
 python3 scripts/jitstats.py record logo   # one fixture
 python3 scripts/jitstats.py record pi/pi.jinseo  # one corpus program
-python3 scripts/jitstats.py record --stress pi/pi.jinseo  # its jitstress row
+python3 scripts/jitstats.py record --jitstress pi/pi.jinseo  # its jitstress row
 python3 scripts/jitstats.py survey        # the rpaheui corpus, ungated
 python3 scripts/jitstats.py dump          # check + survey, appended to the ledger
 python3 scripts/jitstats.py trend         # what moved between runs, per program
@@ -66,19 +66,19 @@ uncompiled. The larger fork is not gated because it is not pinned, but it is
 why the canonical `pi/pi.jinseo` row matters.
 
 The pinned corpus therefore has a second gated axis under
-`bench/stress/<dir>/<stem>.jitstats`, run with `MAJIT_THRESHOLD=50`. This
+`bench/jitstress/<dir>/<stem>.jitstats`, run with `MAJIT_THRESHOLD=50`. This
 mirrors `pyre/check.py`'s `*_jitstress` rows: the same program under a lower
 threshold, with its own baseline and the same byte-exact JIT-vs-uncompiled A/B.
 Measured over the pinned corpus, production `1039` engaged 3 programs and hit
 `compile_trace`'s JUMP into an existing procedure token 0 times for
 `pi/pi.jinseo`; `200` engaged 7 and hit it 5 times; `50` engaged 10 and hit it
 8 times. `10` was worse for that JUMP path at 7. The `50` sweep had zero aborts
-and zero A/B mismatches, so the stress axis closes the coverage gap without
+and zero A/B mismatches, so the jitstress axis closes the coverage gap without
 turning the unpinned fork into a gate.
 
-Fixtures are the in-tree programs under `aheui-wasm/web/samples/`. Corpus and
-stress programs are the pinned `snippets/` submodule when it is present, and
-fallback survey rows otherwise.
+Fixtures are six named programs in the pinned `snippets/` submodule. The corpus
+and jitstress axes use every snippet with a reference output; fallback snippet
+sources remain survey-only because they do not identify a pinned commit.
 
 ## The ledger — `dump` and `trend`
 
@@ -106,9 +106,9 @@ only difference is the trailing newline most of those files carry and this
 interpreter does not emit, and `≠` otherwise — which for a handful of programs
 just means they read stdin and the survey gives them none (`bahmanghui` prints
 `-1` for the integer it cannot read). Folding `+nl` into `ok` would also hide a
-real newline change, so it stays its own state. Pinned corpus and stress
+real newline change, so it stays its own state. Pinned corpus and jitstress
 gating are stricter: the baseline records stdout's SHA prefix and the exit
-code, and any change in either fails. The fixtures' and pinned corpus/stress
+code, and any change in either fails. The fixtures' and pinned corpus/jitstress
 own A/B is exact by contrast — it compares one interpreter against itself, so
 even a newline difference there is a miscompile.
 
@@ -146,8 +146,8 @@ the raw high-frequency record, the table is the curated one.
 ## What each counter gates
 
 Copied from `pyre/check.py`'s `_jit_stats_regression_floor` so the two suites
-read the same way. The production corpus and stress corpus use the same field
-directions; stress only changes the JIT threshold and keeps a separate
+read the same way. The production corpus and jitstress corpus use the same field
+directions; jitstress only changes the JIT threshold and keeps a separate
 baseline identity.
 
 | counter | fails on |

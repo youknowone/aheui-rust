@@ -10,15 +10,15 @@ threshold raised out of reach — and the two runs must agree byte-for-byte on
 stdout and on the exit code. That A/B is the correctness half: without it a
 baseline can go green on a run that miscompiled.
 
-    scripts/jitstats.py record [--stress] [fixture | corpus/program ...]
-    scripts/jitstats.py check  [--stress] [fixture | corpus/program ...]
+    scripts/jitstats.py record [--jitstress] [fixture | corpus/program ...]
+    scripts/jitstats.py check  [--jitstress] [fixture | corpus/program ...]
     scripts/jitstats.py survey
     scripts/jitstats.py dump  [-m NOTE]
     scripts/jitstats.py trend [program ...] [--all]
 
 With no arguments both modes cover the whole committed set: in-tree fixtures,
 plus corpus programs when `snippets/` is present as this repo's pinned
-submodule, plus a stressed copy of that pinned corpus at the same threshold
+submodule, plus a JIT-stressed copy of that pinned corpus at the same threshold
 `pyre/check.py` uses for its `*_jitstress` axis. `survey` is the ungated view
 for every rpaheui corpus program with a reference output; it is also what
 `check` falls back to when the corpus came from `$AHEUI_SNIPPETS` or a sibling
@@ -89,7 +89,7 @@ NO_COMPILE_THRESHOLD = "1000000000"
 # the corpus: 1039 -> 3 programs engaged, 200 -> 7, 50 -> 10, and 50 is also
 # the best sampled value for that JUMP path (10 is worse). Zero aborts and
 # zero A/B mismatches at 50, so it is a floor to hold, not a known-bad state.
-STRESS_THRESHOLD = "50"
+JITSTRESS_THRESHOLD = "50"
 
 # Local by default, and not committed: the timings in it are machine-specific,
 # and four worktrees of this repo appending to one tracked file would conflict
@@ -114,8 +114,8 @@ def corpus_baseline_path(name: str) -> Path:
     return BENCH / "corpus" / f"{name}.jitstats"
 
 
-def stress_baseline_path(name: str) -> Path:
-    return BENCH / "stress" / f"{name}.jitstats"
+def jitstress_baseline_path(name: str) -> Path:
+    return BENCH / "jitstress" / f"{name}.jitstats"
 
 
 class Run:
@@ -499,7 +499,7 @@ def check_corpus_one(
     control = run_path(source_path, compile_=False)
     reference = source_path.with_suffix(".out").read_bytes()
     out_ok = out_match(jit.stdout, reference)
-    row_name = stress_name(name) if kind == "stress" else name
+    row_name = jitstress_name(name) if kind == "jitstress" else name
     row = ledger_row(kind, row_name, jit, control, out_ok)
 
     print(counter_row(row_name, jit.fields, jit, control))
@@ -526,7 +526,11 @@ def check_corpus_one(
         return False, row
 
     current = corpus_snapshot(jit)
-    baseline_file = stress_baseline_path(name) if kind == "stress" else corpus_baseline_path(name)
+    baseline_file = (
+        jitstress_baseline_path(name)
+        if kind == "jitstress"
+        else corpus_baseline_path(name)
+    )
     if record:
         baseline_file.parent.mkdir(parents=True, exist_ok=True)
         baseline_file.write_text(current)
@@ -534,10 +538,10 @@ def check_corpus_one(
         return ok, row
 
     if not baseline_file.exists():
-        stress_flag = " --stress" if kind == "stress" else ""
+        jitstress_flag = " --jitstress" if kind == "jitstress" else ""
         print(
             f"      FAIL: no committed baseline ({baseline_file.relative_to(REPO)})"
-            f" — record it with scripts/jitstats.py record{stress_flag} {name}"
+            f" — record it with scripts/jitstats.py record{jitstress_flag} {name}"
         )
         return False, row
 
@@ -726,12 +730,12 @@ def trend(programs: list[str], *, show_all: bool) -> int:
     return 0
 
 
-def stress_name(name: str) -> str:
-    return f"{name} [stress]"
+def jitstress_name(name: str) -> str:
+    return f"{name} [jitstress]"
 
 
 def trend_program_matches(row_program: str, requested: str) -> bool:
-    return row_program == requested or row_program == stress_name(requested)
+    return row_program == requested or row_program == jitstress_name(requested)
 
 
 def corpus_name(path: Path) -> str:
@@ -776,7 +780,7 @@ def run_corpus_checks(
             record=record,
             gated=gated,
             kind=kind,
-            threshold=STRESS_THRESHOLD if kind == "stress" else None,
+            threshold=JITSTRESS_THRESHOLD if kind == "jitstress" else None,
         )
         failed += 0 if ok else 1
         if row is not None:
@@ -794,8 +798,8 @@ def fixture_or_corpus(name: str, corpus: dict[str, Path]) -> tuple[str, Path | N
     return "missing", None
 
 
-def stress_requested(name: str) -> str:
-    return name.removesuffix(" [stress]")
+def jitstress_requested(name: str) -> str:
+    return name.removesuffix(" [jitstress]")
 
 
 def dump(note: str, *, log: bool) -> int:
@@ -861,7 +865,7 @@ def main(argv: list[str]) -> int:
     mode = args.pop(0)
     note = take_option(args, "-m", "--note") or ""
     show_all = take_flag(args, "--all")
-    stress_only = take_flag(args, "--stress")
+    jitstress_only = take_flag(args, "--jitstress")
     log = not take_flag(args, "--no-log")
 
     if mode == "trend":
@@ -903,19 +907,19 @@ def main(argv: list[str]) -> int:
     failed = 0
     fixture_count = 0
     corpus_items: list[tuple[str, Path]] = []
-    stress_items: list[tuple[str, Path]] = []
+    jitstress_items: list[tuple[str, Path]] = []
 
     if args:
         for name in args:
-            if stress_only:
-                stress_target = stress_requested(name)
-                path = corpus.get(stress_target)
+            if jitstress_only:
+                jitstress_target = jitstress_requested(name)
+                path = corpus.get(jitstress_target)
                 if path is None:
                     corpus_hint = "corpus program" if found is not None else "fixture"
-                    print(f"  FAIL: {name}: no such stress {corpus_hint}")
+                    print(f"  FAIL: {name}: no such jitstress {corpus_hint}")
                     failed += 1
                 else:
-                    stress_items.append((stress_target, path))
+                    jitstress_items.append((jitstress_target, path))
                 continue
             kind, path = fixture_or_corpus(name, corpus)
             if kind == "fixture":
@@ -935,10 +939,10 @@ def main(argv: list[str]) -> int:
         if paths:
             all_corpus_items = [(corpus_name(path), path) for path in paths]
             if source == "submodule":
-                stress_items = all_corpus_items
-            if not stress_only:
+                jitstress_items = all_corpus_items
+            if not jitstress_only:
                 corpus_items = all_corpus_items
-        if not stress_only:
+        if not jitstress_only:
             for name in FIXTURES:
                 ok, row = check_one(name, record=record)
                 fixture_count += 1
@@ -954,29 +958,31 @@ def main(argv: list[str]) -> int:
         )
         failed += corpus_failed
         rows.extend(corpus_rows)
-    stress_failed = 0
-    if stress_items:
+    jitstress_failed = 0
+    if jitstress_items:
         if source != "submodule":
-            print(f"\n  stress corpus is unpinned — not gated ({source} source)")
+            print(f"\n  jitstress corpus is unpinned — not gated ({source} source)")
         else:
             print()
-            stress_failed, stress_rows = run_corpus_checks(
-                stress_items, source=source, record=record, kind="stress"
+            jitstress_failed, jitstress_rows = run_corpus_checks(
+                jitstress_items, source=source, record=record, kind="jitstress"
             )
-            failed += stress_failed
-            rows.extend(stress_rows)
+            failed += jitstress_failed
+            rows.extend(jitstress_rows)
     verb = "recorded" if record else "checked"
     corpus_verb = verb if source == "submodule" else "surveyed"
-    stress_verb = verb if source == "submodule" else "skipped"
-    if corpus_items and stress_items and source == "submodule":
+    jitstress_verb = verb if source == "submodule" else "skipped"
+    if corpus_items and jitstress_items and source == "submodule":
         print(
             f"  {fixture_count} fixtures + {len(corpus_items)} corpus"
-            f" + {len(stress_items)} stress {verb}, {failed} failed"
+            f" + {len(jitstress_items)} jitstress {verb}, {failed} failed"
         )
     elif corpus_items:
         print(f"  {fixture_count} fixtures + {len(corpus_items)} corpus {corpus_verb}, {failed} failed")
-    elif stress_items:
-        print(f"  {len(stress_items)} stress {stress_verb}, {failed} failed")
+    elif jitstress_items:
+        print(
+            f"  {len(jitstress_items)} jitstress {jitstress_verb}, {failed} failed"
+        )
     else:
         print(f"  {fixture_count} fixtures {verb}, {failed} failed")
     if log:
