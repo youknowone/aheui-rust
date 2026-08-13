@@ -1874,10 +1874,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else if state.selected == VAL_PORT {
                     jit_storage_push(state.storage_ref, state.selected, v);
                 } else {
-                    let old_head = state.selected_ref.head;
-                    let new_node = jit_alloc_node(v, old_head);
-                    state.selected_ref.head = new_node;
-                    state.selected_ref.size = state.selected_ref.size + 1u32;
+                    lj::stack_push(state.selected_ref, v);
                 }
             }
             OP_PUSHCHAR => {
@@ -1894,10 +1891,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else if state.selected == VAL_PORT {
                     jit_storage_push(state.storage_ref, state.selected, v);
                 } else {
-                    let old_head = state.selected_ref.head;
-                    let new_node = jit_alloc_node(v, old_head);
-                    state.selected_ref.head = new_node;
-                    state.selected_ref.size = state.selected_ref.size + 1u32;
+                    lj::stack_push(state.selected_ref, v);
                 }
             }
             // Branch ops: concrete execution handled by the pre-dispatch
