@@ -12,8 +12,19 @@ baseline can go green on a run that miscompiled.
 
     scripts/jitstats.py record [--jitstress] [corpus/program ...]
     scripts/jitstats.py check  [--jitstress] [corpus/program ...]
+    scripts/jitstats.py sweep  [corpus/program ...]
     scripts/jitstats.py survey
     scripts/jitstats.py trend [program ...] [--all]
+
+`sweep` runs only that A/B, at several thresholds, against no baseline at all.
+It exists because the two gated axes cannot grow coverage: both carry a
+`loops_compiled` floor, so re-pointing either at a lower threshold reddens
+programs on `guard_failures` alone — pure added coverage that
+`floor_regression` cannot distinguish from a regression, clearable only by
+`record`. An axis with no floor has nothing to regress against. Threshold
+selection is a trace-shape lottery rather than a coverage dial, so sampling
+several points is the only way to see more shapes: `literary/huntcook` is
+correct at 28 and at 40 and miscompiles at 32.
 
 With no arguments both modes cover the whole committed set: corpus programs
 when `snippets/` is present as this repo's pinned submodule, plus a JIT-stressed
@@ -67,6 +78,21 @@ SNAPSHOT_FIELDS = (
 # never firing. This is the right control: `--no-jit` would run a DIFFERENT
 # interpreter (aheuinterpreter), and it only exists on a `naive` build.
 NO_COMPILE_THRESHOLD = "1000000000"
+
+# Thresholds the `sweep` axis drives, spread across the space rather than
+# chosen to reproduce any particular failure. Threshold selection is a
+# trace-shape lottery, not a coverage dial: a program can be correct at 28 and
+# 40 and miscompile at 32, so sampling more points is the only way to see more
+# shapes. 1 is excluded — 99bottles does not finish there.
+SWEEP_THRESHOLDS = ("128", "32", "8", "2")
+
+# Outside the 0-255 range a process can actually return, so a timeout can never
+# be mistaken for a real exit code when the A/B compares them.
+TIMEOUT_EXIT = -1000
+
+# Generous enough that only a genuine non-termination trips it: the whole gated
+# corpus runs in well under a second per program on both axes today.
+SWEEP_TIMEOUT_S = 60.0
 
 # `pyre/check.py`'s `*_jitstress` axis: the same programs under a threshold
 # low enough that the merge-point machinery is actually reached. At the
@@ -133,16 +159,35 @@ def comparable_env(env: dict[str, str]) -> dict[str, str]:
     }
 
 
-def run_path(path: Path, *, compile_: bool, threshold: str | None = None) -> Run:
-    """Run one program; capture its stdout, exit code and `[jit-stats]` fields."""
+def run_path(
+    path: Path,
+    *,
+    compile_: bool,
+    threshold: str | None = None,
+    timeout: float | None = None,
+) -> Run:
+    """Run one program; capture its stdout, exit code and `[jit-stats]` fields.
+
+    `timeout` defaults to None so the gated axes keep waiting indefinitely — a
+    program that stops terminating there is itself the regression. The sweep
+    axis passes one because it drives thresholds no committed baseline covers,
+    and a program that loops forever at an unexplored threshold must not wedge
+    the whole run.
+    """
     env = run_env(compile_=compile_, threshold=threshold)
     start = time.monotonic()
-    proc = subprocess.run(
-        [str(BINARY), str(path)],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        env=env,
-    )
+    try:
+        proc = subprocess.run(
+            [str(BINARY), str(path)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as expired:
+        # `TIMEOUT_EXIT` is outside the range a program can return, so it can
+        # never collide with a real exit code in the A/B comparison.
+        return Run(expired.stdout or b"", TIMEOUT_EXIT, {}, timeout or 0.0, comparable_env(env))
     elapsed = time.monotonic() - start
     fields: dict[str, str] = {}
     for line in proc.stderr.decode("utf-8", "replace").splitlines():
@@ -717,11 +762,66 @@ def run_corpus_checks(
     return (failed if gated else ab_failed), rows
 
 
+def run_sweep(items: list[tuple[str, Path]]) -> int:
+    """A/B every program at several thresholds, against no baseline at all.
+
+    This is the only axis that can grow JIT coverage without a re-record. Both
+    gated axes carry a `loops_compiled` floor and committed counters, so
+    re-pointing either at a lower threshold reddens programs on `guard_failures`
+    alone — pure added coverage that `floor_regression` cannot tell apart from a
+    regression, and clearable only by `record`. An axis with no floor has
+    nothing to regress against, so it is free to explore.
+
+    The oracle is the program against itself: one un-compiled control, one JIT
+    run per threshold, same binary throughout. `AHEUI_GC_POISON` is on because
+    the failure this axis exists to catch — a read through a buffer base that a
+    realloc moved — otherwise returns the CORRECT bytes out of recycled memory
+    and never reaches stdout at all.
+    """
+    os.environ["AHEUI_GC_POISON"] = "1"
+    print(
+        f"  sweep: {len(items)} programs x thresholds "
+        f"{', '.join(SWEEP_THRESHOLDS)} — A/B only, no baselines, nothing recorded"
+    )
+    failed = 0
+    for name, path in items:
+        control = run_path(path, compile_=False, timeout=SWEEP_TIMEOUT_S)
+        if control.code == TIMEOUT_EXIT:
+            # Nothing to compare against; say so rather than counting a pass.
+            print(f"      SKIP: {name}: un-compiled control did not finish")
+            continue
+        for threshold in SWEEP_THRESHOLDS:
+            jit = run_path(
+                path, compile_=True, threshold=threshold, timeout=SWEEP_TIMEOUT_S
+            )
+            problems = []
+            if jit.code == TIMEOUT_EXIT:
+                problems.append("did not finish, though the un-compiled run did")
+            else:
+                if jit.stdout != control.stdout:
+                    problems.append(
+                        f"stdout {len(jit.stdout)} vs {len(control.stdout)} bytes"
+                    )
+                if jit.code != control.code:
+                    problems.append(f"exit {jit.code} vs {control.code}")
+            if problems:
+                failed += 1
+                print(
+                    f"      FAIL: {name} at MAJIT_THRESHOLD={threshold}: "
+                    f"{'; '.join(problems)}"
+                )
+    print(
+        f"  {len(items)} programs over {len(SWEEP_THRESHOLDS)} thresholds, "
+        f"{failed} failed"
+    )
+    return failed
+
+
 def jitstress_requested(name: str) -> str:
     return name.removesuffix(" [jitstress]")
 
 
-MODES = ("record", "check", "survey", "trend")
+MODES = ("record", "check", "survey", "trend", "sweep")
 
 
 def take_option(args: list[str], *names: str) -> str | None:
@@ -775,6 +875,26 @@ def main(argv: list[str]) -> int:
         if log:
             append_rows(mode, note, rows)
         return 0
+
+    if mode == "sweep":
+        found = corpus_paths()
+        if found is None:
+            print("rpaheui snippet corpus not found; set AHEUI_SNIPPETS")
+            return 1
+        paths, source, _ = found
+        # No pin needed: this axis reads no baseline, so an unpinned corpus is
+        # as gradeable as the submodule.
+        print(f"  source: {source}")
+        corpus = corpus_map(paths)
+        if args:
+            missing = [name for name in args if name not in corpus]
+            if missing:
+                print(f"  FAIL: no such corpus program: {', '.join(missing)}")
+                return 1
+            items = [(name, corpus[name]) for name in args]
+        else:
+            items = sorted(corpus.items())
+        return 1 if run_sweep(items) else 0
 
     record = mode == "record"
     found = corpus_paths()
