@@ -43,6 +43,36 @@ unsafe fn alloc_buffer(cap: u32) -> *mut Val {
     ptr
 }
 
+/// Whether to stamp a buffer with the `0x5EEDDEA` sentinel before releasing
+/// it, mirroring the nursery's `AHEUI_GC_POISON` quarantine stamp in `mod.rs`.
+///
+/// This exists because a stale array-element read is otherwise SILENT and
+/// usually *correct*.  `grow_buffer` copies the live prefix into a fresh
+/// allocation and frees the old one, so a base pointer cached across the grow
+/// points into recycled malloc memory — which, for a same-size-class block,
+/// still holds the very bytes that were copied out of it.  The wrong read then
+/// returns the right value, stdout stays byte-identical, and no stdout/exit
+/// oracle can see the defect until an unrelated allocation happens to recycle
+/// the block.  Stamping the buffer turns that into a deterministic sentinel
+/// that reaches the consumer on the first read.
+///
+/// The env lookup is cached: unlike the nursery's per-collect stamp this runs
+/// on every pool growth.
+fn poison_on_free() -> bool {
+    static POISON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *POISON.get_or_init(|| std::env::var_os("AHEUI_GC_POISON").is_some())
+}
+
+/// Stamp every element of a buffer that is about to be released.
+///
+/// # Safety
+/// `data` must be the live allocation of `cap` elements.
+unsafe fn poison_buffer(data: *mut Val, cap: u32) {
+    for i in 0..cap as usize {
+        unsafe { *data.add(i) = crate::value::val_from_i32(0x5EEDDEA) };
+    }
+}
+
 /// Grow `data` from `old_cap` to `new_cap` elements, preserving the first
 /// `live` elements. Returns the (possibly moved) base pointer.
 ///
@@ -55,6 +85,12 @@ unsafe fn grow_buffer(data: *mut Val, old_cap: u32, new_cap: u32, live: u32) -> 
     if !data.is_null() {
         unsafe {
             std::ptr::copy_nonoverlapping(data, fresh, live as usize);
+            // After the copy, before the free: the old contents are already
+            // safe in `fresh`, so anything still reading through the old base
+            // is reading a pointer that a realloc invalidated.
+            if poison_on_free() {
+                poison_buffer(data, old_cap);
+            }
             let layout =
                 std::alloc::Layout::array::<Val>(old_cap as usize).expect("storage buffer layout");
             std::alloc::dealloc(data as *mut u8, layout);
@@ -71,6 +107,9 @@ unsafe fn grow_buffer(data: *mut Val, old_cap: u32, new_cap: u32, live: u32) -> 
 unsafe fn free_buffer(data: *mut Val, cap: u32) {
     if data.is_null() {
         return;
+    }
+    if poison_on_free() {
+        unsafe { poison_buffer(data, cap) };
     }
     let layout = std::alloc::Layout::array::<Val>(cap as usize).expect("storage buffer layout");
     unsafe { std::alloc::dealloc(data as *mut u8, layout) };
@@ -546,6 +585,36 @@ mod tests {
 
     // The six cases below mirror `linkedlist.rs`'s tests one-for-one, so the
     // two backends are pinned to the same observable behaviour.
+
+    /// The freed-buffer sentinel must actually land on every element.
+    ///
+    /// This is the only diagnostic that can see a stale array-element read:
+    /// without it a base pointer cached across a realloc reads recycled malloc
+    /// memory that still holds the copied-out bytes, so the wrong read returns
+    /// the right value and no stdout oracle can fail. An unstamped element is
+    /// a silent hole in that coverage, so assert the stamp rather than assume
+    /// it.
+    #[test]
+    fn poison_buffer_stamps_every_element() {
+        let cap = 4u32;
+        unsafe {
+            let data = alloc_buffer(cap);
+            for i in 0..cap as usize {
+                *data.add(i) = val_from_i32(7);
+            }
+            poison_buffer(data, cap);
+            for i in 0..cap as usize {
+                assert_eq!(
+                    val_to_i64(&*data.add(i)),
+                    0x5EEDDEA,
+                    "element {i} of a released buffer was left unstamped"
+                );
+            }
+            let layout = std::alloc::Layout::array::<Val>(cap as usize)
+                .expect("storage buffer layout");
+            std::alloc::dealloc(data as *mut u8, layout);
+        }
+    }
 
     #[test]
     fn test_stack_basic() {
