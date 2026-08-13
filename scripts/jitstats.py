@@ -401,8 +401,14 @@ def check_corpus_one(
     gated: bool,
     kind: str = "corpus",
     threshold: str | None = None,
-) -> tuple[bool, dict | None]:
-    """Run the corpus A/B, then either record, gate, or survey it."""
+) -> tuple[bool, bool, dict | None]:
+    """Run the corpus A/B, then either record, gate, or survey it.
+
+    Returns `(ok, ab_ok, row)`. `ab_ok` is reported separately because the A/B
+    is valid on ANY corpus source — it compares a program against itself, so it
+    reads no baseline and needs no pin — while `ok` also covers the counter
+    floor and `out_sha`, which do require the pinned corpus.
+    """
     jit = run_path(source_path, compile_=True, threshold=threshold)
     control = run_path(source_path, compile_=False)
     reference = source_path.with_suffix(".out").read_bytes()
@@ -414,25 +420,31 @@ def check_corpus_one(
     for line in abort_breakdown(jit.fields):
         print(f"      {line}")
 
-    if not gated:
-        return True, row
-
-    ok = True
+    # The A/B runs BEFORE the ungated return: it compares the program against
+    # itself (one binary, two thresholds) and touches no baseline file, so it
+    # is meaningful on `$AHEUI_SNIPPETS` and on a sibling checkout too. Keeping
+    # it behind the pin meant an unpinned corpus did not even PRINT a total
+    # miscompile — the one failure this gate exists to catch.
+    ab_ok = True
     if jit.stdout != control.stdout:
         print(
             f"      FAIL: JIT stdout differs from the un-compiled run "
             f"({len(jit.stdout)} vs {len(control.stdout)} bytes)"
         )
-        ok = False
+        ab_ok = False
     if jit.code != control.code:
         print(f"      FAIL: JIT exit {jit.code} != un-compiled exit {control.code}")
-        ok = False
+        ab_ok = False
     if not jit.fields:
         print(f"      FAIL: no [jit-stats] line (is MAJIT_STATS honored?)")
-        ok = False
-    if not ok:
-        return False, row
+        ab_ok = False
+    if not ab_ok:
+        return False, False, row
 
+    if not gated:
+        return True, True, row
+
+    ok = True
     current = corpus_snapshot(jit)
     baseline_file = (
         jitstress_baseline_path(name)
@@ -443,7 +455,7 @@ def check_corpus_one(
         baseline_file.parent.mkdir(parents=True, exist_ok=True)
         baseline_file.write_text(current)
         print(f"      recorded {baseline_file.relative_to(REPO)}")
-        return ok, row
+        return ok, True, row
 
     if not baseline_file.exists():
         jitstress_flag = " --jitstress" if kind == "jitstress" else ""
@@ -451,7 +463,7 @@ def check_corpus_one(
             f"      FAIL: no committed baseline ({baseline_file.relative_to(REPO)})"
             f" — record it with scripts/jitstats.py record{jitstress_flag} {name}"
         )
-        return False, row
+        return False, True, row
 
     baseline = parse(baseline_file.read_text())
     parsed = parse(current)
@@ -463,8 +475,8 @@ def check_corpus_one(
             failures.append(f"{field} {baseline.get(field)} -> {parsed.get(field)}")
     if failures:
         print(f"      FAIL: jit-stats regression: {', '.join(failures)}")
-        return False, row
-    return ok, row
+        return False, True, row
+    return ok, True, row
 
 
 def find_snippets() -> tuple[Path, str] | None:
@@ -675,14 +687,18 @@ def run_corpus_checks(
     kind: str = "corpus",
 ) -> tuple[int, list[dict]]:
     gated = source == "submodule"
-    unpinned = f"  corpus is unpinned — surveyed, not gated ({source} source)"
+    unpinned = (
+        f"  corpus is unpinned — counter floor and out_sha surveyed, not gated "
+        f"({source} source); the JIT-vs-un-compiled A/B still gates"
+    )
     if not gated:
         print(unpinned)
     print(HEADER)
     rows: list[dict] = []
     failed = 0
+    ab_failed = 0
     for name, path in items:
-        ok, row = check_corpus_one(
+        ok, ab_ok, row = check_corpus_one(
             name,
             path,
             record=record,
@@ -691,11 +707,14 @@ def run_corpus_checks(
             threshold=JITSTRESS_THRESHOLD if kind == "jitstress" else None,
         )
         failed += 0 if ok else 1
+        ab_failed += 0 if ab_ok else 1
         if row is not None:
             rows.append(row)
     if not gated:
         print(unpinned)
-    return failed if gated else 0, rows
+    # An unpinned corpus can still fail on the A/B. Only the baseline-derived
+    # verdicts are downgraded to a survey, because only those need the pin.
+    return (failed if gated else ab_failed), rows
 
 
 def jitstress_requested(name: str) -> str:
