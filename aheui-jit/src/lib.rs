@@ -740,34 +740,62 @@ fn dump_storage_ptr(ptr: usize) -> String {
 /// decode + output buffer. Writing the raw word through majit's
 /// `jit_write_number_i64` printed tagged payloads (289 for 144) into a
 /// second buffer that interleaved wrongly with interpreter output.
+/// The `out` byte range `@@@WALKEMIT` reports, from `MAJIT_SPDIAG_FROM` /
+/// `MAJIT_SPDIAG_TO`.
+///
+/// A window rather than the whole run, because a program emitting hundreds of
+/// kilobytes buries the one write being chased. Which window is interesting is
+/// a property of the failure — the byte offset at which an A/B says the two
+/// runs first differed — so it is a knob rather than a constant.
+fn spdiag_window() -> (u64, u64) {
+    static WINDOW: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
+    *WINDOW.get_or_init(|| {
+        let read = |name: &str, fallback: u64| {
+            std::env::var(name)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(fallback)
+        };
+        (
+            read("MAJIT_SPDIAG_FROM", 1000),
+            read("MAJIT_SPDIAG_TO", 3000),
+        )
+    })
+}
+
+/// Report one value emitted from COMPILED code.
+///
+/// Only the JIT shims call this; the interpreter arms write through
+/// `aheui_io` directly. That asymmetry is the point — a diverging byte that
+/// appears here was produced by a trace, and one that does not was produced by
+/// the interpreter after a guard sent it back.
+fn walk_emit_log(kind: &str, value: i64) {
+    if !spdiag_enabled() {
+        return;
+    }
+    let out = aheui_io::output_total_bytes();
+    let (from, to) = spdiag_window();
+    if !(from..=to).contains(&out) {
+        return;
+    }
+    eprintln!(
+        "@@@WALKEMIT {kind} out={out} val={value}{}",
+        dump_storage_ptr(WALK_STORAGE_PTR.with(|c| c.get()))
+    );
+}
+
 extern "C" fn jit_write_number(value: i64) {
     let v: Val = unsafe { std::mem::transmute(value) };
     if bh_debug_enabled() {
         eprintln!("[io-debug] jit_write_number raw={value}");
     }
-    if spdiag_enabled() {
-        let out = aheui_io::output_total_bytes();
-        if (1000..=3000).contains(&out) {
-            eprintln!(
-                "@@@WALKEMIT num out={out} val={value}{}",
-                dump_storage_ptr(WALK_STORAGE_PTR.with(|c| c.get()))
-            );
-        }
-    }
+    walk_emit_log("num", value);
     aheui_io::output_write_number(&v);
 }
 
 extern "C" fn jit_write_utf8(value: i64) {
     let v: Val = unsafe { std::mem::transmute(value) };
-    if spdiag_enabled() {
-        let out = aheui_io::output_total_bytes();
-        if (1000..=3000).contains(&out) {
-            eprintln!(
-                "@@@WALKEMIT utf8 out={out} val={value}{}",
-                dump_storage_ptr(WALK_STORAGE_PTR.with(|c| c.get()))
-            );
-        }
-    }
+    walk_emit_log("utf8", value);
     aheui_io::output_write_utf8(&v);
 }
 
