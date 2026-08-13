@@ -26,8 +26,7 @@ pub use smallint::*;
 #[cfg(feature = "bigint-backend")]
 pub use bigint::*;
 
-// ── Floored division ────────────────────────────────────────────────
-//
+// Floored division shared by both value backends.
 // Both backends divide the same way, because both upstream files do:
 // `smallint.py` spells division `r1 // r2` and `bigint.py` calls
 // `rbigint.div`, and those are the same convention — the quotient rounds
@@ -75,8 +74,6 @@ pub(crate) fn floor_mod_i64(a: i64, b: i64) -> i64 {
         r
     }
 }
-
-// ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

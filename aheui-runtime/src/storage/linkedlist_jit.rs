@@ -1,7 +1,5 @@
 //! Monomorphic JIT helpers for LinkedList storage ops.
 //!
-//! Phase D-1 (2026-04-28, design
-//! `~/.claude/plans/2026-04-28-phase-d1-monomorphic-dispatch-design.md`).
 //! aheui-jit's mainloop branches on the `is_queue` / `is_port` JIT
 //! greens at each storage-op site to dispatch monomorphically through
 //! these helpers; the trace IR then sees concrete reads / writes on
@@ -19,7 +17,7 @@
 use super::linkedlist::{LinkedList, Queue, Stack};
 use crate::value::*;
 
-// ── Stack helpers ────────────────────────────────────────────────────
+// Stack helpers.
 
 #[inline(always)]
 #[majit_macros::jit_inline(
@@ -461,7 +459,7 @@ pub fn stack_cmp(stack: usize) {
     next.value = (r2 >= r1) as i64;
 }
 
-// ── Node alloc/free + val arithmetic — JIT-callable wrappers ────────
+// JIT-callable wrappers for node allocation and value arithmetic.
 //
 // These expose the storage nursery and value arithmetic to the JIT's
 // field-level IR path.  `alloc_node_jit` / `free_node_jit` use `usize`
@@ -493,7 +491,7 @@ pub fn val_ge_jit(a: Val, b: Val) -> Val {
     }
 }
 
-// ── Queue helpers ────────────────────────────────────────────────────
+// Queue helpers.
 
 #[inline(always)]
 #[majit_macros::jit_inline(
@@ -1065,15 +1063,15 @@ pub fn queue_cmp(queue: usize) {
     queue.size = queue.size + 1u32;
 }
 
-// ── Mode-0 twins ─────────────────────────────────────────────────────
+// Raw-word mode equivalents of the tagged-value helpers.
 //
 // Same storage work as the helpers above, raw-word arithmetic instead of
 // tagged. The mainloop picks between a twin and its sibling on the `bm` green,
 // so the choice is made once at record time and compiled code never tests the
 // mode.
 //
-// **Every route out of mode 0 sits on the failure side of a guard.** That is
-// the invariant these bodies exist to hold, and it is not an optimisation: the
+// Every route out of mode 0 must sit on the failure side of a guard. This is a
+// correctness invariant rather than an optimization: the
 // conversion walks the storage and retags every value it can reach, and from
 // inside compiled code it can reach neither a value the trace has already
 // loaded into a register nor a node the trace has not materialised yet. Both

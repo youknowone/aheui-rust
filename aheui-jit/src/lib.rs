@@ -75,11 +75,10 @@ pub fn jit_threshold() -> u32 {
 ///
 /// The single 33177-op loop costs 172ms to optimize plus 26ms to assemble,
 /// which the run does not earn back; at 30000 that drops to 42ms plus 10ms and
-/// the whole corpus stays byte-identical (75 programs; the 3 that differ are
-/// non-terminating and match on any fixed output prefix). Lowering it is left
-/// for after the remaining trace-quality work, since the trade shows up in the
-/// `jitstats` gate as logo's `loops_aborted` 0 -> 2 and `guard_failures`
-/// 201 -> 401.
+/// the sampled terminating programs stay byte-identical. The default remains
+/// 70000 because lowering it changes the committed `jitstats` floor: logo's
+/// `loops_aborted` moves from 0 to 2 and `guard_failures` from 201 to 401.
+/// [`trace_limit`] exposes an override for performance experiments.
 pub const TRACE_LIMIT: u32 = 70000;
 
 /// [`TRACE_LIMIT`] honoring a `MAJIT_TRACE_LIMIT` override. `trace_limit` is a
@@ -252,9 +251,9 @@ mod bigint_gc {
                 let mut root = GcRef(addr);
                 visit(&mut root);
                 if root.0 != addr {
-                    // Today's collect_oldgen_nonmoving leaves these old-gen
-                    // payloads in place. Write back anyway so a future moving
-                    // visitor can forward the live Val instead of a temporary.
+                    // `collect_oldgen_nonmoving` leaves old-generation payloads
+                    // in place. Write back any changed address so this root
+                    // walker also supports a moving visitor.
                     aheui_runtime::value::val_set_bigint_addr(value, root.0);
                 }
             }
@@ -316,7 +315,7 @@ pub fn init_gc_subsystem() {
 
 include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));
 
-// ── Imports ──
+// Imports required by generated JIT code.
 
 use aheui_runtime::aheui::*;
 use aheui_runtime::io as aheui_io;
@@ -326,7 +325,7 @@ use ahsembler::compiler::Program;
 
 use aheui_runtime::value::*;
 
-// ── Diagnostic env-var helpers (cached once, safe for hot loops) ──
+// Diagnostic environment variables, cached outside hot loops.
 
 fn spdiag_enabled() -> bool {
     static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -527,7 +526,8 @@ fn walk_aheui_jit_node_roots(
         visit_gcref_slot(gcref as *mut majit_ir::GcRef);
     });
 
-    // This hook enumerates only shadow-stack node-ref slots; majit extra-roots hold aheui bignums, walked separately by MiniMarkGC.
+    // This hook enumerates only shadow-stack node references. MiniMarkGC walks
+    // Aheui bignums held by majit's extra-root set separately.
 }
 
 /// Trace-time state for the Aheui JIT.
@@ -537,9 +537,8 @@ fn walk_aheui_jit_node_roots(
 ///   storage   = Storage()
 ///   selected  = storage[0]         # object reference
 ///
-/// Rust adaptations — kept narrow and co-located here so reviewers can
-/// see exactly which deviations are required by the borrow checker /
-/// JIT raw-pointer ABI:
+/// Rust represents the red state differently where required by the borrow
+/// checker and the JIT raw-pointer ABI:
 ///
 /// * `selected: usize` — RPython captures the polymorphic storage object
 ///   directly. Rust cannot hold a mutable borrow into `self.storage`
@@ -559,11 +558,10 @@ fn walk_aheui_jit_node_roots(
 static SPDIAG_TRACE_OPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 thread_local! {
-    // Latest pre-walk storage dump (updated while output_bytes is in the
-    // trace-start window) so `recover` can print the S_k baseline to compare
-    // against S_{k+1} — disambiguates "stale = state-field red" vs "stale =
-    // folded heap write".
-    static SK_SNAPSHOT: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+    // Storage snapshot captured before trace walking. Recovery prints it next
+    // to the restored state to distinguish a stale state field from a stale
+    // optimized heap write.
+    static PRE_WALK_SNAPSHOT: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
 }
 
 struct AheuiState {
@@ -673,7 +671,7 @@ impl AheuiState {
                 self.storage.len_at(self.selected),
                 self.spdiag_dump_stacks(),
             );
-            SK_SNAPSHOT.with(|s| eprintln!("@@@SPDIAG S_k-snapshot{}", s.borrow()));
+            PRE_WALK_SNAPSHOT.with(|s| eprintln!("@@@SPDIAG pre-walk-snapshot{}", s.borrow()));
             SPDIAG_TRACE_OPS.store(300, std::sync::atomic::Ordering::Relaxed);
         }
         self.storage_ref = &mut self.storage as *mut Storage as usize;
@@ -707,10 +705,10 @@ fn find_used_storages(_program: &Program, _header_pc: usize, initial: usize) -> 
 }
 
 thread_local! {
-    /// W1 diag: raw `*const Storage` set by the mainloop before each
-    /// `jit_merge_point!`, read by the walk's output shims so they can dump
-    /// the walk's per-emission shared-storage state (the walk runs inside the
-    /// JitCodeMachine, not the mainloop, so the resume-op log can't see it).
+    /// Raw `*const Storage` set before each `jit_merge_point!`. Output shims
+    /// use it to inspect the walk's shared-storage state while execution is
+    /// inside `JitCodeMachine`, where mainloop recovery diagnostics cannot
+    /// observe it.
     static WALK_STORAGE_PTR: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -773,8 +771,7 @@ extern "C" fn jit_write_utf8(value: i64) {
     aheui_io::output_write_utf8(&v);
 }
 
-// ── Input I/O shims for JIT tracing ──
-//
+// Input I/O shims for JIT tracing.
 // RPython parity: I/O input (os.read) is a residual call — the JIT traces
 // through it as CallI, producing a new INT variable. We use a thread-local
 // InputBuffer so the extern "C" shim can access it from compiled code.
@@ -806,9 +803,8 @@ extern "C" fn jit_tag_val(raw: i64) -> Val {
 
 /// [`jit_tag_val`]'s mode-0 twin: the word is the value, so this is identity.
 ///
-/// Unlike its sibling it keeps the full `i64`. The truncation there predates
-/// dual mode and only bites on an input number wider than 32 bits; mode 0 has
-/// no reason to inherit it.
+/// Unlike [`jit_tag_val`], which constructs a tagged value through an `i32`,
+/// this helper preserves the full `i64` range used by raw-word mode.
 #[cfg(feature = "bigint-backend")]
 extern "C" fn jit_tag_val_raw(raw: i64) -> Val {
     aheui_runtime::value::val_from_raw_i64(raw)
@@ -832,8 +828,7 @@ fn jit_bigint_mode() -> i64 {
     aheui_runtime::value::bigint_mode() as i64
 }
 
-// ── Node alloc/free + val comparison — local JIT wrappers ──
-//
+// Local JIT wrappers for node allocation and value comparison.
 // Local wrappers for functions in aheui_runtime whose `__majit_call_policy_*`
 // probes the macro generates in the LOCAL scope.  Calling `lj::alloc_node_jit`
 // directly would look for the probe in the `lj` module, which doesn't exist.
@@ -876,13 +871,12 @@ fn __majit_pipeline_jitcode(name: &str) -> std::sync::Arc<majit_metainterp::JitC
         .unwrap_or_else(|| panic!("pipeline jitcode for '{name}' not found"))
 }
 
-// ── OP_BRZ pop+is_zero shims ──
+// OP_BRZ pop-and-zero-test shims.
 //
 // rpaheui/aheui/aheui.py:299-301: `top = selected.pop(); jump =
 // bigint.is_zero(top)`. The polymorphic `selected.pop()` plus the
-// `bigint.is_zero` call are silent-skipped by the lowerer, so the
-// JIT-compiled trace previously had no exit guard for OP_BRZ —
-// loop.aheui infinite-looped in compiled mode.
+// `bigint.is_zero` call are silent-skipped by the lowerer. Without a combined
+// residual call the compiled trace omits OP_BRZ's exit guard.
 //
 // These shims bundle pop + is_zero into a single residual call that
 // returns 1 (zero, take the branch) or 0 (non-zero, fall through).
@@ -911,8 +905,8 @@ extern "C" fn jit_pop_is_zero(pool_ptr: usize, selected: usize) -> i64 {
 
 /// OP_MOV helper: push the popped value onto the move target
 /// (aheui.py:277-279 `storage[val].push(r)`). The target index is a
-/// per-opcode operand, not the promoted `selected`, so the polymorphic
-/// `dispatch_mut(target)` is bundled into one residual call the same
+/// per-opcode operand rather than the promoted `selected_ref`, so the
+/// polymorphic `dispatch_mut(target)` is bundled into one residual call the same
 /// way `jit_pop_is_zero` bundles pop + is_zero.
 extern "C" fn jit_storage_push(pool_ptr: usize, target: usize, value: Val) {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
@@ -920,10 +914,10 @@ extern "C" fn jit_storage_push(pool_ptr: usize, target: usize, value: Val) {
 }
 
 // Index-keyed dynamic storage dispatch — rpaheui parity for
-// `selected.METHOD()` (aheui.py:260-389). `selected` is a RED (never
-// promoted), so each storage op is one residual call that dispatches on
-// the live `selected` index at run time (Stack / Queue / Port) instead of
-// a JIT-green 3-way `is_port`/`is_queue` branch + `selected_ref`. This
+// `selected.METHOD()` (aheui.py:260-389). The integer `selected` index is a
+// red value and is never promoted, so each storage op is one residual call
+// that dispatches on the live index at run time (Stack / Queue / Port) instead
+// of a JIT-green 3-way `is_port`/`is_queue` branch + `selected_ref`. This
 // keeps the recorded trace structurally identical to rpaheui's single
 // polymorphic call site, so the optimiser never emits a contradictory
 // `guard_value(selected)` and the loop closes through the real back-edge.
@@ -997,11 +991,11 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
 // can_enter_jit! / jit_merge_point! flow through JitDriver.back_edge_structured
 // and JitDriver.merge_point, which restore state via JitState::restore.
 
-// ── JIT mainloop ──
+// JIT mainloop.
 //
 // RPython parity: rpaheui/aheui/aheui.py mainloop()
 // - storage = linked list stacks (no compact arrays, no virtualizable arrays)
-// - selected = red variable (promoted within trace)
+// - selected = red variable dispatched through the live storage index
 // - push/pop = Node allocation/deallocation (OptVirtualize target)
 
 #[majit_macros::jit_interp(
@@ -1013,9 +1007,9 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // the state struct without enumerating any inputarg/fail_arg/Sym slot
     // for it. Pool/selected raw-pointer handles are also opaque (single
     // GcRef word each); polymorphic dispatch into Stack/Queue/Port goes
-    // through `selected_dispatch_mut()` and is handled at the codewriter
-    // layer by Step 4b's handle_regular_indirect_call (-live- +
-    // ref_guard_value + residual call).
+    // through `selected_dispatch_mut()`; `handle_regular_indirect_call`
+    // preserves the live receiver, guards its concrete value, and emits the
+    // residual call.
     state_fields = {
         storage: opaque(aheui_runtime::storage::Storage),
         // RPython parity: AheuiState.selected is `usize` (slot index into
@@ -1089,12 +1083,13 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_tag_val_raw => elidable_int_cannot_raise,
         jit_retag_small => elidable_int_cannot_raise,
         jit_bigint_mode => elidable_int_cannot_raise,
-        // First MethodCall RHS consumer; lowered via `lower_method_call_value`.
+        // Method-call results consumed as values are lowered through
+        // `lower_method_call_value`.
         Program::get_req_size => elidable_int_cannot_raise,
         Program::get_op => elidable_int_cannot_raise,
         Program::get_label => elidable_int_cannot_raise,
         Program::get_operand => elidable_int_cannot_raise,
-        // Phase D-1 monomorphic storage helpers. The hot Stack ops and the
+        // Monomorphic storage helpers. The hot Stack ops and the
         // cold queue_pop/queue_swap are `#[jit_inline]` (inline_int /
         // inline_void), so the lowerer splices their field-level body into
         // the trace; the remaining ops stay residual — a concrete
@@ -1168,8 +1163,8 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_sel_get_ref => elidable_ref_cannot_raise_wrapped,
         jit_stacksize_delta => elidable_int_cannot_raise,
         jit_effective_stacksize_delta => elidable_int_cannot_raise,
-        // Phase D-2: field-level IR for Stack ops — free and val arithmetic
-        // registered so the lowerer emits concrete IR ops instead of
+        // Register node frees and value arithmetic so field-level Stack
+        // operations emit concrete IR instead of
         // silent-skipping unregistered calls. Node allocation now goes through
         // `struct_allocs = { NodeJit => jit_alloc_node }`: concrete execution
         // calls `jit_alloc_node`, while tracing emits headerless `New(NodeJit)`
@@ -1194,10 +1189,10 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // swap/cmp and queue_pop/swap) splice that `self.size` setfield into the
     // trace directly, so they reproduce the barrier and need no entry here.
     // The remaining ops lower to opaque residual calls, which carry an empty
-    // write-set by default.  A size-only declaration caused the pi #29 spin;
-    // omitting `head` caused the fib #32 SIGSEGV when a cached pre-pop node was
-    // reused after the residual call.  Declaring both fields restores the
-    // invalidation performed by traced setfield barriers.  The lists are
+    // write-set by default. A size-only declaration can leave a stale head
+    // cached after a residual pop, while a head-only declaration can leave a
+    // stale size. Declaring both fields restores the invalidation performed by
+    // traced setfield barriers. The lists are
     // conservative supersets because an extra reload is harmless while a
     // missing invalidation is not.
     residual_writes = {
@@ -1285,13 +1280,10 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
     //
-    // A.3.7 closes the literal-parity gap that Phase D-3 reverted. The
-    // earlier revert was forced by the macro's `lower_value_expr` not
-    // registering greens as lowerable bindings; A.3.6.1
-    // (jitcode_lower.rs:5605 `bind_pre_merge_point_stmts`) walks
-    // pre-merge-point body-local `let` stmts and binds them, so a
-    // synthesised `let is_queue = state.selected == 21usize;` flows
-    // through `resolve_greens` / `emit_promote_greens` without panic.
+    // `bind_pre_merge_point_stmts` registers body-local bindings before green
+    // resolution. Therefore a synthesized
+    // `let is_queue = state.selected == 21usize;` flows through
+    // `resolve_greens` and `emit_promote_greens` as an ordinary green.
     //
     // The dispatch arms keep their `state.selected == 21usize` /
     // `state.selected == 27usize` 3-way structure — pyre's discriminator
@@ -1325,7 +1317,9 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let gc = Box::new(NurseryGcAllocator::new());
     driver.meta_interp_mut().backend_mut().set_gc_allocator(gc);
     driver.meta_interp_mut().backend_mut().set_new_via_gc(true);
-    // resume.py:1367 — materializes virtual headerless NodeJit nodes on guard-fail deopt; otherwise NullAllocator leaves a NULL head and size/chain desync SIGSEGV.
+    // `resume.py:1367` materializes virtual headerless `NodeJit` values during
+    // guard-failure deoptimization. The blackhole allocator must do the same or
+    // a virtual node becomes a null head while the recorded size stays nonzero.
     driver.register_blackhole_allocator(AheuiBlackholeAllocator);
 
     // rpaheui/aheui/aheui.py:325 `jit.set_param(driver, 'trace_limit', 30000)`
@@ -1452,8 +1446,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         let mut stackok = program.get_req_size(pc) as i64 <= state.stacksize;
         // rpaheui/aheui/aheui.py:284 sets `is_queue = (value == VAL_QUEUE)`
         // inside OP_SEL; pyre recomputes it pre-merge-point from the
-        // canonical source (`state.selected == VAL_QUEUE`) so A.3.6.1's
-        // body-local walker can bind it as a green for `resolve_greens`.
+        // canonical source (`state.selected == VAL_QUEUE`) so the body-local
+        // binding pass can expose it to `resolve_greens` as a green.
         let is_queue = state.selected == 21usize;
         // The dual-mode encoding, read once per dispatch so it reaches the
         // merge-point key. Bound here rather than hoisted out of the loop
@@ -1483,7 +1477,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     state.selected,
                     state.spdiag_dump_stacks()
                 );
-                SK_SNAPSHOT.with(|s| *s.borrow_mut() = snap);
+                PRE_WALK_SNAPSHOT.with(|s| *s.borrow_mut() = snap);
             }
             if op == 19 || op == 20 {
                 let out = aheui_io::output_total_bytes();
@@ -1512,7 +1506,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // the real storage length. `op` is green so the call constant-
         // folds per trace arm.
         state.stacksize += jit_effective_stacksize_delta(op as usize, stackok as i64);
-        // Phase D-1 §5: pre-advance `pc` so the interpreter's pc matches
+        // Pre-advance `pc` so the interpreter's pc matches
         // the trace's `__jit_pc = op_pc + 1` convention. Operand reads in
         // the arms use `pc - 1` to recover the opcode row; the trailing
         // `pc += 1` at the end of the loop is dropped (replaced by this
@@ -1574,8 +1568,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
 
         match op {
             // rpaheui/aheui/aheui.py:260-389: `selected.<op>()`.
-            // Phase D-1 §4: 2-way branch on the `is_queue` green.
-            // The trace specializes per value so only one branch
+            // Branch on the `is_queue` green. The trace specializes per value
+            // so only one branch
             // survives in compiled code: concrete `stack_*` or
             // `queue_*` (Port falls through to polymorphic dispatch).
             // `selected_ref` is the `ref(Stack)` state scalar, which

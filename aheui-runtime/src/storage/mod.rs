@@ -28,8 +28,7 @@ use crate::aheui::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
 use crate::value::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// ── Nursery bump allocator for `Node` ────────────────────────────────
-//
+// Nursery bump allocator for `Node`.
 // RPython-style nursery adapted for Rust: a large contiguous buffer
 // where alloc() is a pointer bump and free() returns the node to a
 // singly-linked free list. Python relies on the RPython GC for

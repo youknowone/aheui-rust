@@ -163,14 +163,12 @@ fi
 
 echo ""
 echo -e "${CYAN}══ MAJIT JIT ══${RESET}"
-# ════════════════════════════════════════════════════
 
 echo ""
 echo "═══ 5. JIT stats floor ═══"
 # The other four sections are all compaheuiler (rgen/cranelift AOT); this is
-# the only one that runs the majit-driven interpreter. Fixtures are the in-tree
-# `aheui-wasm/web/samples/` programs, so the gate does not depend on the
-# unpinned rpaheui corpus the sections above resolve.
+# the only one that runs the majit-driven interpreter. It gates the pinned
+# `snippets/` submodule through the corpus and jitstress baselines.
 cargo build -p aheui --release 2>/tmp/aheui_jit_build.log
 if [ ! -x target/release/aheui ]; then
     fail "aheui (majit) build failed (see /tmp/aheui_jit_build.log)"
@@ -182,7 +180,6 @@ else
     fi
 fi
 
-# ════════════════════════════════════════════════════
 echo ""
 echo "════════════════════════════════"
 TOTAL=$((PASS + FAIL))

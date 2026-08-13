@@ -1,4 +1,4 @@
-//! M0 instrumentation for the aheui rtyper-penetration epic.
+//! Rtyper census for the Aheui interpreter and value helpers.
 //!
 //! Runs the production analyze pipeline (`analyze_multiple_pipeline_with_modules`)
 //! over the Charon-extracted aheui LLBC set (`build/llbc/aheui-runtime.ullbc`
@@ -8,8 +8,8 @@
 //! prepass census dispositions for the mainloop closure (`val_*`,
 //! `Storage`, …).
 //!
-//! This is a measurement, not an acceptance gate: it prints what the
-//! pipeline can and cannot digest today. Run as
+//! This is a measurement, not an acceptance gate: it prints which functions
+//! the pipeline accepts and where translation stops. Run as
 //!
 //! ```sh
 //! PYRE_RTYPER_VERBOSE=1 cargo test --release -p aheui-jit \
@@ -42,11 +42,10 @@ fn ensure_aheui_llbc_env(required: &[&str]) -> bool {
     true
 }
 
-/// Census the `val_*` helper subtree directly. The `mainloop` BFS closure
-/// (`aheui_census_m0`) is currently truncated before reaching `val_add`
-/// (call-target resolution fails at `dispatch_mut`/`LinkedList` level), so
-/// this second probe seeds the BFS from `val_add` itself to measure the
-/// arithmetic helpers' own phaseA/phaseB disposition.
+/// Census the `val_*` helper subtree directly. The `mainloop` traversal stops
+/// at the `dispatch_mut`/`LinkedList` call-target boundary before reaching
+/// `val_add`, so this probe starts at `val_add` to measure the arithmetic
+/// helpers' own phase-A and phase-B dispositions.
 ///
 /// Process-global registries (`STRUCT_ORIGIN_REGISTRY`, …) are re-seeded by
 /// each pipeline invocation; run serialized (`--test-threads=1`) to keep the
@@ -56,7 +55,7 @@ fn ensure_aheui_llbc_env(required: &[&str]) -> bool {
     debug_assertions,
     ignore = "release-only: runs full LLBC translation; use `cargo test --release --test test_aheui_census`"
 )]
-fn aheui_census_m0_val_helpers() {
+fn aheui_census_bigint_val_helpers() {
     if !ensure_aheui_llbc_env(&["aheui-runtime.ullbc", "aheuinterpreter.ullbc"]) {
         eprintln!(
             "skipping: build/llbc/{{aheui-runtime,aheuinterpreter}}.ullbc missing — \
@@ -67,14 +66,14 @@ fn aheui_census_m0_val_helpers() {
     run_census_with_driver(val_add_driver(["value", "bigint", "val_add"]));
 }
 
-/// Same probe against the smallint build (`Val = i64`,
-/// `val_add = wrapping_add`) — the rpaheui-smallint-parity mode M1 targets.
+/// Run the same probe against the smallint build, where `Val = i64` and
+/// `val_add = wrapping_add`.
 #[test]
 #[cfg_attr(
     debug_assertions,
     ignore = "release-only: runs full LLBC translation; use `cargo test --release --test test_aheui_census`"
 )]
-fn aheui_census_m0_val_helpers_smallint() {
+fn aheui_census_smallint_val_helpers() {
     if !ensure_aheui_llbc_env(&["aheui-runtime-smallint.ullbc"]) {
         eprintln!(
             "skipping: build/llbc/aheui-runtime-smallint.ullbc missing — \
@@ -152,7 +151,7 @@ fn run_census_with_driver(driver: JitDriverSpec) {
     debug_assertions,
     ignore = "release-only: runs full LLBC translation; use `cargo test --release --test test_aheui_census`"
 )]
-fn aheui_census_m0() {
+fn aheui_census_mainloop() {
     if !ensure_aheui_llbc_env(&["aheui-runtime.ullbc", "aheuinterpreter.ullbc"]) {
         eprintln!(
             "skipping: build/llbc/{{aheui-runtime,aheuinterpreter}}.ullbc missing — \
@@ -183,9 +182,9 @@ fn aheui_census_m0() {
         },
     };
 
-    // The drain / jitcode-emission tail may well panic on aheui shapes the
-    // pipeline has never seen; the census histograms are printed before
-    // that point, so capture the panic and report it instead of dying.
+    // Unsupported Aheui shapes may make the jitcode-emission tail panic after
+    // the census histograms have been printed. Capture and report that panic so
+    // the census output remains available.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         majit_translate::analyze_multiple_pipeline_with_modules(
             &[],
@@ -199,7 +198,7 @@ fn aheui_census_m0() {
 
     match outcome {
         Ok(result) => {
-            eprintln!("=== aheui census M0: pipeline completed ===");
+            eprintln!("=== aheui mainloop census: pipeline completed ===");
             eprintln!("jitcodes emitted: {}", result.jitcodes.len());
             let mut names: Vec<&str> = result
                 .jitcodes_by_path
@@ -210,7 +209,7 @@ fn aheui_census_m0() {
             eprintln!("jitcode leaves: {names:?}");
         }
         Err(err) => {
-            eprintln!("=== aheui census M0: pipeline panicked after census ===");
+            eprintln!("=== aheui mainloop census: pipeline panicked after census ===");
             eprintln!("panic: {}", panic_message(&err));
         }
     }

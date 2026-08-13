@@ -22,8 +22,8 @@ use majit_translate::jitcode::{BhDescr, JitCode};
 /// Deserialize the build-time `pipeline.jitcodes` blob.
 ///
 /// `bincode::deserialize` produces fresh `Arc::new(...)` shells (refcount 1).
-/// fnaddr / descr-pool rewiring is layered on by later callers; this entry
-/// point only materializes the canonical bodies.
+/// This function materializes only the canonical bodies. Runtime registration
+/// adds function addresses and the shared descriptor pool.
 pub fn load_pipeline_jitcodes() -> Vec<Arc<JitCode>> {
     const BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/opcode_jitcodes.bin"));
     bincode::deserialize(BYTES).unwrap_or_else(|e| {

@@ -5,12 +5,8 @@ use majit_ir::descr::{Descr, GcCache, LLType};
 use majit_ir::value::Type;
 use majit_macros::jit_struct;
 
-// ─────────────────────────────────────────────────────────────────────
-// Aheui storage structures recoded as `#[jit_struct]`.
-// These tests document the descr-registration end-state: once the
-// tracer consumes descrs through GcCache lookup, the existing
-// `linked_list_*` trait methods on `JitCodeSym` become redundant.
-// ─────────────────────────────────────────────────────────────────────
+// Local `#[jit_struct]` mirrors isolate descriptor registration from the
+// runtime storage implementation exercised by the tests.
 
 /// Singly-linked list node.
 #[jit_struct]

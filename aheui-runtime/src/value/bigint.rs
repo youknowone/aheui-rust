@@ -331,15 +331,15 @@ fn dual_mode_enabled() -> bool {
 
 /// Start the process in mode 0, before any value exists.
 ///
-/// ⚠ Only valid before the first value is created: it reinterprets nothing, it
+/// Valid only before the first value is created: it reinterprets nothing and
 /// only changes how subsequent words are read. Flipping back is not offered —
 /// the reverse direction has no meaning once a bigint has been allocated.
 ///
 /// A no-op once the process has left mode 0. The mode is process-global while
 /// each mainloop owns its own storage, so a second mainloop in a process that
 /// already flipped must not re-enter mode 0 — the first one's boxed values
-/// would be reread as raw words. (One mainloop per process is the standing
-/// assumption anyway: `set_gc_roots` is a single global slot.)
+/// would be reread as raw words. The runtime supports one active mainloop per
+/// process because `set_gc_roots` is a single global slot.
 pub fn start_in_raw_mode() {
     if !dual_mode_enabled() {
         if dual_log_enabled() {
@@ -460,7 +460,7 @@ pub(crate) fn clear_bigint_hooks_for_test() {
     BIGINT_MAYBE_COLLECT_HOOK.store(0, Ordering::Relaxed);
 }
 
-// ── Public API ──────────────────────────────────────────────────────
+// Public value API.
 
 #[inline(always)]
 pub fn val_from_i32(v: i32) -> Val {
@@ -479,8 +479,7 @@ pub fn val_retag_small(untagged: i64) -> Val {
     Val((untagged << 1) | 1)
 }
 
-// ── Dual mode ───────────────────────────────────────────────────────
-//
+// Dual-mode representation.
 // Dual mode runs untagged until the first arithmetic overflow. While it is in
 // mode 0 the same word carries a plain `i64`, so nothing tags, untags or
 // allocates; the flip converts every reachable value once and the tagged
@@ -529,9 +528,10 @@ pub fn val_mod_raw(a: Val, b: Val) -> Val {
 
 /// Convert one mode-0 raw word into its mode-1 tagged form.
 ///
-/// ⚠ **Not idempotent.** A second application reads an already-tagged word as
-/// a raw integer and doubles it. Every reachable value must be visited exactly
-/// once; `storage::walk_bigint_root_values` is what guarantees that, by
+/// This operation is not idempotent. A second application reads an
+/// already-tagged word as a raw integer and doubles it. Every reachable value
+/// must be visited exactly once; `storage::walk_bigint_root_values` guarantees
+/// that by
 /// walking the stack chains with the queue and port slots excluded and then
 /// those two chains once each — `pools[VAL_QUEUE]`/`pools[VAL_PORT]` alias
 /// them, so a walk over all 28 slots would visit those values twice.
@@ -582,7 +582,7 @@ pub fn val_to_i32_saturating(v: &Val) -> i32 {
     }
 }
 
-// ── Arithmetic ──────────────────────────────────────────────────────
+// Arithmetic.
 
 #[inline(always)]
 fn binop_fast(

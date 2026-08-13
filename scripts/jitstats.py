@@ -540,11 +540,11 @@ def survey(paths: list[Path]) -> list[dict]:
     return rows
 
 
-# ── the history view ────────────────────────────────────────────────────────
+# History view.
 
 # What counts as a change. Timings are deliberately excluded: they are noise on
 # a shared machine, and a history that treats every run as a change point is a
-# log, not a history. The `ABORT_*` breakdown IS included even though nothing
+# log, not a history. The `ABORT_*` breakdown is included even though nothing
 # gates it — `abort_too_long 784 -> 7` is the shape of a fix, while the
 # `loops_aborted` total it rolls up into can move for unrelated reasons.
 TREND_FIELDS = (*SNAPSHOT_FIELDS, *ABORT_REASONS)

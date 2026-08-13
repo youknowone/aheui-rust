@@ -7,7 +7,7 @@
 //! layouts here are written against `linkedlist.py`'s observable semantics
 //! instead, which is the behaviour both backends must agree on.
 //!
-//! Two places where `array.py` diverges from `linkedlist.py` are NOT copied,
+//! Two places where `array.py` diverges from `linkedlist.py` are not copied,
 //! because `linkedlist.py` is the semantics the corpus pins:
 //!
 //! * `array.py:51-52` `Queue.dup` is `appendleft(self[0])`, and in its
@@ -22,7 +22,7 @@
 //! buffer is a hand-rolled allocation rather than a `Vec` field: `Vec`'s field
 //! order is unspecified, and the JIT bakes in `offset_of!` for the base.
 //!
-//! GROWTH REALLOCATES. Any operation that can push may move the buffer, so a
+//! Growth may reallocate. Any operation that can push may move the buffer, so a
 //! base pointer read before a push must not be reused after it. The linked
 //! list had no such hazard — `head`/`next` stores never invalidated an
 //! unrelated pointer.
@@ -137,8 +137,7 @@ pub trait ArrayStorage {
     }
 }
 
-// ── Stack ───────────────────────────────────────────────────────────
-//
+// Stack layout.
 // Top of stack is `data[size - 1]`, matching `array.py:8-42`'s right end and
 // `linkedlist.py:76-91`'s head.
 
@@ -263,8 +262,7 @@ impl ArrayStorage for Stack {
     }
 }
 
-// ── Queue ───────────────────────────────────────────────────────────
-//
+// Queue layout.
 // FIFO: push appends at the back, pop takes from the front. A ring over
 // `[front, front + size)` keeps both ends O(1) without the unbounded drift a
 // moving front index alone would cause in a long-running program.
@@ -426,7 +424,7 @@ impl ArrayStorage for Queue {
     }
 }
 
-// ── Port ────────────────────────────────────────────────────────────
+// Port layout.
 
 /// `linkedlist.py:125-148 class Port` — a stack plus the `last_push` shadow.
 #[repr(C)]

@@ -1,21 +1,19 @@
-//! Minimal reproduction harness for the optimizeopt:8350 `get_parent_descr`
-//! None panic (aheui task #22 BUG 1).
+//! Reproduction harness for `get_parent_descr` failures when one trace contains
+//! storage nodes with different descriptor identities.
 //!
-//! Builds a hot loop in one of three storage-mix modes and runs it under a
+//! Builds a hot loop in one of seven storage-mix modes and runs it under a
 //! caller-supplied threshold (so the JIT decision is deterministic regardless
 //! of the `MAJIT_THRESHOLD` env var):
 //!
-//!   mode "queue" : PURE queue  — every storage op touches SEL 21 (the queue).
-//!                  Uses only aheui_runtime `Node` (queue_push/queue_pop).
-//!   mode "stack" : PURE stack  — every storage op touches SEL 1 (a stack).
-//!                  Loop pushes a const via the `NodeJit` literal arm and pops
-//!                  it, so BOTH `NodeJit` (New+SetfieldGc) and `Node`
-//!                  (GetfieldGc read) appear in ONE trace.
-//!   mode "mixed" : queue POPNUM + stack PUSH/POPCHAR in one loop body — the
-//!                  99dan print-loop shape (queue `Node` read + stack `NodeJit`
-//!                  write + stack `Node` read all in one trace).
+//! - `queue` uses only queue `Node` allocation and reads.
+//! - `stack` combines a stack `NodeJit` allocation with a `Node` read.
+//! - `mixed` combines queue reads with stack allocation and reads.
+//! - `movmix` combines `Node` and `NodeJit` allocations through `MOV`.
+//! - `dupmov` combines both allocation types through `DUP` and `MOV`.
+//! - `dup_only` is the single-descriptor control for `dupmov`.
+//! - `mov_only` is the `NodeJit`-only control for `movmix`.
 //!
-//! Usage: `mixed_repro <queue|stack|mixed> <threshold> [K]`
+//! Usage: `mixed_repro <mode> <threshold> [K]`
 
 use std::collections::HashMap;
 
@@ -39,8 +37,8 @@ fn build(mode: &str, k: i32) -> Program {
         val.push(v);
     };
 
-    // Fill the DRAIN storage with K values so the loop runs K times.
-    // queue/mixed drain the queue; stack/movmix/dupmov drain stack 1.
+    // Fill the storage consumed by the loop with K values.
+    // `queue` and `mixed` drain the queue; every other mode drains stack 1.
     let drain_sel = match mode {
         "queue" | "mixed" => VAL_QUEUE as i32,
         _ => STACK_SLOT,
@@ -53,14 +51,14 @@ fn build(mode: &str, k: i32) -> Program {
     let loop_pc = opcodes.len();
 
     match mode {
-        // PURE queue: SEL 21; BRPOP1 END; POPNUM; JMP LOOP
+        // Queue-only path: SEL 21; BRPOP1 END; POPNUM; JMP LOOP.
         "queue" => {
             push(OP_SEL, VAL_QUEUE as i32, &mut opcodes, &mut values);
             push(OP_BRPOP1, LABEL_END, &mut opcodes, &mut values);
             push(OP_POPNUM, -1, &mut opcodes, &mut values);
         }
-        // PURE stack: SEL 1; BRPOP1 END; POPNUM(drain);
-        //             PUSH 42; POPCHAR(net-0 NodeJit push + Node read); JMP LOOP
+        // Stack-only path: SEL 1; BRPOP1 END; POPNUM;
+        // PUSH 42; POPCHAR (net-zero NodeJit push plus Node read); JMP LOOP.
         "stack" => {
             push(OP_SEL, STACK_SLOT, &mut opcodes, &mut values);
             push(OP_BRPOP1, LABEL_END, &mut opcodes, &mut values);
@@ -68,8 +66,7 @@ fn build(mode: &str, k: i32) -> Program {
             push(OP_PUSH, 42, &mut opcodes, &mut values);
             push(OP_POPCHAR, -1, &mut opcodes, &mut values);
         }
-        // MIXED: SEL 21; BRPOP1 END; POPNUM(queue drain);
-        //        SEL 1; PUSH 42; POPCHAR(stack NodeJit push + Node read); JMP LOOP
+        // Mixed path: drain the queue, then push and pop a stack `NodeJit`.
         "mixed" => {
             push(OP_SEL, VAL_QUEUE as i32, &mut opcodes, &mut values);
             push(OP_BRPOP1, LABEL_END, &mut opcodes, &mut values);
@@ -78,12 +75,12 @@ fn build(mode: &str, k: i32) -> Program {
             push(OP_PUSH, 42, &mut opcodes, &mut values);
             push(OP_POPCHAR, -1, &mut opcodes, &mut values);
         }
-        // MOVMIX: PURE stack. Draws stack 1; per iter does
+        // `movmix` drains stack 1; each iteration does:
         //   PUSH 5    -> lj::stack_push  = aheui_runtime `Node` New  (type_id A)
         //   MOV 2     -> inline `NodeJit` literal = aheui-jit `NodeJit` New (type_id B)
         //   POPNUM    -> drain stack 1 by 1 (Node read)
-        // => TWO distinct Node-layout SizeDescr type_ids in ONE trace, NO queue.
-        // SEL 1; BRPOP1 END; PUSH 5; MOV 2; POPNUM; JMP LOOP
+        // This puts two Node-layout SizeDescr identities in one trace without
+        // involving the queue.
         "movmix" => {
             push(OP_SEL, STACK_SLOT, &mut opcodes, &mut values);
             push(OP_BRPOP1, LABEL_END, &mut opcodes, &mut values);
@@ -91,11 +88,10 @@ fn build(mode: &str, k: i32) -> Program {
             push(OP_MOV, 2, &mut opcodes, &mut values); // pop stack1 -> push stack2 (NodeJit)
             push(OP_POPNUM, -1, &mut opcodes, &mut values);
         }
-        // DUPMOV: PURE stack, DUP variant matching 99dan's pc51-66 shape.
+        // `dupmov` is the DUP variant of `movmix`:
         //   DUP    -> lj::stack_dup  = aheui_runtime `Node` New   (type_id A)
         //   MOV 2  -> inline `NodeJit` literal = aheui-jit `NodeJit` New (type_id B)
         //   POPNUM -> net drain (DUP +1, MOV -1, POPNUM -1 = -1/iter)
-        // SEL 1; BRPOP1 END; DUP; MOV 2; POPNUM; JMP LOOP
         "dupmov" => {
             push(OP_SEL, STACK_SLOT, &mut opcodes, &mut values);
             push(OP_BRPOP1, LABEL_END, &mut opcodes, &mut values);
@@ -103,8 +99,7 @@ fn build(mode: &str, k: i32) -> Program {
             push(OP_MOV, 2, &mut opcodes, &mut values);
             push(OP_POPNUM, -1, &mut opcodes, &mut values);
         }
-        // DUP_ONLY control: DUP (Node New) + POP drain. ONE type only.
-        // SEL 1; BRPOP1 END; DUP; POP; POPNUM; JMP LOOP
+        // Single-descriptor control: DUP allocates `Node`, then POP drains it.
         "dup_only" => {
             push(OP_SEL, STACK_SLOT, &mut opcodes, &mut values);
             push(OP_BRPOP1, LABEL_END, &mut opcodes, &mut values);
@@ -112,8 +107,7 @@ fn build(mode: &str, k: i32) -> Program {
             push(OP_POP, -1, &mut opcodes, &mut values);
             push(OP_POPNUM, -1, &mut opcodes, &mut values);
         }
-        // MOV_ONLY control: MOV to stack 2 (NodeJit New) + drain, NO Node New.
-        // SEL 1; BRPOP1 END; MOV 2; POPNUM; JMP LOOP
+        // `NodeJit`-only control: move to stack 2, then drain stack 1.
         "mov_only" => {
             push(OP_SEL, STACK_SLOT, &mut opcodes, &mut values);
             push(OP_BRPOP1, LABEL_END, &mut opcodes, &mut values);
@@ -123,7 +117,7 @@ fn build(mode: &str, k: i32) -> Program {
         other => panic!("unknown mode {other:?}"),
     }
 
-    // JMP LOOP back-edge.
+    // Common back-edge.
     push(OP_JMP, LABEL_LOOP, &mut opcodes, &mut values);
     let end_pc = opcodes.len();
     push(OP_HALT, -1, &mut opcodes, &mut values);
@@ -148,11 +142,11 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let mode = args
         .next()
-        .expect("usage: mixed_repro <queue|stack|mixed> <threshold> [K]");
+        .expect("usage: mixed_repro <mode> <threshold> [K]");
     let threshold: u32 = args
         .next()
         .and_then(|s| s.parse().ok())
-        .expect("usage: mixed_repro <queue|stack|mixed> <threshold> [K]");
+        .expect("usage: mixed_repro <mode> <threshold> [K]");
     let k: i32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(2000);
 
     aheui_jit::init_gc_subsystem();
