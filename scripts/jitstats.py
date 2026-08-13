@@ -212,6 +212,25 @@ def run_path(
     return Run(proc.stdout, proc.returncode, fields, elapsed, comparable_env(env))
 
 
+def arm_stale_read_oracle() -> None:
+    """Stamp freed storage memory, so a read through a stale base is visible.
+
+    A read through a buffer base that a realloc moved is otherwise SILENT and
+    usually returns the CORRECT bytes: the copy-then-free leaves the very
+    values that were copied out sitting in the recycled block, so stdout is
+    byte-identical and no stdout/exit oracle — not the A/B, not `out_sha`, not
+    the committed `.out` — can see the defect until an unrelated allocation
+    happens to reuse that block. Stamping turns it into a sentinel that reaches
+    the first consumer.
+
+    Every axis that runs programs arms it. It is not free — it writes over each
+    released block — but it is the only oracle here that answers the question,
+    and the gated corpus runs green under it with no baseline movement, so it
+    costs the gate nothing to be able to see.
+    """
+    os.environ["AHEUI_GC_POISON"] = "1"
+
+
 def corpus_snapshot(jit: "Run", out_ok: str) -> str:
     """The recorded baseline for one program.
 
@@ -800,12 +819,10 @@ def run_sweep(items: list[tuple[str, Path]]) -> int:
     nothing to regress against, so it is free to explore.
 
     The oracle is the program against itself: one un-compiled control, one JIT
-    run per threshold, same binary throughout. `AHEUI_GC_POISON` is on because
-    the failure this axis exists to catch — a read through a buffer base that a
-    realloc moved — otherwise returns the CORRECT bytes out of recycled memory
-    and never reaches stdout at all.
+    run per threshold, same binary throughout. `main` arms the stale-read
+    oracle for every mode, which is what lets this axis see the failure it
+    exists to catch.
     """
-    os.environ["AHEUI_GC_POISON"] = "1"
     print(
         f"  sweep: {len(items)} programs x thresholds "
         f"{', '.join(SWEEP_THRESHOLDS)} — A/B only, no baselines, nothing recorded"
@@ -887,6 +904,10 @@ def main(argv: list[str]) -> int:
     if not BINARY.exists():
         print(f"aheui binary not built: {BINARY}", file=sys.stderr)
         return 1
+
+    # Every mode that runs a program, not just `sweep`. A stale-base read is
+    # invisible to the byte oracles these modes are otherwise built from.
+    arm_stale_read_oracle()
 
     if mode == "survey":
         found = corpus_paths()

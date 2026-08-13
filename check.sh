@@ -174,6 +174,18 @@ echo "═══ 5. JIT stats floor + threshold sweep ═══"
 # The other four sections are all compaheuiler (rgen/cranelift AOT); this is
 # the only one that runs the majit-driven interpreter. It gates the pinned
 # `snippets/` submodule through the corpus and jitstress baselines.
+# The storage backends' own unit tests. Nothing else in this script runs them:
+# sections 1-4 are compaheuiler, which does not link `aheui-runtime` at all,
+# and section 5's corpus A/B grades the interpreter end to end, where a pool
+# defect only shows if some program happens to reach it. `storage/array.rs` is
+# reached by no corpus program today, so these tests are its whole gate.
+if cargo test -p aheui-runtime --release > /tmp/aheui_runtime_test.log 2>&1; then
+    RT_PASS=$(rg -c '^test .* ok$' /tmp/aheui_runtime_test.log || echo 0)
+    pass "aheui-runtime: $RT_PASS tests passed"
+else
+    fail "aheui-runtime tests failed (see /tmp/aheui_runtime_test.log)"
+fi
+
 cargo build -p aheui --release 2>/tmp/aheui_jit_build.log
 if [ ! -x target/release/aheui ]; then
     fail "aheui (majit) build failed (see /tmp/aheui_jit_build.log)"
