@@ -173,13 +173,22 @@ def run_path(
     axis passes one because it drives thresholds no committed baseline covers,
     and a program that loops forever at an unexplored threshold must not wedge
     the whole run.
+
+    The sibling `.in` is the program's stdin where the corpus ships one. It is
+    the input the committed `.out` was produced from, so without it those
+    programs read EOF, take a path the reference never described, and sit at a
+    permanent `≠` no change can move — `literary/huntcook` printed 129 bytes of
+    a 147-byte session. Feeding it is also what makes those programs reach
+    their real workload at all.
     """
     env = run_env(compile_=compile_, threshold=threshold)
+    stdin_file = path.with_suffix(".in")
+    stdin_bytes = stdin_file.read_bytes() if stdin_file.exists() else b""
     start = time.monotonic()
     try:
         proc = subprocess.run(
             [str(BINARY), str(path)],
-            stdin=subprocess.DEVNULL,
+            input=stdin_bytes,
             capture_output=True,
             env=env,
             timeout=timeout,
@@ -203,9 +212,27 @@ def run_path(
     return Run(proc.stdout, proc.returncode, fields, elapsed, comparable_env(env))
 
 
-def corpus_snapshot(jit: "Run") -> str:
-    fields = {**jit.fields, "exit": str(jit.code), "out_sha": stdout_sha(jit.stdout)}
-    keys = sorted((*SNAPSHOT_FIELDS, "exit", "out_sha"))
+def corpus_snapshot(jit: "Run", out_ok: str) -> str:
+    """The recorded baseline for one program.
+
+    `out_ok` sits beside `out_sha` because the two answer different questions.
+    `out_sha` moves when THIS run's stdout changes; `out_ok` moves when the
+    relationship to the committed `.out` changes, which also covers the
+    reference moving under a submodule bump while stdout stays put. Gating
+    only the sha would call that pair a no-change.
+
+    It is recorded rather than required to be `ok`: `+nl` is a legitimate
+    permanent state for most of the corpus (the `.out` files carry a trailing
+    newline this interpreter does not emit), so the gate is on the state
+    CHANGING, exactly as `out_match` describes.
+    """
+    fields = {
+        **jit.fields,
+        "exit": str(jit.code),
+        "out_sha": stdout_sha(jit.stdout),
+        "out_ok": out_ok,
+    }
+    keys = sorted((*SNAPSHOT_FIELDS, "exit", "out_sha", "out_ok"))
     return "".join(f"{k}={fields[k]}\n" for k in keys if k in fields)
 
 
@@ -490,7 +517,7 @@ def check_corpus_one(
         return True, True, row
 
     ok = True
-    current = corpus_snapshot(jit)
+    current = corpus_snapshot(jit, out_ok)
     baseline_file = (
         jitstress_baseline_path(name)
         if kind == "jitstress"
@@ -515,7 +542,7 @@ def check_corpus_one(
     for line in movement(baseline, parsed):
         print(f"      moved: {line}")
     failures = floor_regression(baseline, parsed)
-    for field in ("out_sha", "exit"):
+    for field in ("out_sha", "exit", "out_ok"):
         if baseline.get(field) != parsed.get(field):
             failures.append(f"{field} {baseline.get(field)} -> {parsed.get(field)}")
     if failures:

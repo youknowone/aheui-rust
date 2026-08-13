@@ -4,4 +4,5 @@ guard_failures=1
 internal_compile_panics=0
 loops_aborted=0
 loops_compiled=1
+out_ok=+nl
 out_sha=239cb8c5aed6
