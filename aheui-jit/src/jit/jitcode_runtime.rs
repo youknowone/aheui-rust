@@ -69,7 +69,7 @@ pub fn build_runtime_descr_pool(jitcodes: &[Arc<JitCode>]) -> Vec<RuntimeBhDescr
                 let core = (*jitcodes[jitcode_index]).clone();
                 RuntimeBhDescr::JitCode(Arc::new(RuntimeJitCode::from_canonical(core)))
             }
-            other => RuntimeBhDescr::Descr(other),
+            other => RuntimeBhDescr::Descr(Box::new(other)),
         })
         .collect()
 }
