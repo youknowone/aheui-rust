@@ -63,6 +63,19 @@ unsafe fn grow_buffer(data: *mut Val, old_cap: u32, new_cap: u32, live: u32) -> 
     fresh
 }
 
+/// Release a pool's buffer.
+///
+/// # Safety
+/// `data` must be null with `cap == 0`, or the live allocation of `cap`
+/// elements.
+unsafe fn free_buffer(data: *mut Val, cap: u32) {
+    if data.is_null() {
+        return;
+    }
+    let layout = std::alloc::Layout::array::<Val>(cap as usize).expect("storage buffer layout");
+    unsafe { std::alloc::dealloc(data as *mut u8, layout) };
+}
+
 /// Shared operations over an array-backed pool.
 ///
 /// Mirrors the `LinkedList` trait's split: the subclass supplies `push` /
@@ -176,6 +189,15 @@ impl Stack {
 impl Default for Stack {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// The buffer is a plain `std::alloc` allocation, not a GC object and not
+// nursery-managed, so nothing else would ever reclaim it. `Storage` owns every
+// pool inline, so this runs when the storage does.
+impl Drop for Stack {
+    fn drop(&mut self) {
+        unsafe { free_buffer(self.data, self.cap) };
     }
 }
 
@@ -337,6 +359,15 @@ impl Default for Queue {
     }
 }
 
+// The buffer is a plain `std::alloc` allocation, not a GC object and not
+// nursery-managed, so nothing else would ever reclaim it. `Storage` owns every
+// pool inline, so this runs when the storage does.
+impl Drop for Queue {
+    fn drop(&mut self) {
+        unsafe { free_buffer(self.data, self.cap) };
+    }
+}
+
 impl ArrayStorage for Queue {
     fn len(&self) -> usize {
         self.size as usize
@@ -439,6 +470,15 @@ impl Port {
 impl Default for Port {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// The buffer is a plain `std::alloc` allocation, not a GC object and not
+// nursery-managed, so nothing else would ever reclaim it. `Storage` owns every
+// pool inline, so this runs when the storage does.
+impl Drop for Port {
+    fn drop(&mut self) {
+        unsafe { free_buffer(self.data, self.cap) };
     }
 }
 
@@ -929,6 +969,48 @@ mod differential {
                 render_seq(&arr_rest),
                 render_seq(&list_rest)
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    /// Churn many pools through growth and drop. The buffer is a plain
+    /// `std::alloc` allocation that nothing else reclaims, so a missing or
+    /// wrong-layout `dealloc` shows up here as a leak or an allocator abort
+    /// rather than staying silent.
+    #[test]
+    fn dropping_pools_releases_their_buffers() {
+        for _ in 0..256 {
+            let mut s = Stack::new();
+            for i in 0..(INITIAL_CAPACITY as i32 * 3) {
+                s.push(val_from_i32(i));
+            }
+            let mut q = Queue::new();
+            for i in 0..(INITIAL_CAPACITY as i32 * 3) {
+                q.push(val_from_i32(i));
+            }
+            // Advance the ring so the drop path sees a non-zero `front`.
+            for _ in 0..(INITIAL_CAPACITY / 2) {
+                q.pop();
+            }
+            let mut p = Port::new();
+            for i in 0..(INITIAL_CAPACITY as i32 * 3) {
+                p.push(val_from_i32(i));
+            }
+        }
+    }
+
+    /// A pool that never pushed holds a null buffer; dropping it must not
+    /// call `dealloc` on null.
+    #[test]
+    fn dropping_an_untouched_pool_is_a_no_op() {
+        for _ in 0..256 {
+            let _ = Stack::new();
+            let _ = Queue::new();
+            let _ = Port::new();
         }
     }
 }
