@@ -127,27 +127,15 @@ else
 fi
 
 echo ""
-echo "═══ 3. Unit tests (rgen) ═══"
-if cargo test -p compaheuiler --release --test rgen_test -- --test-threads=1 > /tmp/compaheuiler_unit.log 2>&1; then
-    UNIT_PASS=$(grep -c 'test .* ok' /tmp/compaheuiler_unit.log || echo 0)
-    pass "rgen_test: $UNIT_PASS tests passed"
-else
-    fail "rgen_test failed (see /tmp/compaheuiler_unit.log)"
-fi
-
-if cargo test -p compaheuiler --release --test all_snippets_test -- --test-threads=1 > /tmp/compaheuiler_allsnip.log 2>&1; then
-    pass "all_snippets: 62/62 passed"
-else
-    SNIP_LINE=$(grep 'passed,' /tmp/compaheuiler_allsnip.log | tail -1)
-    fail "all_snippets failed: $SNIP_LINE (see /tmp/compaheuiler_allsnip.log)"
-fi
-
-if cargo test -p compaheuiler --release --features bigint --test bigint_test -- --test-threads=1 > /tmp/compaheuiler_bigint.log 2>&1; then
-    BIGINT_PASS=$(grep -c 'test .* ok' /tmp/compaheuiler_bigint.log || echo 0)
-    pass "bigint_test: $BIGINT_PASS tests passed"
-else
-    fail "bigint_test failed (see /tmp/compaheuiler_bigint.log)"
-fi
+echo "═══ 3. Interpreter and compiler tests ═══"
+for CRATE in aheuinterpreter compaheuiler; do
+    LOG="/tmp/aheui_${CRATE}_test.log"
+    if cargo test -p "$CRATE" --release < /dev/null > "$LOG" 2>&1; then
+        pass "cargo test -p $CRATE: $(rg -c '^test .* ok$' "$LOG" || echo 0) tests passed"
+    else
+        fail "cargo test -p $CRATE failed (see $LOG)"
+    fi
+done
 
 echo ""
 echo -e "${CYAN}══ CRANELIFT BACKEND (JIT) ══${RESET}"
@@ -171,18 +159,14 @@ echo -e "${CYAN}══ MAJIT JIT ══${RESET}"
 
 echo ""
 echo "═══ 5. JIT stats floor + threshold sweep ═══"
-# The other four sections are all compaheuiler (rgen/cranelift AOT); this is
-# the only one that runs the majit-driven interpreter. It gates the pinned
-# `snippets/` submodule through the corpus and jitstress baselines.
-# The interpreter crates' own unit tests. Nothing else in this script runs
-# them: sections 1-4 are compaheuiler, which links neither crate, and section
-# 5's corpus A/B grades the interpreter end to end, where a defect shows only
-# if some program happens to reach it. `storage/array.rs` is reached by no
-# corpus program today, so its tests are its whole gate; and `aheui-jit`'s
-# hold the declarations that have no compile-time link to what they describe.
+# This is the only section that runs the majit-driven interpreter. Test its
+# runtime and JIT crates directly before the end-to-end corpus gate: a defect
+# in code that no corpus program reaches, such as `storage/array.rs`, is visible
+# only to the crate tests. The corpus and jitstress baselines then gate the
+# pinned `snippets/` submodule.
 for CRATE in aheui-runtime aheui-jit; do
     LOG="/tmp/aheui_${CRATE}_test.log"
-    if cargo test -p "$CRATE" --release > "$LOG" 2>&1; then
+    if cargo test -p "$CRATE" --release < /dev/null > "$LOG" 2>&1; then
         pass "$CRATE: $(rg -c '^test .* ok$' "$LOG" || echo 0) tests passed"
     else
         fail "$CRATE tests failed (see $LOG)"
