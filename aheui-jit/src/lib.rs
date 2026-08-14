@@ -695,15 +695,6 @@ impl AheuiState {
     }
 }
 
-fn find_used_storages(_program: &Program, _header_pc: usize, initial: usize) -> Vec<usize> {
-    let mut storages: Vec<usize> = (0..STORAGE_COUNT).filter(|&idx| idx != VAL_PORT).collect();
-    if initial != VAL_PORT && !storages.contains(&initial) {
-        storages.push(initial);
-        storages.sort_unstable();
-    }
-    storages
-}
-
 thread_local! {
     /// Raw `*const Storage` set before each `jit_merge_point!`. Output shims
     /// use it to inspect the walk's shared-storage state while execution is
@@ -883,12 +874,6 @@ fn jit_free_node(node: usize) {
     aheui_runtime::storage::linkedlist_jit::free_node_jit(node)
 }
 
-/// `val_ge` returning Val (tagged 0 or 1) for use with `_put_value`.
-#[inline(always)]
-fn jit_val_ge(a: Val, b: Val) -> Val {
-    aheui_runtime::storage::linkedlist_jit::val_ge_jit(a, b)
-}
-
 /// Pipeline jitcode resolver for `inline_pipeline_*` call policies.
 /// The `#[jit_interp]` macro's dispatch JitCode builder calls this to
 /// resolve a function name (e.g. `"val_add"`) to the pipeline-built
@@ -899,91 +884,30 @@ fn __majit_pipeline_jitcode(name: &str) -> std::sync::Arc<majit_metainterp::JitC
         .unwrap_or_else(|| panic!("pipeline jitcode for '{name}' not found"))
 }
 
-// OP_BRZ pop-and-zero-test shims.
+// Index-keyed dynamic storage dispatch — rpaheui parity for
+// `selected.METHOD()` (aheui.py:260-389). The target index is a per-opcode
+// operand rather than the promoted `selected_ref`, so the polymorphic
+// `dispatch_mut(target)` is bundled into one residual call that dispatches on
+// the live index at run time (Stack / Queue / Port) instead of a JIT-green
+// 3-way `is_port`/`is_queue` branch. This keeps the recorded trace
+// structurally identical to rpaheui's single polymorphic call site, so the
+// optimiser never emits a contradictory `guard_value(selected)` and the loop
+// closes through the real back-edge.
 //
-// rpaheui/aheui/aheui.py:299-301: `top = selected.pop(); jump =
-// bigint.is_zero(top)`. The polymorphic `selected.pop()` plus the
-// `bigint.is_zero` call are silent-skipped by the lowerer. Without a combined
-// residual call the compiled trace omits OP_BRZ's exit guard.
-//
-// These shims bundle pop + is_zero into a single residual call that
-// returns 1 (zero, take the branch) or 0 (non-zero, fall through).
-// Registered as `residual_int` because pop has the side effect of
-// shrinking the storage; trace records `CallI(jit_pop_is_zero_stack,
-// selected_ref)` followed by an `IntNe(result, 0) + GuardFalse` pair
-// for the branch decision.
-
-extern "C" fn jit_pop_is_zero_stack(stack_ref: usize) -> i64 {
-    let v = unsafe { (*(stack_ref as *mut aheui_runtime::storage::linkedlist::Stack)).pop() };
-    if val_is_zero(&v) { 1 } else { 0 }
-}
-
-extern "C" fn jit_pop_is_zero_queue(queue_ref: usize) -> i64 {
-    let v = unsafe { (*(queue_ref as *mut aheui_runtime::storage::linkedlist::Queue)).pop() };
-    if val_is_zero(&v) { 1 } else { 0 }
-}
-
-/// Unified OP_BRZ: pop + is_zero for any selected type.
-/// Returns 1 if zero (take branch), 0 otherwise.
-extern "C" fn jit_pop_is_zero(pool_ptr: usize, selected: usize) -> i64 {
-    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    let v = storage.dispatch_mut(selected).pop();
-    if val_is_zero(&v) { 1 } else { 0 }
-}
-
-/// OP_MOV helper: push the popped value onto the move target
-/// (aheui.py:277-279 `storage[val].push(r)`). The target index is a
-/// per-opcode operand rather than the promoted `selected_ref`, so the
-/// polymorphic `dispatch_mut(target)` is bundled into one residual call the same
-/// way `jit_pop_is_zero` bundles pop + is_zero.
+// Only push and dup survive, and for two independent reasons. OP_MOV names its
+// target with a per-opcode operand rather than `selected` (aheui.py:277-279
+// `storage[val].push(r)`), so nothing has resolved it to a concrete list. And
+// `Port::push`/`Port::dup` are the only two storage methods Port does not
+// share with the `LinkedList` implementation (`last_push`), so the port takes
+// this path for them while the `is_queue` / `selected == VAL_PORT` split hands
+// every other op a monomorphic `selected_ref` helper.
 extern "C" fn jit_storage_push(pool_ptr: usize, target: usize, value: Val) {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
     storage.dispatch_mut(target).push(value);
 }
-
-// Index-keyed dynamic storage dispatch — rpaheui parity for
-// `selected.METHOD()` (aheui.py:260-389). The integer `selected` index is a
-// red value and is never promoted, so each storage op is one residual call
-// that dispatches on the live index at run time (Stack / Queue / Port) instead
-// of a JIT-green 3-way `is_port`/`is_queue` branch + `selected_ref`. This
-// keeps the recorded trace structurally identical to rpaheui's single
-// polymorphic call site, so the optimiser never emits a contradictory
-// `guard_value(selected)` and the loop closes through the real back-edge.
-extern "C" fn jit_storage_pop(pool_ptr: usize, target: usize) -> Val {
-    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.dispatch_mut(target).pop()
-}
-extern "C" fn jit_storage_add(pool_ptr: usize, target: usize) {
-    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.dispatch_mut(target).add();
-}
-extern "C" fn jit_storage_sub(pool_ptr: usize, target: usize) {
-    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.dispatch_mut(target).sub();
-}
-extern "C" fn jit_storage_mul(pool_ptr: usize, target: usize) {
-    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.dispatch_mut(target).mul();
-}
-extern "C" fn jit_storage_div(pool_ptr: usize, target: usize) {
-    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.dispatch_mut(target).div();
-}
-extern "C" fn jit_storage_mod(pool_ptr: usize, target: usize) {
-    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.dispatch_mut(target).modulo();
-}
 extern "C" fn jit_storage_dup(pool_ptr: usize, target: usize) {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
     storage.dispatch_mut(target).dup();
-}
-extern "C" fn jit_storage_swap(pool_ptr: usize, target: usize) {
-    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.dispatch_mut(target).swap();
-}
-extern "C" fn jit_storage_cmp(pool_ptr: usize, target: usize) {
-    let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.dispatch_mut(target).cmp();
 }
 
 /// OP_SEL helper: return the raw pointer to the selected linked-list as
@@ -1120,20 +1044,20 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // Monomorphic storage helpers. The hot Stack ops and the
         // cold queue_pop/queue_swap are `#[jit_inline]` (inline_int /
         // inline_void), so the lowerer splices their field-level body into
-        // the trace; the remaining ops stay residual — a concrete
+        // the trace; queue div/mod stay residual — a concrete
         // `call_void_args` / `call_int_args` — rather than silent-skipping
-        // the storage op.
+        // the storage op. Their stack twins are not registered because the
+        // arms hand-inline the pop and call `val_div`/`val_mod` on the
+        // operands directly, so there is no `lj::stack_div` call site left to
+        // classify.
         //
         // The registered path segments must match the call site verbatim
         // (the macro compares segment-by-segment); use the `lj::*` alias
         // here since the mainloop arms call `lj::stack_push(...)` etc.
         lj::stack_push => inline_void,
-        lj::stack_pop => inline_int,
         lj::stack_add => inline_void,
         lj::stack_sub => inline_void,
         lj::stack_mul => inline_void,
-        lj::stack_div => residual_void,
-        lj::stack_mod => residual_void,
         lj::stack_dup => inline_void,
         lj::stack_swap => inline_void,
         lj::stack_cmp => inline_void,
@@ -1162,19 +1086,8 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::queue_div_raw => inline_void,
         lj::queue_mod_raw => inline_void,
         lj::queue_cmp_raw => inline_void,
-        jit_pop_is_zero_stack => residual_int,
-        jit_pop_is_zero_queue => residual_int,
-        jit_pop_is_zero => residual_int,
         jit_storage_push => residual_void,
-        jit_storage_pop => residual_int,
-        jit_storage_add => residual_void,
-        jit_storage_sub => residual_void,
-        jit_storage_mul => residual_void,
-        jit_storage_div => residual_void,
-        jit_storage_mod => residual_void,
         jit_storage_dup => residual_void,
-        jit_storage_swap => residual_void,
-        jit_storage_cmp => residual_void,
         // `storage[idx]` returns the selected list's object reference; the
         // result lands in the ref register bank. Elidable + cannot-raise:
         // `pools` is an immutable array (`_immutable_fields_ = ['pools']`)
@@ -1207,15 +1120,15 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         val_mul => elidable_int,
         val_div => elidable_int,
         val_mod => elidable_int,
-        jit_val_ge => elidable_int,
         val_from_i32 => elidable_int_cannot_raise,
     },
     // Residual storage mutators that change `Stack.size` or its `head` chain
     // pointer.  Traced push/pop methods emit in-trace `setfield_gc` stores,
     // which invalidate the matching heapcache entries directly.
-    // The inline_int / inline_void helpers (stack_push/pop/add/sub/mul/dup/
-    // swap/cmp and queue_pop/swap) splice that `self.size` setfield into the
-    // trace directly, so they reproduce the barrier and need no entry here.
+    // The inline_int / inline_void helpers (stack_push/add/sub/mul/dup/swap/
+    // cmp and queue_pop/swap) splice that `self.size` setfield into the trace
+    // directly, so they reproduce the barrier and need no entry here, and so
+    // do the pops the arms hand-inline as head/next/size stores.
     // The remaining ops lower to opaque residual calls, which carry an empty
     // write-set by default. A size-only declaration can leave a stale head
     // cached after a residual pop, while a head-only declaration can leave a
@@ -1225,14 +1138,10 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // missing invalidation is not.
     residual_writes = {
         selected_ref.size => [
-            lj::stack_div, lj::stack_mod,
             lj::queue_push, lj::queue_add, lj::queue_sub,
             lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
             lj::queue_cmp,
-            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
-            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
-            jit_storage_swap, jit_storage_cmp,
-            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+            jit_storage_push, jit_storage_dup,
         ],
         // `Storage::pools` type-puns its `*mut Stack` slots over Stack,
         // Queue, and Port.  All three share size@8, but the JIT's field
@@ -1240,56 +1149,36 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // compatible layout so a residual mutation invalidates whichever
         // getfield descriptor the specialized trace cached.
         selected_ref.size @ aheui_runtime::storage::linkedlist::Queue => [
-            lj::stack_div, lj::stack_mod,
             lj::queue_push, lj::queue_add, lj::queue_sub,
             lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
             lj::queue_cmp,
-            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
-            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
-            jit_storage_swap, jit_storage_cmp,
-            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+            jit_storage_push, jit_storage_dup,
         ],
         selected_ref.size @ aheui_runtime::storage::linkedlist::Port => [
-            lj::stack_div, lj::stack_mod,
             lj::queue_push, lj::queue_add, lj::queue_sub,
             lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
             lj::queue_cmp,
-            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
-            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
-            jit_storage_swap, jit_storage_cmp,
-            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+            jit_storage_push, jit_storage_dup,
         ],
         selected_ref.head => [
-            lj::stack_div, lj::stack_mod,
             lj::queue_push, lj::queue_add, lj::queue_sub,
             lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
             lj::queue_cmp,
-            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
-            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
-            jit_storage_swap, jit_storage_cmp,
-            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+            jit_storage_push, jit_storage_dup,
         ],
         // See the size aliases above.  Missing one of these nominal descrs
         // lets a cached pre-call head survive an opaque Queue/Port mutation.
         selected_ref.head @ aheui_runtime::storage::linkedlist::Queue => [
-            lj::stack_div, lj::stack_mod,
             lj::queue_push, lj::queue_add, lj::queue_sub,
             lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
             lj::queue_cmp,
-            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
-            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
-            jit_storage_swap, jit_storage_cmp,
-            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+            jit_storage_push, jit_storage_dup,
         ],
         selected_ref.head @ aheui_runtime::storage::linkedlist::Port => [
-            lj::stack_div, lj::stack_mod,
             lj::queue_push, lj::queue_add, lj::queue_sub,
             lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
             lj::queue_cmp,
-            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
-            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
-            jit_storage_swap, jit_storage_cmp,
-            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+            jit_storage_push, jit_storage_dup,
         ],
         // `tail` exists only on Queue (the dummy-tail sentinel append target).
         // An opaque residual push/arith that appends at the tail must invalidate
@@ -1300,10 +1189,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
             lj::queue_push, lj::queue_add, lj::queue_sub,
             lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
             lj::queue_cmp,
-            jit_storage_push, jit_storage_pop, jit_storage_add, jit_storage_sub,
-            jit_storage_mul, jit_storage_div, jit_storage_mod, jit_storage_dup,
-            jit_storage_swap, jit_storage_cmp,
-            jit_pop_is_zero_stack, jit_pop_is_zero_queue, jit_pop_is_zero,
+            jit_storage_push, jit_storage_dup,
         ],
     },
     // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
