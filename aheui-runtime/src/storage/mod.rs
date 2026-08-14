@@ -65,6 +65,23 @@ fn gc_log_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var_os("AHEUI_GC_LOG").is_some())
 }
 
+/// Whether to skip forwarding the JIT-held node roots that
+/// [`NODE_ROOT_WALK_HOOK`] reports, leaving in-flight nodes to be collected.
+///
+/// This is the arming control for the other GC diagnostics. `AHEUI_GC_POISON`,
+/// `AHEUI_GC_QUARANTINE`, `AHEUI_CHECK_CHAINS` and the program's own output all
+/// report the same "no fault" whether the root walk is complete or the program
+/// simply never depended on it, so none of them can tell a working root walk
+/// from an oracle that stopped grading one. With this set the run must diverge;
+/// an oracle that stays green under it is measuring nothing.
+///
+/// Read once for the same reason as [`gc_log_enabled`]: the root walk consults
+/// it per reported slot.
+fn drop_jit_roots() -> bool {
+    static DROP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DROP.get_or_init(|| std::env::var_os("AHEUI_GC_DROP_JIT_ROOTS").is_some())
+}
+
 /// Perform at most this many copying collections, then fall back to growing.
 /// Bisecting it names the first collection after which a run diverges, which
 /// separates "the collector corrupts state" from "collection timing exposes
@@ -425,7 +442,9 @@ impl Nursery {
                         );
                     }
                 }
-                self.forward_root(&mut copy, slot);
+                if !drop_jit_roots() {
+                    self.forward_root(&mut copy, slot);
+                }
             };
             hook(&mut visit);
         }
