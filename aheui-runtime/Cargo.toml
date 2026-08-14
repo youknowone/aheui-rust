@@ -14,10 +14,10 @@ runtime-rbigint = ["dep:majit-rlib", "bigint-backend"]
 
 [dependencies]
 ahsembler = { path = "../ahsembler" }
-majit-ir = { path = "../../majit/majit-ir", optional = true }
-majit-macros = { path = "../../majit/majit-macros", optional = true }
-majit-metainterp = { path = "../../majit/majit-metainterp", features = ["dynasm"], optional = true }
-majit-rlib = { path = "../../majit/majit-rlib", optional = true }
+majit-ir = { workspace = true, optional = true }
+majit-macros = { workspace = true, optional = true }
+majit-metainterp = { workspace = true, features = ["dynasm"], optional = true }
+majit-rlib = { workspace = true, optional = true }
 num-bigint = { version = "0.4", optional = true }
 malachite-bigint = { version = "0.9.1", optional = true }
 num-traits = { version = "0.2", optional = true }

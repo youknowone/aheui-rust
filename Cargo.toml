@@ -6,6 +6,34 @@ edition = "2024"
 [workspace]
 members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler", "aheui-wasm"]
 
+# majit lives in the `pyre` repository, which this one does not vendor or
+# submodule.  Pinning a revision here rather than a path makes a checkout of
+# this repo alone buildable, and makes which majit a given aheui build was
+# compiled against a recorded fact instead of whatever happened to be in a
+# sibling directory.
+#
+# The revision is declared ONCE, for every majit crate.  Two members resolving
+# different revisions would each get their own clone, and the same type from
+# the two clones (`majit_ir::DescrRef`, say) would not unify — the failure
+# reads as an unrelated type error deep in a generic.
+#
+# To work on majit and aheui together, override the whole origin locally
+# without touching these lines:
+#
+#     [patch."https://github.com/youknowone/pyre"]
+#     majit-ir = { path = "../pyre/majit/majit-ir" }
+#     # ... one line per crate used below
+[workspace.dependencies]
+majit-ir = { git = "https://github.com/youknowone/pyre", rev = "6fd2f1c530396ece86b538f701118a0d7407dd38" }
+majit-macros = { git = "https://github.com/youknowone/pyre", rev = "6fd2f1c530396ece86b538f701118a0d7407dd38" }
+majit-metainterp = { git = "https://github.com/youknowone/pyre", rev = "6fd2f1c530396ece86b538f701118a0d7407dd38" }
+majit-rlib = { git = "https://github.com/youknowone/pyre", rev = "6fd2f1c530396ece86b538f701118a0d7407dd38" }
+majit-gc = { git = "https://github.com/youknowone/pyre", rev = "6fd2f1c530396ece86b538f701118a0d7407dd38" }
+majit-translate = { git = "https://github.com/youknowone/pyre", rev = "6fd2f1c530396ece86b538f701118a0d7407dd38" }
+majit-backend = { git = "https://github.com/youknowone/pyre", rev = "6fd2f1c530396ece86b538f701118a0d7407dd38" }
+majit-backend-cranelift = { git = "https://github.com/youknowone/pyre", rev = "6fd2f1c530396ece86b538f701118a0d7407dd38" }
+majit-backend-dynasm = { git = "https://github.com/youknowone/pyre", rev = "6fd2f1c530396ece86b538f701118a0d7407dd38" }
+
 [features]
 default = ["jit", "dynasm", "malachite-bigint"]
 naive = ["dep:aheuinterpreter"]
