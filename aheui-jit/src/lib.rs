@@ -1562,28 +1562,31 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 continue;
             }
             OP_BRZ => {
-                let zero = if is_queue {
-                    jit_pop_is_zero_queue(state.selected_ref)
+                // Only the pop differs between the two storages; the zero test
+                // is one comparison on the popped `Val` either way.
+                let pop_val = if is_queue {
+                    lj::queue_pop(state.selected_ref)
                 } else {
-                    // inline pop for Stack, then zero-check on the int value
+                    // inline pop for Stack
                     let top_node = state.selected_ref.head;
-                    let pop_val = top_node.value;
+                    let v = top_node.value;
                     let next = top_node.next;
                     state.selected_ref.head = next;
                     state.selected_ref.size = state.selected_ref.size - 1u32;
                     jit_free_node(top_node);
-                    // pop_val is Val (= i64 repr-transparent). val_is_zero
-                    // checks `*v == 0` for smallint, or the tagged form
-                    // `(0 << 1) | 1 = 1` for bigint. Use the raw int
-                    // comparison `pop_val == jit_tag_val(0)` which the
-                    // lowerer handles natively as IntEq.
-                    let zero_val = if bm != 0 {
-                        jit_tag_val(0i64)
-                    } else {
-                        jit_tag_val_raw(0i64)
-                    };
-                    if pop_val == zero_val { 1i64 } else { 0i64 }
+                    v
                 };
+                // pop_val is Val (= i64 repr-transparent). val_is_zero
+                // checks `*v == 0` for smallint, or the tagged form
+                // `(0 << 1) | 1 = 1` for bigint. Use the raw int
+                // comparison `pop_val == jit_tag_val(0)` which the
+                // lowerer handles natively as IntEq.
+                let zero_val = if bm != 0 {
+                    jit_tag_val(0i64)
+                } else {
+                    jit_tag_val_raw(0i64)
+                };
+                let zero = if pop_val == zero_val { 1i64 } else { 0i64 };
                 if zero != 0 {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
