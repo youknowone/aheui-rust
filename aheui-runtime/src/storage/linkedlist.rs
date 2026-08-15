@@ -88,6 +88,12 @@ pub trait LinkedList {
         assert!(!node1.is_null(), "swap on empty linked list");
         let node2 = unsafe { (*node1).next };
         assert!(!node2.is_null(), "swap on <2 elements");
+        // Read-then-write through the raw pointers rather than
+        // `std::mem::swap`, which would need a `&mut` to each node at once and
+        // is undefined the moment they are the same node. Nothing here can rule
+        // that out — a chain whose head links to itself is exactly the shape the
+        // collector's forwarding is capable of producing when it goes wrong, and
+        // this runs on the recovery paths that would be diagnosing it.
         unsafe {
             let v = (*node1).value;
             (*node1).value = (*node2).value;
@@ -157,6 +163,12 @@ pub struct Stack {
     /// the depth has to be guarded again.  A list is a chain of 16-byte nodes,
     /// so 2^32 elements is 64 GiB of nodes.
     pub size: u32,
+}
+
+impl Default for Stack {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Stack {
@@ -242,6 +254,12 @@ pub struct Queue {
     /// The element count, narrowed for the same reason as [`Stack::size`].
     pub size: u32,
     pub tail: *mut Node,
+}
+
+impl Default for Queue {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Queue {
@@ -388,6 +406,12 @@ const _: () = {
             && width(|s: &Stack| s.size) == width(|p: &Port| p.size),
     );
 };
+
+impl Default for Port {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Port {
     // linkedlist.py:129-132

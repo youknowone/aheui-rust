@@ -130,7 +130,7 @@ impl Lcg {
 
     fn op(&mut self) -> Op {
         match self.next() % 10 {
-            0 | 1 | 2 => {
+            0..=2 => {
                 let v = self.value();
                 Op::Push(v)
             }

@@ -921,6 +921,12 @@ pub struct Storage {
 // SAFETY: raw pointers are only to self.stacks / self.queue, not shared across threads.
 unsafe impl Send for Storage {}
 
+impl Default for Storage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Storage {
     // aheui.py:40-49
     pub fn new() -> Self {
@@ -1335,7 +1341,10 @@ mod tests {
         let fired = COLLECTS.load(Ordering::Relaxed) - before;
 
         crate::value::bigint::clear_bigint_hooks_for_test();
-        assert_eq!(fired, 0, "collection fired while the storage was half promoted");
+        assert_eq!(
+            fired, 0,
+            "collection fired while the storage was half promoted"
+        );
     }
 
     #[test]

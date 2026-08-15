@@ -104,7 +104,7 @@ impl Val {
 impl Val {
     #[inline(always)]
     fn from_small(v: i64) -> Self {
-        debug_assert!(v >= SMALL_MIN && v <= SMALL_MAX);
+        debug_assert!((SMALL_MIN..=SMALL_MAX).contains(&v));
         Val((v << 1) | 1)
     }
 
@@ -124,7 +124,7 @@ impl Val {
 
     #[inline(always)]
     fn from_i64_promoting(v: i64) -> Self {
-        if v >= SMALL_MIN && v <= SMALL_MAX {
+        if (SMALL_MIN..=SMALL_MAX).contains(&v) {
             Self::from_small(v)
         } else {
             Self::from_big(big_from_i64(v))
@@ -178,7 +178,7 @@ impl Val {
 
     fn normalize_big(b: Big) -> Val {
         match big_to_i64(&b) {
-            Some(v) if v >= SMALL_MIN && v <= SMALL_MAX => Val::from_small(v),
+            Some(v) if (SMALL_MIN..=SMALL_MAX).contains(&v) => Val::from_small(v),
             _ => Val::from_big(b),
         }
     }
@@ -326,7 +326,11 @@ fn dual_log_enabled() -> bool {
 /// diff between two builds.
 fn dual_mode_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("AHEUI_DUAL").map(|v| v != "0").unwrap_or(true))
+    *ON.get_or_init(|| {
+        std::env::var("AHEUI_DUAL")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+    })
 }
 
 /// Start the process in mode 0, before any value exists.

@@ -25,8 +25,6 @@ extern crate majit_metainterp as majit_meta;
 /// and the [`majit_meta::JitStats`] fields without its own dependency edge.
 pub use majit_metainterp;
 
-use majit_meta::jit::promote;
-
 pub use aheui_runtime;
 pub use aheui_runtime::aheui;
 pub use aheui_runtime::io;
@@ -299,7 +297,7 @@ mod bigint_gc {
         if bits <= 64 {
             0
         } else {
-            ((bits + 63) / 64) as usize * 8
+            bits.div_ceil(64) as usize * 8
         }
     }
 }
@@ -561,7 +559,8 @@ thread_local! {
     // Storage snapshot captured before trace walking. Recovery prints it next
     // to the restored state to distinguish a stale state field from a stale
     // optimized heap write.
-    static PRE_WALK_SNAPSHOT: std::cell::RefCell<String> = std::cell::RefCell::new(String::new());
+    static PRE_WALK_SNAPSHOT: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
 }
 
 struct AheuiState {

@@ -202,6 +202,12 @@ pub struct InputBuffer {
     pos: usize,
 }
 
+impl Default for InputBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InputBuffer {
     pub fn new() -> Self {
         InputBuffer {
