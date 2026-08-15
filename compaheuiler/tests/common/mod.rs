@@ -8,6 +8,12 @@
 //! The `aheui.aheui` self-interpreter is a separate project and is in none of
 //! them, so its caller gets an `Option` and skips loudly rather than failing.
 
+// Every integration-test binary compiles this whole module and uses a subset of
+// it, so the rest is unreachable *from that binary* and reported dead. The
+// report is per-binary and the module is shared, so it can never be satisfied:
+// an item used by one test is dead code in the other eight.
+#![allow(dead_code)]
+
 /// Computes 2^64 three times, then exercises division, remainder, and compare
 /// after the first multiplication has promoted the execution to bigint mode.
 pub const DUAL_MODE_POST_PROMOTION_OPS: &str = "반빠따빠따빠따빠따빠따빠따받나망반빠따빠따빠따빠따빠따빠따받라망반빠따빠따빠따빠따빠따빠따받자망희";

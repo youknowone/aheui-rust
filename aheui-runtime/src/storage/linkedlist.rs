@@ -94,6 +94,7 @@ pub trait LinkedList {
         // that out — a chain whose head links to itself is exactly the shape the
         // collector's forwarding is capable of producing when it goes wrong, and
         // this runs on the recovery paths that would be diagnosing it.
+        #[allow(clippy::manual_swap)]
         unsafe {
             let v = (*node1).value;
             (*node1).value = (*node2).value;

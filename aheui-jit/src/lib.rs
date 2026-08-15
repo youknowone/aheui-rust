@@ -830,6 +830,9 @@ extern "C" fn jit_tag_val_raw(raw: i64) -> Val {
 
 #[inline(always)]
 #[cfg(feature = "bigint-backend")]
+// Referenced only from the `jit_interp` attribute above (`native_tag_small`)
+// and the call-policy table, neither of which the dead-code pass reads.
+#[allow(dead_code)]
 fn jit_retag_small(untagged: i64) -> Val {
     aheui_runtime::value::val_retag_small(untagged)
 }
@@ -1214,6 +1217,18 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     switch_dispatch = true,
     native_tag_small = { jit_retag_small },
 )]
+// This body is the `jit_interp` macro's INPUT, so its control flow is lowered,
+// not merely read. Both of these lints are about the shape of a conditional and
+// applying either one changed what came out: `cargo clippy --fix` rewrote
+// `stackok == false` to `!stackok` and folded a nested `if let` into a let
+// chain, and the emitted jitcode came out with a label that no block ever
+// marked — every program then panicked at trace-install time. The crate still
+// compiled cleanly; only running a program showed it.
+//
+// Do not apply a style fix inside this function without re-running a real
+// program end to end. Anything the lints suggest here is a change to the
+// generated code.
+#[allow(clippy::bool_comparison, clippy::collapsible_if)]
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
     init_gc_subsystem();
 

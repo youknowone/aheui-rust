@@ -1435,14 +1435,12 @@ mod tests {
         let _lock = crate::storage::nursery_test_lock();
         let mut s = Stack::new();
         let p = &mut s as *mut Stack as usize;
-        unsafe {
-            stack_push(p, val_from_i32(1));
-            stack_push(p, val_from_i32(2));
-            stack_push(p, val_from_i32(3));
-            assert_eq!(val_to_i64(&stack_pop(p)), 3);
-            assert_eq!(val_to_i64(&stack_pop(p)), 2);
-            assert_eq!(val_to_i64(&stack_pop(p)), 1);
-        }
+        stack_push(p, val_from_i32(1));
+        stack_push(p, val_from_i32(2));
+        stack_push(p, val_from_i32(3));
+        assert_eq!(val_to_i64(&stack_pop(p)), 3);
+        assert_eq!(val_to_i64(&stack_pop(p)), 2);
+        assert_eq!(val_to_i64(&stack_pop(p)), 1);
     }
 
     #[test]
@@ -1450,13 +1448,11 @@ mod tests {
         let _lock = crate::storage::nursery_test_lock();
         let mut s = Stack::new();
         let p = &mut s as *mut Stack as usize;
-        unsafe {
-            stack_push(p, val_from_i32(7));
-            stack_push(p, val_from_i32(3));
-            // add: r1=3, r2=7, push r2+r1=10 (replaces top)
-            stack_add(p);
-            assert_eq!(val_to_i64(&stack_pop(p)), 10);
-        }
+        stack_push(p, val_from_i32(7));
+        stack_push(p, val_from_i32(3));
+        // add: r1=3, r2=7, push r2+r1=10 (replaces top)
+        stack_add(p);
+        assert_eq!(val_to_i64(&stack_pop(p)), 10);
     }
 
     #[test]
@@ -1464,14 +1460,12 @@ mod tests {
         let _lock = crate::storage::nursery_test_lock();
         let mut q = Queue::new();
         let p = &mut q as *mut Queue as usize;
-        unsafe {
-            queue_push(p, val_from_i32(1));
-            queue_push(p, val_from_i32(2));
-            queue_push(p, val_from_i32(3));
-            assert_eq!(val_to_i64(&queue_pop(p)), 1);
-            assert_eq!(val_to_i64(&queue_pop(p)), 2);
-            assert_eq!(val_to_i64(&queue_pop(p)), 3);
-        }
+        queue_push(p, val_from_i32(1));
+        queue_push(p, val_from_i32(2));
+        queue_push(p, val_from_i32(3));
+        assert_eq!(val_to_i64(&queue_pop(p)), 1);
+        assert_eq!(val_to_i64(&queue_pop(p)), 2);
+        assert_eq!(val_to_i64(&queue_pop(p)), 3);
     }
 
     #[test]
@@ -1479,12 +1473,10 @@ mod tests {
         let _lock = crate::storage::nursery_test_lock();
         let mut q = Queue::new();
         let p = &mut q as *mut Queue as usize;
-        unsafe {
-            queue_push(p, val_from_i32(7));
-            queue_push(p, val_from_i32(3));
-            // Queue::add pops front twice (r1=7, r2=3), pushes r2+r1=10 to back.
-            queue_add(p);
-            assert_eq!(val_to_i64(&queue_pop(p)), 10);
-        }
+        queue_push(p, val_from_i32(7));
+        queue_push(p, val_from_i32(3));
+        // Queue::add pops front twice (r1=7, r2=3), pushes r2+r1=10 to back.
+        queue_add(p);
+        assert_eq!(val_to_i64(&queue_pop(p)), 10);
     }
 }
