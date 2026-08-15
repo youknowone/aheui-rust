@@ -1008,14 +1008,17 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         aheui_runtime::storage::linkedlist::Queue::head => aheui_runtime::storage::linkedlist::Node,
         aheui_runtime::storage::linkedlist::Port::head => aheui_runtime::storage::linkedlist::Node,
         aheui_runtime::storage::linkedlist::Node::next => aheui_runtime::storage::linkedlist::Node,
-        NodeJit::next => aheui_runtime::storage::linkedlist::Node,
     },
     // The element count is `u32`, so the field descr is sub-word and
     // `intbounds` can bound a load of it. Without a bound the depth's `+ 1`
     // may overflow, the sum goes rangeless, and the `stackok` check has to be
     // guarded again at every opcode instead of following from the last one.
-    // All three lists share the `head`/`size` prefix and the JIT reaches them
-    // through the `Stack` tag, so every name is declared.
+    // `Queue`/`Port` are named here for the `residual_writes` aliases below,
+    // not for any access site: a field key is built from the declared type of
+    // the base an access goes through, and the only such type here is `Stack`.
+    // The alias entries mint the write-set descr under each nominal struct, so
+    // dropping either name would leave a residual Queue/Port mutation unable to
+    // invalidate the descr a specialized trace cached.
     int_fields = {
         aheui_runtime::storage::linkedlist::Stack::size => u32,
         aheui_runtime::storage::linkedlist::Queue::size => u32,

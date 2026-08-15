@@ -29,7 +29,6 @@ use crate::value::*;
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
-        super::linkedlist::Node::next => super::linkedlist::Node,
     },
     struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
     headerless_structs = { super::linkedlist::Node, },
@@ -297,7 +296,6 @@ pub fn stack_mod(stack: usize) {
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
-        super::linkedlist::Node::next => super::linkedlist::Node,
     },
     struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
     headerless_structs = { super::linkedlist::Node, },
@@ -317,9 +315,6 @@ pub fn stack_dup(stack: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
-    },
-    int_fields = {
-        super::linkedlist::Stack::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -809,7 +804,6 @@ pub fn queue_mod(queue: usize) {
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
-        super::linkedlist::Node::next => super::linkedlist::Node,
     },
     struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
     headerless_structs = { super::linkedlist::Node, },
@@ -833,9 +827,6 @@ pub fn queue_dup(queue: usize) {
 #[majit_macros::jit_inline(
     ref_params = {
         queue: ref(super::linkedlist::Queue),
-    },
-    int_fields = {
-        super::linkedlist::Queue::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
