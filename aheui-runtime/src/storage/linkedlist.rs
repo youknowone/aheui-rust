@@ -346,6 +346,25 @@ pub struct Port {
     pub last_push: Val,
 }
 
+/// The three storages share a `{ head, size }` prefix, and the JIT depends on
+/// it: `pools[selected]` is declared to load a `*mut Stack`, so a selected
+/// queue or port is read at `Stack`'s offsets for as long as it stays in the
+/// trace.  `#[repr(C)]` does not promise this by itself — it fixes each layout
+/// independently, and nothing relates one to another.  Widening `Stack::size`,
+/// or inserting a field ahead of `Queue::size`, would compile clean here and
+/// leave the JIT reading a queue's `head` word as its element count.
+///
+/// Stated as one assert per shared field rather than a size comparison: two
+/// layouts can agree on total size and disagree on where a field sits.
+const _: () = assert!(
+    core::mem::offset_of!(Stack, head) == core::mem::offset_of!(Queue, head)
+        && core::mem::offset_of!(Stack, head) == core::mem::offset_of!(Port, head),
+);
+const _: () = assert!(
+    core::mem::offset_of!(Stack, size) == core::mem::offset_of!(Queue, size)
+        && core::mem::offset_of!(Stack, size) == core::mem::offset_of!(Port, size),
+);
+
 impl Port {
     // linkedlist.py:129-132
     // def __init__(self):
