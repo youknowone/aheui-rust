@@ -574,8 +574,8 @@ struct AheuiState {
     /// passed to monomorphic storage helpers (`stack_*` / `queue_*`) as a
     /// ref-kind arg. The `usize` carrier round-trips the raw pointer bits.
     selected_ref: usize,
-    /// `&mut state.storage as *mut Storage` packed as `usize` — the base of
-    /// the contiguous `pools: [*mut Stack; N]` array (offset 0 of `Storage`).
+    /// `&mut state.storage as *mut Storage` packed as `usize` — the base the
+    /// contiguous `pools: [*mut Stack; N]` array is read off.
     /// Tracked as `ref(Storage)` and declared a `pool_arrays` base so the
     /// OP_SEL `selected_ref = pools[selected]` read lowers to a re-producible
     /// `getarrayitem_gc_r` on this base instead of an opaque residual call;
@@ -981,7 +981,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // `usize` carrier round-trips the raw pointer bits; `Stack` is a
         // nominal tag (Queue/Port share the head/size prefix via repr(C)).
         selected_ref: ref(aheui_runtime::storage::linkedlist::Stack),
-        // Base of the `pools: [*mut Stack; N]` array (offset 0 of `Storage`).
+        // Base the `pools: [*mut Stack; N]` array is read off.
         // Declared `ref(Storage)` + listed in `pool_arrays` so OP_SEL's
         // `selected_ref = jit_sel_get_ref(storage_ref, selected)` lowers to a
         // re-producible `getarrayitem_gc_r` on this base. aheui.py:27 carries
@@ -998,7 +998,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // residual call below.  Keyed on the getter identity so only this call —
     // not any other helper sharing the `(state.storage_ref, int)` shape — is
     // recognized as a pool read.
-    pool_arrays = { storage_ref => jit_sel_get_ref -> aheui_runtime::storage::linkedlist::Stack },
+    pool_arrays = { storage_ref.pools[pools_len] => jit_sel_get_ref -> aheui_runtime::storage::linkedlist::Stack },
     // Struct field type declarations for ref-kind field access.
     // Tells the lowerer to emit getfield_gc_r / setfield_gc_r (ref-kind)
     // instead of _gc_i (int-kind) when accessing these fields through a

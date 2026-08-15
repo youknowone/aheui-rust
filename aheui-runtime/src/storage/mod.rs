@@ -897,21 +897,15 @@ pub const STACK_SIZE_OFFSET: usize = 8;
 /// `Queue.tail` offset (== 16). Queue push appends to tail.
 pub const QUEUE_TAIL_OFFSET: usize = 16;
 
-/// Byte offset of the `pools` indirection array from `Storage` base.
-/// JIT reads: `base + STORAGE_POOLS_OFFSET + selected * 8` → `*mut Stack`.
-/// The array is length-prefixed (a `usize` `pools_len` header at offset 0),
-/// matching the GC-array layout the JIT's `getarrayitem_gc_r` descriptor
-/// models (`base_size = 8`, `lendescr.offset = 0`); the items therefore start
-/// one word in.
-pub const STORAGE_POOLS_OFFSET: usize = 8;
-
 #[repr(C)]
 pub struct Storage {
-    /// Length header for the `pools` array (always `STORAGE_COUNT`).  Placed
-    /// first so `Storage` has the GC-array shape `{ len, items.. }` the JIT's
-    /// `ARRAYLEN_GC` reads at offset 0 when it re-establishes the
-    /// `len > selected` bound for the `pools[selected]` `getarrayitem_gc_r`.
-    /// Immutable after construction (`pools` is fixed-size).
+    /// Length of the `pools` array (always `STORAGE_COUNT`).  Read only by the
+    /// JIT, whose `pool_arrays` declaration names it as the array's length
+    /// word: `ARRAYLEN_GC` loads it to re-establish the `len > selected` bound
+    /// for the `pools[selected]` element read on each loop entry.  Both its
+    /// offset and its `usize` width come from that declaration, so this field
+    /// may sit anywhere and moving it moves the load with it.  Immutable after
+    /// construction (`pools` is fixed-size).
     pub pools_len: usize,
     /// JIT indirection: `pools[idx]` returns a `*mut Stack`-compatible pointer.
     /// Initialized to `&mut stacks[idx]` or `&mut queue`.
