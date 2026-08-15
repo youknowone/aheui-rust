@@ -37,9 +37,7 @@ fn test_overflow_leaves_raw_mode_and_keeps_every_bystander() {
 
     // i64::MAX + 1 does not fit the machine word, which is the only way out
     // of mode 0.
-    storage
-        .dispatch_mut(arith)
-        .push(val_from_raw_i64(i64::MAX));
+    storage.dispatch_mut(arith).push(val_from_raw_i64(i64::MAX));
     storage.dispatch_mut(arith).push(val_from_i32(1));
     storage.dispatch_mut(arith).add();
 

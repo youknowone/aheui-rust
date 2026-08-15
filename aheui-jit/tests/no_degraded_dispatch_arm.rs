@@ -143,7 +143,10 @@ fn no_aheui_dispatch_arm_lowered_to_an_abort_stub() {
         degraded.len(),
         degraded
             .iter()
-            .map(|arm| format!("  {}::{}\n    because: {}\n", arm.interp, arm.arm, arm.reason))
+            .map(|arm| format!(
+                "  {}::{}\n    because: {}\n",
+                arm.interp, arm.arm, arm.reason
+            ))
             .collect::<String>(),
     );
 }

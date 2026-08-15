@@ -143,7 +143,10 @@ mod tests {
         assert!(
             jitcodes.iter().any(|jc| jc.name == "mainloop"),
             "pipeline jitcodes must include the `mainloop` portal; got {:?}",
-            jitcodes.iter().map(|jc| jc.name.as_str()).collect::<Vec<_>>(),
+            jitcodes
+                .iter()
+                .map(|jc| jc.name.as_str())
+                .collect::<Vec<_>>(),
         );
     }
 
@@ -156,10 +159,7 @@ mod tests {
             load_pipeline_descrs().len(),
             "pool entry count must match pipeline.descrs",
         );
-        let jitcode_slots = pool
-            .iter()
-            .filter_map(RuntimeBhDescr::as_jitcode)
-            .count();
+        let jitcode_slots = pool.iter().filter_map(RuntimeBhDescr::as_jitcode).count();
         assert!(
             jitcode_slots > 0,
             "the shared descr pool must carry the inter-jitcode BC_INLINE_CALL links",

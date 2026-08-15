@@ -14,17 +14,17 @@
 #[cfg(all(feature = "num-bigint", feature = "malachite-bigint"))]
 compile_error!("features `num-bigint` and `malachite-bigint` are mutually exclusive");
 
-#[cfg(not(feature = "bigint-backend"))]
-pub mod smallint;
 #[cfg(feature = "bigint-backend")]
 pub mod bigint;
 #[cfg(feature = "bigint-backend")]
 mod bigint_backend;
-
 #[cfg(not(feature = "bigint-backend"))]
-pub use smallint::*;
+pub mod smallint;
+
 #[cfg(feature = "bigint-backend")]
 pub use bigint::*;
+#[cfg(not(feature = "bigint-backend"))]
+pub use smallint::*;
 
 // Floored division shared by both value backends.
 // Both backends divide the same way, because both upstream files do:

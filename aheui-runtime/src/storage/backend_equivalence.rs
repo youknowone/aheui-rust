@@ -164,7 +164,11 @@ fn ll_contents<T: LinkedList + ?Sized>(pool: &T) -> Vec<Val> {
     let mut out = Vec::with_capacity(pool.size());
     let mut node = pool.head();
     for i in 0..pool.size() {
-        assert!(!node.is_null(), "chain ended at {i} but size is {}", pool.size());
+        assert!(
+            !node.is_null(),
+            "chain ended at {i} but size is {}",
+            pool.size()
+        );
         out.push(unsafe { (*node).value });
         node = unsafe { (*node).next };
     }
@@ -355,7 +359,11 @@ where
 
         let what = format!("step {step} {op:?}");
         compare(&format!("{what} return value"), &ll_returned, &arr_returned)?;
-        compare(&format!("{what} contents"), &ll_contents(ll), &arr_dump(arr))?;
+        compare(
+            &format!("{what} contents"),
+            &ll_contents(ll),
+            &arr_dump(arr),
+        )?;
 
         let ll_len = ll.__len__();
         let arr_len = arr.len();
@@ -376,7 +384,10 @@ where
     }
     compare("after drain", &ll_contents(ll), &arr_dump(arr))?;
     if arr.len() != 0 {
-        return Err(format!("after drain: array still reports len {}", arr.len()));
+        return Err(format!(
+            "after drain: array still reports len {}",
+            arr.len()
+        ));
     }
 
     Ok(coverage)
@@ -410,8 +421,13 @@ fn stack_backends_agree_step_for_step() {
     let ops = stream(0x5EED_0001);
     let mut ll = linkedlist::Stack::new();
     let mut arr = array::Stack::new();
-    let coverage = drive(&mut ll, &mut arr, |a| arr_stackish_contents(a.data, a.size), &ops)
-        .unwrap_or_else(|e| panic!("Stack: {e}"));
+    let coverage = drive(
+        &mut ll,
+        &mut arr,
+        |a| arr_stackish_contents(a.data, a.size),
+        &ops,
+    )
+    .unwrap_or_else(|e| panic!("Stack: {e}"));
     assert_full_coverage("Stack", coverage);
 }
 
@@ -421,8 +437,8 @@ fn queue_backends_agree_step_for_step() {
     let ops = stream(0x5EED_0002);
     let mut ll = linkedlist::Queue::new();
     let mut arr = array::Queue::new();
-    let coverage = drive(&mut ll, &mut arr, arr_queue_contents, &ops)
-        .unwrap_or_else(|e| panic!("Queue: {e}"));
+    let coverage =
+        drive(&mut ll, &mut arr, arr_queue_contents, &ops).unwrap_or_else(|e| panic!("Queue: {e}"));
     assert_full_coverage("Queue", coverage);
 }
 
@@ -432,8 +448,13 @@ fn port_backends_agree_step_for_step() {
     let ops = stream(0x5EED_0003);
     let mut ll = linkedlist::Port::new();
     let mut arr = array::Port::new();
-    let coverage = drive(&mut ll, &mut arr, |a| arr_stackish_contents(a.data, a.size), &ops)
-        .unwrap_or_else(|e| panic!("Port: {e}"));
+    let coverage = drive(
+        &mut ll,
+        &mut arr,
+        |a| arr_stackish_contents(a.data, a.size),
+        &ops,
+    )
+    .unwrap_or_else(|e| panic!("Port: {e}"));
     assert_full_coverage("Port", coverage);
 }
 
@@ -448,8 +469,12 @@ fn port_dup_from_empty_agrees() {
 
     ll.dup();
     arr.dup();
-    compare("empty port dup", &ll_contents(&ll), &arr_stackish_contents(arr.data, arr.size))
-        .unwrap_or_else(|e| panic!("Port: {e}"));
+    compare(
+        "empty port dup",
+        &ll_contents(&ll),
+        &arr_stackish_contents(arr.data, arr.size),
+    )
+    .unwrap_or_else(|e| panic!("Port: {e}"));
 
     // `_put_value` deliberately leaves `last_push` alone, so after this the
     // top and the shadow differ and a second `dup` tells them apart.
@@ -462,8 +487,12 @@ fn port_dup_from_empty_agrees() {
     ll.dup();
     arr.dup();
     let reference = ll_contents(&ll);
-    compare("port dup after add", &reference, &arr_stackish_contents(arr.data, arr.size))
-        .unwrap_or_else(|e| panic!("Port: {e}"));
+    compare(
+        "port dup after add",
+        &reference,
+        &arr_stackish_contents(arr.data, arr.size),
+    )
+    .unwrap_or_else(|e| panic!("Port: {e}"));
     assert!(
         val_equal(&reference[0], &val_from_i32(10)),
         "dup must republish last_push (10), not the top (15); got {}",

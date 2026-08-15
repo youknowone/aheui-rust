@@ -610,8 +610,8 @@ mod tests {
                     "element {i} of a released buffer was left unstamped"
                 );
             }
-            let layout = std::alloc::Layout::array::<Val>(cap as usize)
-                .expect("storage buffer layout");
+            let layout =
+                std::alloc::Layout::array::<Val>(cap as usize).expect("storage buffer layout");
             std::alloc::dealloc(data as *mut u8, layout);
         }
     }
