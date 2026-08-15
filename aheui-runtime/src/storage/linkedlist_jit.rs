@@ -24,13 +24,8 @@ use crate::value::*;
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -54,13 +49,8 @@ pub fn stack_push(stack: usize, value: Val) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -86,13 +76,8 @@ pub fn stack_pop(stack: usize) -> Val {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -121,20 +106,14 @@ pub fn stack_add(stack: usize) {
     };
 }
 
-
 #[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -163,13 +142,8 @@ pub fn stack_add(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -204,13 +178,8 @@ pub fn stack_sub(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -239,13 +208,8 @@ pub fn stack_sub(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -289,13 +253,8 @@ pub fn stack_mul(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -333,13 +292,8 @@ pub fn stack_mod(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -364,13 +318,8 @@ pub fn stack_dup(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -392,13 +341,8 @@ pub fn stack_swap(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -432,13 +376,8 @@ pub fn stack_cmp(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -498,13 +437,8 @@ pub fn val_ge_jit(a: Val, b: Val) -> Val {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::tail => super::linkedlist::Node,
@@ -540,13 +474,8 @@ pub fn queue_push(queue: usize, value: Val) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -579,13 +508,8 @@ pub fn queue_pop(queue: usize) -> Val {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -634,13 +558,8 @@ pub fn queue_add(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -683,13 +602,8 @@ pub fn queue_add(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -738,13 +652,8 @@ pub fn queue_sub(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -787,13 +696,8 @@ pub fn queue_sub(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -847,13 +751,8 @@ pub fn queue_mul(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -905,13 +804,8 @@ pub fn queue_mod(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -940,13 +834,8 @@ pub fn queue_dup(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -968,13 +857,8 @@ pub fn queue_swap(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1022,13 +906,8 @@ pub fn queue_cmp(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1093,13 +972,8 @@ pub fn queue_cmp(queue: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -1130,13 +1004,8 @@ pub fn stack_add_raw(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -1167,13 +1036,8 @@ pub fn stack_sub_raw(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -1204,13 +1068,8 @@ pub fn stack_mul_raw(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -1239,13 +1098,8 @@ pub fn stack_cmp_raw(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -1283,13 +1137,8 @@ pub fn stack_div_raw(stack: usize) {
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
         super::linkedlist::Stack::size => u32,
-        super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Stack::head => super::linkedlist::Node,
@@ -1318,13 +1167,8 @@ pub fn stack_mod_raw(stack: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1369,13 +1213,8 @@ pub fn queue_add_raw(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1420,13 +1259,8 @@ pub fn queue_sub_raw(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1471,13 +1305,8 @@ pub fn queue_mul_raw(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1520,13 +1349,8 @@ pub fn queue_cmp_raw(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,
@@ -1574,13 +1398,8 @@ pub fn queue_div_raw(queue: usize) {
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
-    // `Stack`/`Queue`/`Port` share the `head`/`size` prefix, and the JIT
-    // reaches all three through the `Stack` tag, so the width is declared for
-    // every name the layout can be registered under.
     int_fields = {
-        super::linkedlist::Stack::size => u32,
         super::linkedlist::Queue::size => u32,
-        super::linkedlist::Port::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::head => super::linkedlist::Node,

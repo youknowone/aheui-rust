@@ -365,6 +365,30 @@ const _: () = assert!(
         && core::mem::offset_of!(Stack, size) == core::mem::offset_of!(Port, size),
 );
 
+/// The other half of the same invariant: where the field starts is only half of
+/// which bytes it owns.
+///
+/// A field descr carries an offset AND a width, and the JIT registers one of
+/// each per field under `Stack`'s type id.  Equal offsets with unequal widths
+/// still read a queue's next word as part of its count — the failure the
+/// offsets above are asserted against, arriving from the other side.
+///
+/// Written against the fields rather than the types they are declared as, so
+/// that renaming `Stack::size`'s type does not quietly retire the check.
+const _: () = {
+    const fn width<S, T>(_: fn(&S) -> T) -> usize {
+        core::mem::size_of::<T>()
+    }
+    assert!(
+        width(|s: &Stack| s.head) == width(|q: &Queue| q.head)
+            && width(|s: &Stack| s.head) == width(|p: &Port| p.head),
+    );
+    assert!(
+        width(|s: &Stack| s.size) == width(|q: &Queue| q.size)
+            && width(|s: &Stack| s.size) == width(|p: &Port| p.size),
+    );
+};
+
 impl Port {
     // linkedlist.py:129-132
     // def __init__(self):
