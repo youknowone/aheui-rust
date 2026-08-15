@@ -1259,7 +1259,11 @@ mod tests {
         // After the port push, which writes `last_push` itself.
         storage.port.last_push = val_from_raw_i64(17);
 
-        promote_all_root_values();
+        assert!(
+            promote_all_root_values(),
+            "no roots were installed, so the walk below is over an untouched \
+             storage rather than a promoted one"
+        );
 
         let mut seen = Vec::new();
         walk_bigint_root_values(&mut |v: &mut Val| seen.push(v.try_to_i64()));
@@ -1319,7 +1323,15 @@ mod tests {
             .push(val_from_raw_i64((1i64 << 62) + 7));
 
         let before = COLLECTS.load(Ordering::Relaxed);
-        promote_all_root_values();
+        // The second way a zero below could prove nothing: a promotion that
+        // returned early because no roots were installed allocates nothing, so
+        // it cannot collect either. The hook control above does not cover this
+        // one — it says the counter works, not that anything ran.
+        assert!(
+            promote_all_root_values(),
+            "no roots were installed, so nothing was promoted and a zero count \
+             below would mean nothing"
+        );
         let fired = COLLECTS.load(Ordering::Relaxed) - before;
 
         crate::value::bigint::clear_bigint_hooks_for_test();
