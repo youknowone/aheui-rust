@@ -99,7 +99,10 @@ threshold가 바뀌면 같은 프로그램에서도 서로 다른 trace 모양�
 ## backend opcode census
 
 `scripts/opcensus.py`는 `MAJIT_LOG=1`, `MAJIT_THRESHOLD=50`으로 trace를 만들고
-backend가 내보낸 기계 수준 연산의 수를 `bench/opcensus/` 아래에 기록합니다.
+backend가 내보낸 기계 수준 연산의 수를 기록합니다. threshold 50은 jitstress
+축과 같은 설정이므로 기준선도 `bench/jitstress/<디렉토리>/<이름>.opcensus`로,
+같은 실행을 다른 계측기로 읽은 `.jitstats` 옆에 둡니다. `bench/` 아래 디렉토리는
+기준선을 만든 **설정**을, 확장자는 그것을 읽은 **계측기**를 가리킵니다.
 
 - `op.*`와 `total_ops`는 줄어들 수 있지만 늘어나면 실패합니다. 더 짧은 trace가
   목표이기 때문입니다.

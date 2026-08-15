@@ -77,7 +77,18 @@ UNGATED_FIELDS = ("traces",)
 
 
 def baseline_path(name: str) -> Path:
-    return BENCH / "opcensus" / f"{name}.opcensus"
+    """Beside the `.jitstats` baseline for the same run.
+
+    A directory under `bench/` names the CONFIGURATION a baseline was taken
+    under, and the extension names the instrument that read it. This census
+    runs at `CENSUS_THRESHOLD`, which is `jitstats.py`'s jitstress threshold —
+    the same configuration — so it belongs in that directory rather than one
+    named after the instrument. Splitting by instrument put two descriptions of
+    a single run in two trees, where nothing lines them up: `traces` here and
+    `loops_compiled` + `bridges_compiled` there count the same event, and
+    `exit` is recorded twice.
+    """
+    return BENCH / "jitstress" / f"{name}.opcensus"
 
 
 def census(program: Path) -> dict[str, int]:
