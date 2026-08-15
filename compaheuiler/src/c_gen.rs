@@ -78,7 +78,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
     let mut live_blocks: Vec<BlockId> = Vec::new();
     for block_id in 0..cfg.num_blocks() as BlockId {
         let entry_state = states.get(block_id as usize);
-        if entry_state.map_or(true, |s| s.is_bottom()) {
+        if entry_state.is_none_or(|s| s.is_bottom()) {
             continue;
         }
         live_blocks.push(block_id);
@@ -198,7 +198,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
         let has_dyn_sel = live_blocks.iter().any(|&bid| {
             states
                 .get(bid as usize)
-                .map_or(false, |s| s.selected.is_none())
+                .is_some_and(|s| s.selected.is_none())
         });
         let skip_entry_sync = entry_sel.is_none() && has_dyn_sel;
         if entry_sel.is_none() && !skip_entry_sync {
@@ -303,14 +303,13 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                     if sp_known {
                         let s = sel.unwrap();
                         let next = insts.get(ii + 1);
-                        if s == QUEUE {
-                            if let Some(Inst::Mov(t)) = next {
-                                if *t == s {
-                                    out.push_str(&format!("{ind}  if (sp.q_len > 0) {{ int64_t _v = sp.queue[sp.q_head]; sp.queue[(sp.q_head + sp.q_len) % QUEUE_CAP] = _v; sp.q_len++; }}\n"));
-                                    ii += 2;
-                                    continue;
-                                }
-                            }
+                        if s == QUEUE
+                            && let Some(Inst::Mov(t)) = next
+                            && *t == s
+                        {
+                            out.push_str(&format!("{ind}  if (sp.q_len > 0) {{ int64_t _v = sp.queue[sp.q_head]; sp.queue[(sp.q_head + sp.q_len) % QUEUE_CAP] = _v; sp.q_len++; }}\n"));
+                            ii += 2;
+                            continue;
                         }
                         out.push_str(&format!("{ind}  sp_dup(&sp, {s});\n"));
                     } else if ds {

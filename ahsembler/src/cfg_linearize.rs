@@ -293,7 +293,7 @@ mod tests {
         assert!(program.size >= 4);
 
         // Verify all label targets are valid
-        for (_, &target) in &program.labels {
+        for &target in program.labels.values() {
             assert!(target < program.size, "label target {target} out of range");
         }
     }

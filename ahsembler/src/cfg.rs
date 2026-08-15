@@ -227,6 +227,12 @@ pub struct Cfg {
     pub entry: BlockId,
 }
 
+impl Default for Cfg {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Cfg {
     pub fn new() -> Self {
         Cfg {

@@ -65,7 +65,7 @@ impl BuildArgs {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        stem = stem.replace('.', "_").replace('-', "_");
+        stem = stem.replace(['.', '-'], "_");
         Ok(std::env::current_dir()?.join(stem))
     }
 }
@@ -240,15 +240,14 @@ fn remap_path_prefixes(generated_dir: &Path) -> Vec<String> {
         ));
     }
 
-    if let Ok(out) = Command::new("rustc").args(["--print", "sysroot"]).output() {
-        if out.status.success() {
-            if let Ok(sysroot) = String::from_utf8(out.stdout) {
-                flags.push(format!(
-                    "--remap-path-prefix={}=/rust",
-                    sysroot.trim_end_matches('\n')
-                ));
-            }
-        }
+    if let Ok(out) = Command::new("rustc").args(["--print", "sysroot"]).output()
+        && out.status.success()
+        && let Ok(sysroot) = String::from_utf8(out.stdout)
+    {
+        flags.push(format!(
+            "--remap-path-prefix={}=/rust",
+            sysroot.trim_end_matches('\n')
+        ));
     }
     flags
 }
