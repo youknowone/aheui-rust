@@ -118,11 +118,14 @@ def build_backends() -> dict[str, Path]:
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     PROGRAM_DIR.mkdir(parents=True, exist_ok=True)
 
+    # No `--locked`: `Cargo.lock` is not tracked (`.gitignore`), so a fresh
+    # checkout has none to honour and cargo refuses to create one under the
+    # flag. The majit dependencies are pinned by exact git rev in
+    # `Cargo.toml`, which is where this matrix's reproducibility comes from.
     compa_build = run_command(
         [
             "cargo",
             "build",
-            "--locked",
             "--release",
             "-p",
             "compaheuiler",
@@ -153,7 +156,6 @@ def build_backends() -> dict[str, Path]:
             [
                 "cargo",
                 "build",
-                "--locked",
                 "--release",
                 "-p",
                 "aheuinterpreter",
