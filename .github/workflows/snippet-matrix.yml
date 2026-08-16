@@ -1,0 +1,115 @@
+name: Snippet backend matrix
+
+on:
+  pull_request:
+    paths:
+      - "ahsembler/src/**"
+      - "ahsembler/tests/**"
+      - "ahsembler/Cargo.toml"
+      - "aheui-runtime/src/**"
+      - "aheui-runtime/tests/**"
+      - "aheui-runtime/Cargo.toml"
+      - "aheuinterpreter/src/**"
+      - "aheuinterpreter/tests/**"
+      - "aheuinterpreter/examples/**"
+      - "aheuinterpreter/Cargo.toml"
+      - "compaheuiler/src/**"
+      - "compaheuiler/tests/**"
+      - "compaheuiler/examples/**"
+      - "compaheuiler/Cargo.toml"
+      - "scripts/snippet_matrix.py"
+      - "snippets"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/snippet-matrix.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: snippet-matrix-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  snippets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Cargo inputs and shared build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-snippet-matrix-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-snippet-matrix-
+
+      - name: Build, verify, and time all six backends
+        id: matrix
+        continue-on-error: true
+        run: python3 scripts/snippet_matrix.py --report target/snippet-matrix/report.md
+
+      - name: Add report to the job summary
+        if: always() && hashFiles('target/snippet-matrix/report.md') != ''
+        run: cat target/snippet-matrix/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update the pull request report
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          hashFiles('target/snippet-matrix/report.md') != ''
+        uses: actions/github-script@v7
+        env:
+          REPORT_PATH: target/snippet-matrix/report.md
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- aheui-snippet-matrix -->';
+            const body = fs.readFileSync(process.env.REPORT_PATH, 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const previous = comments.find(comment =>
+              comment.user.type === 'Bot' && comment.body.includes(marker)
+            );
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: previous.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Upload the report
+        if: always() && hashFiles('target/snippet-matrix/report.md') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: snippet-backend-matrix
+          path: target/snippet-matrix/report.md
+
+      - name: Fail when a backend or snippet failed
+        if: steps.matrix.outcome == 'failure'
+        run: exit 1
