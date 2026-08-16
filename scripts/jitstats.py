@@ -115,8 +115,8 @@ HISTORY = Path(os.environ.get("AHEUI_JITSTATS_HISTORY", BENCH / "history.jsonl")
 MAJIT_REPO = REPO.parent
 
 
-def corpus_baseline_path(name: str) -> Path:
-    return BENCH / "corpus" / f"{name}.jitstats"
+def default_baseline_path(name: str) -> Path:
+    return BENCH / "default" / f"{name}.jitstats"
 
 
 def jitstress_baseline_path(name: str) -> Path:
@@ -490,7 +490,7 @@ def check_corpus_one(
     *,
     record: bool,
     gated: bool,
-    kind: str = "corpus",
+    kind: str = "default",
     threshold: str | None = None,
 ) -> tuple[bool, bool, dict | None]:
     """Run the corpus A/B, then either record, gate, or survey it.
@@ -540,7 +540,7 @@ def check_corpus_one(
     baseline_file = (
         jitstress_baseline_path(name)
         if kind == "jitstress"
-        else corpus_baseline_path(name)
+        else default_baseline_path(name)
     )
     if record:
         baseline_file.parent.mkdir(parents=True, exist_ok=True)
@@ -639,7 +639,7 @@ def survey(paths: list[Path]) -> list[dict]:
         )
         for line in abort_breakdown(jit.fields):
             print(f"      {line}")
-        rows.append(ledger_row("corpus", name, jit, control, out_ok))
+        rows.append(ledger_row("default", name, jit, control, out_ok))
     return rows
 
 
@@ -775,7 +775,7 @@ def run_corpus_checks(
     *,
     source: str,
     record: bool,
-    kind: str = "corpus",
+    kind: str = "default",
 ) -> tuple[int, list[dict]]:
     gated = source == "submodule"
     unpinned = (
@@ -1005,7 +1005,7 @@ def main(argv: list[str]) -> int:
     jitstress_verb = verb if source == "submodule" else "skipped"
     if corpus_items and jitstress_items and source == "submodule":
         print(
-            f"  {len(corpus_items)} corpus + {len(jitstress_items)} jitstress"
+            f"  {len(corpus_items)} default + {len(jitstress_items)} jitstress"
             f" {verb}, {failed} failed"
         )
     elif corpus_items:

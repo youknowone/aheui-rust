@@ -47,7 +47,11 @@ PASS만 출력해서는 JIT가 실제로 무엇을 했는지 알 수 없기 때�
 `rpaheui/snippets` checkout을 볼 때 알맞은 방식입니다. 이런 소스는 그 컴퓨터가
 마지막으로 받은 내용일 뿐이므로 다른 곳에서 같은 기준선을 재현할 수 없습니다.
 반면 이 저장소에 고정된 `snippets/` submodule을 쓰면 `check`와 `record`가
-`bench/corpus/<dir>/<stem>.jitstats`를 기준선으로 사용합니다.
+`bench/default/<dir>/<stem>.jitstats`를 기준선으로 사용합니다.
+
+`bench/` 바로 아래 디렉토리는 기준선을 만든 **설정**의 이름입니다 — `default`는
+실사용 threshold, `jitstress`는 threshold 50. 확장자는 그 실행을 읽은
+**계측기**를 가리킵니다(`.jitstats`는 `MAJIT_STATS`, `.opcensus`는 `MAJIT_LOG`).
 
 실사용 back-edge threshold 1039에서는 고정된 62개 프로그램 가운데 **3개**가
 threshold에 도달합니다(submodule `4961b05`, majit `2674bdcb06b`, aheui
