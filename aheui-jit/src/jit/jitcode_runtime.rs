@@ -4,20 +4,24 @@
 //! `JitCode` objects produced by `CodeWriter.make_jitcodes()`
 //! (codewriter.py:89). The build script (`build.rs`) runs the
 //! `majit_translate` pipeline over the interpreter sources and writes
-//! `pipeline.jitcodes` and the shared `pipeline.descrs`
-//! (`Assembler.descrs`, assembler.py:23) into `$OUT_DIR`.
+//! `pipeline.jitcodes`, the shared `pipeline.descrs`
+//! (`Assembler.descrs`, assembler.py:23), symbolic function paths, and the
+//! shared liveness table into `$OUT_DIR`.
 //!
-//! Only the embedding half lives here: reading the two blobs out of the
-//! binary and handing them to `majit_metainterp::EmbeddedJitCodeTable`, which
-//! owns the join and the identity rules. The blobs are this crate's own
-//! `$OUT_DIR` artifacts, which nothing below it in the dependency graph can
-//! see, so the two halves cannot swap places.
+//! Only the embedding half lives here: reading those artifacts out of the
+//! binary, binding process-local host addresses, and handing the result to
+//! `majit_metainterp::EmbeddedJitCodeTable`, which owns the join and identity
+//! rules. The artifacts are this crate's own `$OUT_DIR` output, which nothing
+//! below it in the dependency graph can see, so the two halves cannot swap
+//! places.
 
 use std::sync::{Arc, OnceLock};
 
 use majit_metainterp::EmbeddedJitCodeTable;
 use majit_metainterp::JitCode as RuntimeJitCode;
 use majit_translate::jitcode::{BhDescr, JitCode};
+
+use aheui_runtime::storage::linkedlist::{Node, Stack};
 
 /// Deserialize the build-time `pipeline.jitcodes` blob.
 fn load_pipeline_jitcodes() -> Vec<Arc<JitCode>> {
@@ -46,6 +50,69 @@ fn load_pipeline_descrs() -> Vec<BhDescr> {
     })
 }
 
+fn load_symbolic_fnaddr_paths() -> Vec<(i64, String)> {
+    const BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/opcode_symbolic_fnaddrs.bin"));
+    bincode::deserialize(BYTES).unwrap_or_else(|e| {
+        panic!(
+            "aheui-jit: failed to deserialize opcode_symbolic_fnaddrs.bin ({} bytes): {e}",
+            BYTES.len(),
+        )
+    })
+}
+
+pub fn prebuild_pipeline_liveness(assembler: &mut majit_metainterp::Assembler) {
+    const BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/opcode_liveness.bin"));
+    assembler.prepend_embedded_liveness(BYTES);
+}
+
+// Stack, Queue, and Port have the same head/size prefix, asserted beside their
+// definitions. The graph pipeline lowers the shared LinkedList accessors as
+// host calls, so these shims expose that prefix through the call-stub C ABI.
+extern "C" fn linked_list_head(storage: usize) -> i64 {
+    unsafe { (*(storage as *const Stack)).head as i64 }
+}
+
+extern "C" fn linked_list_set_head(storage: usize, head: i64) {
+    unsafe { (*(storage as *mut Stack)).head = head as *mut Node };
+}
+
+extern "C" fn linked_list_size(storage: usize) -> i64 {
+    unsafe { (*(storage as *const Stack)).size as i64 }
+}
+
+extern "C" fn linked_list_set_size(storage: usize, size: i64) {
+    unsafe { (*(storage as *mut Stack)).size = size as u32 };
+}
+
+extern "C" fn linked_list_free_node(node: usize) {
+    aheui_runtime::storage::free_node(node as *mut Node);
+}
+
+fn runtime_fnaddr_bindings() -> [(&'static str, i64); 5] {
+    [
+        (
+            "LinkedList::head",
+            linked_list_head as *const () as usize as i64,
+        ),
+        (
+            "LinkedList::set_head",
+            linked_list_set_head as *const () as usize as i64,
+        ),
+        (
+            "LinkedList::size",
+            linked_list_size as *const () as usize as i64,
+        ),
+        (
+            "LinkedList::set_size",
+            linked_list_set_size as *const () as usize as i64,
+        ),
+        (
+            "aheui_runtime::storage::free_node",
+            linked_list_free_node as *const () as usize as i64,
+        ),
+    ]
+}
+
 /// The materialized table, built once.
 ///
 /// Materializing per lookup would hand out a different `Arc` each call for the
@@ -60,8 +127,13 @@ fn load_pipeline_descrs() -> Vec<BhDescr> {
 fn pipeline_table() -> &'static EmbeddedJitCodeTable {
     static TABLE: OnceLock<&'static EmbeddedJitCodeTable> = OnceLock::new();
     TABLE.get_or_init(|| {
-        let table =
-            EmbeddedJitCodeTable::materialize(&load_pipeline_jitcodes(), load_pipeline_descrs());
+        let bindings = runtime_fnaddr_bindings();
+        let table = EmbeddedJitCodeTable::materialize_with_symbolic_fnaddrs(
+            &load_pipeline_jitcodes(),
+            load_pipeline_descrs(),
+            &load_symbolic_fnaddr_paths(),
+            &bindings,
+        );
         table.install_as_global_pool();
         table
     })

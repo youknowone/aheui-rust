@@ -26,7 +26,18 @@ aheui_root="$(cd "$(dirname "$0")/.." && pwd)"
 # installed there by scripts/install-charon.sh.
 parent_root="$(cd "$aheui_root/.." && pwd)"
 
-charon_bin="${CHARON_BIN:-$parent_root/build/charon/charon}"
+case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64) platform_key="darwin-arm64" ;;
+    Linux-x86_64) platform_key="linux-x86_64" ;;
+    Linux-aarch64|Linux-arm64) platform_key="linux-aarch64" ;;
+    *)
+        echo "extract-llbc.sh: unsupported host $(uname -s)-$(uname -m)" >&2
+        exit 1
+        ;;
+esac
+shared_build="${PYRE_SHARED_BUILD:-$(cd "$parent_root/.." && pwd)/.pyre-build}"
+charon_dest="${CHARON_DEST:-$shared_build/charon/$platform_key}"
+charon_bin="${CHARON_BIN:-$charon_dest/charon}"
 if [[ ! -x "$charon_bin" ]]; then
     echo "extract-llbc.sh: charon not installed at $charon_bin" >&2
     echo "  run the parent repo's: scripts/install-charon.sh" >&2
@@ -92,7 +103,14 @@ for crate in $targets; do
     echo "=== extracting $crate -> $dest ==="
 
     pushd "$path" > /dev/null
-    "$charon_bin" cargo --ullbc --dest-file "$dest" -- "${charon_host_config[@]}"
+    cargo_features=()
+    if [[ "$crate" == "aheui-runtime" ]]; then
+        # The graph consumer is aheui-jit, so retain the JIT-only hint
+        # markers (`dont_look_inside`, elidable, and related policies) in the
+        # runtime snapshot it translates.
+        cargo_features=(--features jit)
+    fi
+    "$charon_bin" cargo --ullbc --dest-file "$dest" -- "${cargo_features[@]}" "${charon_host_config[@]}"
     popd > /dev/null
 
     size="$(du -h "$dest" | cut -f1)"

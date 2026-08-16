@@ -24,6 +24,29 @@ pub struct Node {
     pub next: *mut Node,
 }
 
+/// Swap the values of the first two nodes in a linked-list chain.
+///
+/// `Stack`, `Queue`, and `Port` share this operation; keeping the pointer
+/// mutation here gives the interpreter and generated JIT one implementation.
+pub fn swap_nodes(node1: *mut Node) {
+    assert!(!node1.is_null(), "swap on empty linked list");
+    let node2 = unsafe { (*node1).next };
+    assert!(!node2.is_null(), "swap on <2 elements");
+    // Read-then-write through the raw pointers rather than `std::mem::swap`,
+    // which would need a `&mut` to each node at once and is undefined the
+    // moment they are the same node. Nothing here can rule that out — a chain
+    // whose head links to itself is exactly the shape the collector's
+    // forwarding is capable of producing when it goes wrong, and this runs on
+    // the recovery paths that would be diagnosing it. The `allow` is what
+    // keeps a lint from rewriting this back into that `&mut` pair.
+    #[allow(clippy::manual_swap)]
+    unsafe {
+        let value = (*node1).value;
+        (*node1).value = (*node2).value;
+        (*node2).value = value;
+    }
+}
+
 /// Layout constants for JIT access to `Node` fields. RPython derives these
 /// via `symbolic.get_size` / `symbolic.get_field_token`; we hard-code them
 /// next to the `#[repr(C)]` struct.
@@ -84,22 +107,7 @@ pub trait LinkedList {
     //     node2 = node1.next
     //     node1.value, node2.value = node2.value, node1.value
     fn swap(&mut self) {
-        let node1 = self.head();
-        assert!(!node1.is_null(), "swap on empty linked list");
-        let node2 = unsafe { (*node1).next };
-        assert!(!node2.is_null(), "swap on <2 elements");
-        // Read-then-write through the raw pointers rather than
-        // `std::mem::swap`, which would need a `&mut` to each node at once and
-        // is undefined the moment they are the same node. Nothing here can rule
-        // that out — a chain whose head links to itself is exactly the shape the
-        // collector's forwarding is capable of producing when it goes wrong, and
-        // this runs on the recovery paths that would be diagnosing it.
-        #[allow(clippy::manual_swap)]
-        unsafe {
-            let v = (*node1).value;
-            (*node1).value = (*node2).value;
-            (*node2).value = v;
-        }
+        swap_nodes(self.head());
     }
 
     // linkedlist.py:35-38

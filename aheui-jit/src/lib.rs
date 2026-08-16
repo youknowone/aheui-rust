@@ -318,6 +318,7 @@ include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));
 use aheui_runtime::aheui::*;
 use aheui_runtime::io as aheui_io;
 use aheui_runtime::storage::linkedlist_jit as lj;
+use aheui_runtime::storage::linkedlist as ll;
 use aheui_runtime::storage::{LinkedList, Storage};
 use ahsembler::compiler::Program;
 
@@ -854,18 +855,6 @@ fn jit_bigint_mode() -> i64 {
 // probes the macro generates in the LOCAL scope.  Calling `lj::alloc_node_jit`
 // directly would look for the probe in the `lj` module, which doesn't exist.
 
-/// JIT-visible mirror of `aheui_runtime::storage::linkedlist::Node`.
-/// Used as a struct literal in the `#[jit_interp]` mainloop so the lowerer
-/// emits `New + SetfieldGc` ops that `OptVirtualize` can fold away when the
-/// Node doesn't escape the current iteration. The `struct_allocs` config
-/// rewrites the literal back to `jit_alloc_node(value, next)` on the
-/// concrete (non-tracing) path.
-#[repr(C)]
-struct NodeJit {
-    value: Val,
-    next: usize,
-}
-
 #[inline(always)]
 fn jit_alloc_node(value: Val, next: usize) -> usize {
     aheui_runtime::storage::linkedlist_jit::alloc_node_jit(value, next)
@@ -876,14 +865,27 @@ fn jit_free_node(node: usize) {
     aheui_runtime::storage::linkedlist_jit::free_node_jit(node)
 }
 
+#[inline(always)]
+fn swap_nodes_word(node: usize) {
+    ll::swap_nodes(node as *mut aheui_runtime::storage::linkedlist::Node);
+}
+
 /// Pipeline jitcode resolver for `inline_pipeline_*` call policies.
 /// The `#[jit_interp]` macro's dispatch JitCode builder calls this to
 /// resolve a function name (e.g. `"val_add"`) to the pipeline-built
 /// sub-jitcode that the tracer will inline-call into.
 #[allow(non_snake_case)]
 fn __majit_pipeline_jitcode(name: &str) -> std::sync::Arc<majit_metainterp::JitCode> {
-    jit::jitcode_runtime::pipeline_jitcode_by_name(name)
+    let pipeline_name = match name {
+        "swap_nodes_word" => "swap_nodes",
+        _ => name,
+    };
+    jit::jitcode_runtime::pipeline_jitcode_by_name(pipeline_name)
         .unwrap_or_else(|| panic!("pipeline jitcode for '{name}' not found"))
+}
+
+fn __majit_pipeline_liveness_prebuild(assembler: &mut majit_metainterp::Assembler) {
+    jit::jitcode_runtime::prebuild_pipeline_liveness(assembler);
 }
 
 // Index-keyed dynamic storage dispatch — rpaheui parity for
@@ -1026,8 +1028,8 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         aheui_runtime::storage::linkedlist::Queue::size => u32,
         aheui_runtime::storage::linkedlist::Port::size => u32,
     },
-    struct_allocs = { NodeJit => jit_alloc_node },
-    headerless_structs = { NodeJit },
+    struct_allocs = { aheui_runtime::storage::linkedlist::Node => jit_alloc_node },
+    headerless_structs = { aheui_runtime::storage::linkedlist::Node },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
         aheui_io::output_write_utf8 => jit_write_utf8,
@@ -1112,9 +1114,9 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // Register node frees and value arithmetic so field-level Stack
         // operations emit concrete IR instead of
         // silent-skipping unregistered calls. Node allocation now goes through
-        // `struct_allocs = { NodeJit => jit_alloc_node }`: concrete execution
-        // calls `jit_alloc_node`, while tracing emits headerless `New(NodeJit)`
-        // plus field stores.
+        // `struct_allocs` makes concrete execution call `jit_alloc_node`, while
+        // tracing emits a headerless `New(Node)` plus field stores with the
+        // descriptor identity used by graph-pipeline storage helpers.
         // jit_free_node is `concrete_only_void` — the free runs on the
         // concrete path only; the JIT trace omits it. The GNE after the
         // call is a store-scheduling fence for the preceding
@@ -1248,7 +1250,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let gc = Box::new(NurseryGcAllocator::new());
     driver.meta_interp_mut().backend_mut().set_gc_allocator(gc);
     driver.meta_interp_mut().backend_mut().set_new_via_gc(true);
-    // `resume.py:1367` materializes virtual headerless `NodeJit` values during
+    // `resume.py:1367` materializes virtual headerless `Node` values during
     // guard-failure deoptimization. The blackhole allocator must do the same or
     // a virtual node becomes a null head while the recorded size stays nonzero.
     driver.register_blackhole_allocator(AheuiBlackholeAllocator);
@@ -1706,7 +1708,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         // mirroring OP_PUSH into selected_ref.
                         let target_ref = jit_sel_get_ref(state.storage_ref, target);
                         let old_head = target_ref.head;
-                        let new_node = NodeJit {
+                        let new_node = aheui_runtime::storage::linkedlist::Node {
                             value: r,
                             next: old_head,
                         };

@@ -164,6 +164,19 @@ fn main() {
     let descrs_bin = bincode::serialize(&pipeline.descrs).unwrap();
     std::fs::write(format!("{out_dir}/opcode_descrs.bin"), &descrs_bin).unwrap();
 
+    let symbolic_fnaddrs_bin = bincode::serialize(&pipeline.symbolic_fnaddr_paths).unwrap();
+    std::fs::write(
+        format!("{out_dir}/opcode_symbolic_fnaddrs.bin"),
+        &symbolic_fnaddrs_bin,
+    )
+    .unwrap();
+
+    std::fs::write(
+        format!("{out_dir}/opcode_liveness.bin"),
+        &pipeline.all_liveness,
+    )
+    .unwrap();
+
     eprintln!(
         "[aheui-jit build.rs] canonical analysis: {} jitcodes, {} functions, {} blocks, {} flat ops, generated {} bytes",
         pipeline.jitcodes.len(),

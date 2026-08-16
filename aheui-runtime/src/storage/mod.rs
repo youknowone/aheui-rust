@@ -803,6 +803,7 @@ pub fn alloc_node(value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::N
 
 /// Return a node to the free list. Called by `LinkedList::pop` to reclaim
 /// memory.
+#[cfg_attr(feature = "jit", majit_macros::dont_look_inside_cannot_raise)]
 #[inline(always)]
 pub fn free_node(node: *mut linkedlist::Node) {
     unsafe {
