@@ -58,6 +58,7 @@ pub fn stack_push(stack: usize, value: Val) {
     calls = {
         free_node_jit => concrete_only_void,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_pop(stack: usize) -> Val {
     let top_node = stack.head;
@@ -88,6 +89,7 @@ pub fn stack_pop(stack: usize) -> Val {
         val_retag_small => elidable_int_cannot_raise,
     },
     native_tag_small = { val_retag_small },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_add(stack: usize) {
     let top_node = stack.head;
@@ -123,6 +125,7 @@ pub fn stack_add(stack: usize) {
         val_add => elidable_int,
     },
     native_int_binops = { val_add => IntAdd },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_add(stack: usize) {
     let top_node = stack.head;
@@ -154,6 +157,7 @@ pub fn stack_add(stack: usize) {
         val_retag_small => elidable_int_cannot_raise,
     },
     native_tag_small = { val_retag_small },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_sub(stack: usize) {
     let top_node = stack.head;
@@ -189,6 +193,7 @@ pub fn stack_sub(stack: usize) {
         val_sub => elidable_int,
     },
     native_int_binops = { val_sub => IntSub },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_sub(stack: usize) {
     let top_node = stack.head;
@@ -220,6 +225,7 @@ pub fn stack_sub(stack: usize) {
         val_retag_small => elidable_int_cannot_raise,
     },
     native_tag_small = { val_retag_small },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_mul(stack: usize) {
     let top_node = stack.head;
@@ -264,6 +270,7 @@ pub fn stack_mul(stack: usize) {
         val_mul => elidable_int,
     },
     native_int_binops = { val_mul => IntMul },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_mul(stack: usize) {
     let top_node = stack.head;
@@ -320,6 +327,7 @@ pub fn stack_dup(stack: usize) {
         super::linkedlist::Stack::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_swap(stack: usize) {
     let node1 = stack.head;
@@ -349,6 +357,7 @@ pub fn stack_swap(stack: usize) {
         val_retag_small => elidable_int_cannot_raise,
     },
     native_tag_small = { val_retag_small },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_cmp(stack: usize) {
     let top_node = stack.head;
@@ -381,6 +390,7 @@ pub fn stack_cmp(stack: usize) {
     calls = {
         free_node_jit => concrete_only_void,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_cmp(stack: usize) {
     let top_node = stack.head;
@@ -443,6 +453,7 @@ pub fn val_ge_jit(a: Val, b: Val) -> Val {
         alloc_node_jit => nursery_alloc_ref,
         val_from_i32 => elidable_int_cannot_raise,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_push(queue: usize, value: Val) {
     // linkedlist.py:103-110 Queue.push — write the value into the current tail
@@ -479,6 +490,7 @@ pub fn queue_push(queue: usize, value: Val) {
     calls = {
         free_node_jit => concrete_only_void,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_pop(queue: usize) -> Val {
     let top_node = queue.head;
@@ -519,6 +531,7 @@ pub fn queue_pop(queue: usize) -> Val {
         alloc_node_jit => nursery_alloc_ref,
     },
     native_tag_small = { val_retag_small },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_add(queue: usize) {
     let n1 = queue.head;
@@ -568,6 +581,7 @@ pub fn queue_add(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     native_int_binops = { val_add => IntAdd },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_add(queue: usize) {
     let n1 = queue.head;
@@ -613,6 +627,7 @@ pub fn queue_add(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     native_tag_small = { val_retag_small },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_sub(queue: usize) {
     let n1 = queue.head;
@@ -662,6 +677,7 @@ pub fn queue_sub(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     native_int_binops = { val_sub => IntSub },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_sub(queue: usize) {
     let n1 = queue.head;
@@ -707,6 +723,7 @@ pub fn queue_sub(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     native_tag_small = { val_retag_small },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_mul(queue: usize) {
     let n1 = queue.head;
@@ -761,6 +778,7 @@ pub fn queue_mul(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     native_int_binops = { val_mul => IntMul },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_mul(queue: usize) {
     let n1 = queue.head;
@@ -832,6 +850,7 @@ pub fn queue_dup(queue: usize) {
         super::linkedlist::Queue::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_swap(queue: usize) {
     let node1 = queue.head;
@@ -864,6 +883,7 @@ pub fn queue_swap(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     native_tag_small = { val_retag_small },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_cmp(queue: usize) {
     let n1 = queue.head;
@@ -910,6 +930,7 @@ pub fn queue_cmp(queue: usize) {
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_cmp(queue: usize) {
     let n1 = queue.head;
@@ -974,6 +995,7 @@ pub fn queue_cmp(queue: usize) {
         free_node_jit => concrete_only_void,
         val_add => elidable_int,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_add_raw(stack: usize) {
     let top_node = stack.head;
@@ -1006,6 +1028,7 @@ pub fn stack_add_raw(stack: usize) {
         free_node_jit => concrete_only_void,
         val_sub => elidable_int,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_sub_raw(stack: usize) {
     let top_node = stack.head;
@@ -1038,6 +1061,7 @@ pub fn stack_sub_raw(stack: usize) {
         free_node_jit => concrete_only_void,
         val_mul => elidable_int,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_mul_raw(stack: usize) {
     let top_node = stack.head;
@@ -1071,6 +1095,7 @@ pub fn stack_mul_raw(stack: usize) {
         val_ge_raw => elidable_int_cannot_raise,
     },
     native_int_binops = { val_ge_raw => IntGe },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_cmp_raw(stack: usize) {
     let top_node = stack.head;
@@ -1101,6 +1126,7 @@ pub fn stack_cmp_raw(stack: usize) {
         val_div => elidable_int,
         val_div_raw => elidable_int_cannot_raise,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_div_raw(stack: usize) {
     let top_node = stack.head;
@@ -1139,6 +1165,7 @@ pub fn stack_div_raw(stack: usize) {
         free_node_jit => concrete_only_void,
         val_mod_raw => elidable_int_cannot_raise,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn stack_mod_raw(stack: usize) {
     let top_node = stack.head;
@@ -1172,6 +1199,7 @@ pub fn stack_mod_raw(stack: usize) {
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_add_raw(queue: usize) {
     let n1 = queue.head;
@@ -1218,6 +1246,7 @@ pub fn queue_add_raw(queue: usize) {
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_sub_raw(queue: usize) {
     let n1 = queue.head;
@@ -1264,6 +1293,7 @@ pub fn queue_sub_raw(queue: usize) {
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_mul_raw(queue: usize) {
     let n1 = queue.head;
@@ -1311,6 +1341,7 @@ pub fn queue_mul_raw(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     native_int_binops = { val_ge_raw => IntGe },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_cmp_raw(queue: usize) {
     let n1 = queue.head;
@@ -1355,6 +1386,7 @@ pub fn queue_cmp_raw(queue: usize) {
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_div_raw(queue: usize) {
     let n1 = queue.head;
@@ -1403,6 +1435,7 @@ pub fn queue_div_raw(queue: usize) {
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
+    headerless_structs = { super::linkedlist::Node, },
 )]
 pub fn queue_mod_raw(queue: usize) {
     let n1 = queue.head;
