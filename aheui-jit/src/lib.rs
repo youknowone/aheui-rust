@@ -33,13 +33,15 @@ pub use aheui_runtime::value;
 
 pub mod jit;
 
-/// Default JIT threshold. RPython default = 1039.
-pub const JIT_THRESHOLD: u32 = 1039;
+/// Default JIT threshold, taken from the parameter table rather than
+/// restated: a jitdriver that does not set the value gets `PARAMETERS`'
+/// default (`rlib/jit.py:588`), so the number has one home.
+pub const JIT_THRESHOLD: u32 = majit_metainterp::jit::PARAMETERS.threshold;
 
 /// JIT threshold honoring the `MAJIT_THRESHOLD` env override (for testing
-/// small hot loops without the production 1039-iteration warmup). RPython
-/// exposes the threshold as a configurable jitdriver param (`warmspot.py`);
-/// this is the same knob, read once at startup.
+/// small hot loops without the production warmup). RPython exposes the
+/// threshold as a configurable jitdriver param (`warmspot.py`); this is
+/// the same knob, read once at startup.
 pub fn jit_threshold() -> u32 {
     std::env::var("MAJIT_THRESHOLD")
         .ok()
@@ -354,13 +356,6 @@ const JIT_ALLOC_LIMIT: usize = 256 * 1024 * 1024;
 
 struct AheuiBlackholeAllocator;
 
-#[inline(always)]
-fn raw_store(struct_ptr: i64, offset: usize, value: i64) {
-    unsafe {
-        *((struct_ptr as usize + offset) as *mut i64) = value;
-    }
-}
-
 impl majit_metainterp::resume::BlackholeAllocator for AheuiBlackholeAllocator {
     fn bh_new(&self, typedescr: &majit_ir::DescrRef) -> i64 {
         let sd = typedescr
@@ -375,16 +370,54 @@ impl majit_metainterp::resume::BlackholeAllocator for AheuiBlackholeAllocator {
         }
     }
 
+    /// `llmodel.py:717-721 bh_setfield_gc_i` — the store takes the field's
+    /// width from its descriptor. A field narrower than a word is a real
+    /// field here: `size` on the list base is a `u32` followed by another
+    /// member, so a store that assumed a word would write over its
+    /// neighbour.
     fn bh_setfield_gc_i(&self, struct_ptr: i64, value: i64, descr_info: &majit_ir::FieldDescrInfo) {
-        raw_store(struct_ptr, descr_info.offset, value);
+        // SAFETY: `struct_ptr` is a virtual this allocator has just
+        // materialized; offset and size come from the descriptor of the
+        // store being replayed.
+        unsafe {
+            majit_backend::llmodel::write_int_at_mem(
+                struct_ptr as usize,
+                descr_info.offset,
+                descr_info.field_size,
+                value,
+            )
+        };
     }
 
+    /// `llmodel.py:723-727 bh_setfield_gc_r` — pointer width, no size.
+    ///
+    /// `write_ref_at_mem` documents that its caller owes the barrier
+    /// upstream's `llop.raw_store` rewrite would have carried. This
+    /// collector has no generational barrier to owe — its `write_barrier`
+    /// is a no-op — so the bare store is the whole operation.
     fn bh_setfield_gc_r(&self, struct_ptr: i64, value: i64, descr_info: &majit_ir::FieldDescrInfo) {
-        raw_store(struct_ptr, descr_info.offset, value);
+        // SAFETY: see `bh_setfield_gc_i`.
+        unsafe {
+            majit_backend::llmodel::write_ref_at_mem(
+                struct_ptr as usize,
+                descr_info.offset,
+                value as usize,
+            )
+        };
     }
 
+    /// `llmodel.py:730-734 bh_setfield_gc_f` — storage width, no size.
+    /// `value` carries the float's storage bits, the deadframe's untyped
+    /// form.
     fn bh_setfield_gc_f(&self, struct_ptr: i64, value: i64, descr_info: &majit_ir::FieldDescrInfo) {
-        raw_store(struct_ptr, descr_info.offset, value);
+        // SAFETY: see `bh_setfield_gc_i`.
+        unsafe {
+            majit_backend::llmodel::write_float_at_mem(
+                struct_ptr as usize,
+                descr_info.offset,
+                f64::from_bits(value as u64),
+            )
+        };
     }
 }
 
