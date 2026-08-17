@@ -804,6 +804,7 @@ pub fn alloc_node(value: Val, next: *mut linkedlist::Node) -> *mut linkedlist::N
 /// Return a node to the free list. Called by `LinkedList::pop` to reclaim
 /// memory.
 #[cfg_attr(feature = "jit", majit_macros::dont_look_inside_cannot_raise)]
+#[cfg_attr(feature = "jit", majit_macros::oopspec("raw_free(node)"))]
 #[inline(always)]
 pub fn free_node(node: *mut linkedlist::Node) {
     unsafe {
@@ -1374,7 +1375,11 @@ mod tests {
             COPYING_COLLECT_COUNT_FOR_TESTS.load(Ordering::Relaxed) > 1,
             "queue pushes did not trigger copying collection"
         );
-        assert_chain_in_current_chunks(storage.queue().base.head, QUEUE_VALUES as usize + 1, "queue");
+        assert_chain_in_current_chunks(
+            storage.queue().base.head,
+            QUEUE_VALUES as usize + 1,
+            "queue",
+        );
 
         assert_eq!(storage.stack(stack_idx).__len__(), STACK_VALUES as usize);
         for expected in (0..STACK_VALUES).rev() {

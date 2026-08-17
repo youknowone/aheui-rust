@@ -34,8 +34,8 @@ fn main() {
                 "aheui LLBC missing under {}.\n\
                  Run `aheui/scripts/extract-llbc.sh` to produce \
                  `aheui-runtime.ullbc` + `aheuinterpreter.ullbc` \
-                 (needs `build/charon/charon` from the parent repo's \
-                 `scripts/install-charon.sh`), or set \
+                 (install with the parent repo's \
+                 `python3 scripts/install-charon.py`), or set \
                  `PYRE_MIR_FRONTEND_LLBC` explicitly.",
                 llbc_dir.display()
             );
@@ -98,6 +98,14 @@ fn main() {
                         })
                         .collect(),
                     call_effects: build_call_effect_overrides(),
+                    struct_storage: vec![
+                        majit_translate::StructStorageDescriptor::raw(
+                            "storage::linkedlist::ListBase",
+                        ),
+                        majit_translate::StructStorageDescriptor::headerless(
+                            "storage::linkedlist::Node",
+                        ),
+                    ],
                     ..Default::default()
                 },
                 // rpaheui/aheui/aheui.py:28-31

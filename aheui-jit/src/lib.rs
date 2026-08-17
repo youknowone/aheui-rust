@@ -1084,16 +1084,14 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         Program::get_op => elidable_int_cannot_raise,
         Program::get_label => elidable_int_cannot_raise,
         Program::get_operand => elidable_int_cannot_raise,
-        // Monomorphic storage helpers. The hot Stack ops and the
-        // storage-independent list_pop / list_swap are `#[jit_inline]`
-        // (inline_int / inline_void), so the lowerer splices their
-        // field-level body into the trace; queue div/mod stay residual — a
-        // concrete
-        // `call_void_args` / `call_int_args` — rather than silent-skipping
-        // the storage op. Their stack twins are not registered because the
-        // arms hand-inline the pop and call `val_div`/`val_mod` on the
-        // operands directly, so there is no `lj::stack_div` call site left to
-        // classify.
+        // Monomorphic storage helpers. The hot Stack ops are `#[jit_inline]`,
+        // while the storage-independent pop / swap come from the graph
+        // pipeline's shared `LinkedList` implementation. Queue div/mod stay
+        // residual — a concrete `call_void_args` / `call_int_args` — rather
+        // than silent-skipping the storage op. Their stack twins are not
+        // registered because the arms hand-inline the pop and call
+        // `val_div`/`val_mod` on the operands directly, so there is no
+        // `lj::stack_div` call site left to classify.
         //
         // The registered path segments must match the call site verbatim
         // (the macro compares segment-by-segment); use the `lj::*` alias
@@ -1114,8 +1112,8 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::queue_cmp => inline_void,
         // Named by neither family: their parameter is the base the three
         // storages embed, so one registration covers every selection.
-        lj::list_pop => inline_int,
-        lj::list_swap => inline_void,
+        lj::pop_base_known_nonempty => inline_pipeline_int,
+        lj::swap_base_known_two => inline_pipeline_void,
         // Mode-0 twins of the arithmetic helpers, selected on the `bm` green.
         // All inline, including div and mod, which are residual above: their
         // mode-0 form carries a guard that only survives inside the trace.
@@ -1170,10 +1168,10 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // Residual storage mutators that change `Stack.size` or its `head` chain
     // pointer.  Traced push/pop methods emit in-trace `setfield_gc` stores,
     // which invalidate the matching heapcache entries directly.
-    // The inline_int / inline_void helpers (stack_push/add/sub/mul/dup/cmp and
-    // list_pop/list_swap) splice that `self.size` setfield into the trace
-    // directly, so they reproduce the barrier and need no entry here, and so
-    // do the pops the arithmetic arms hand-inline as head/next/size stores.
+    // The macro-inlined Stack helpers and graph-pipeline pop/swap jitcodes
+    // splice that `self.size` setfield into the trace directly, so they
+    // reproduce the barrier and need no entry here. The same holds for pops
+    // that arithmetic arms inline as head/next/size stores.
     // The remaining ops lower to opaque residual calls, which carry an empty
     // write-set by default. A size-only declaration can leave a stale head
     // cached after a residual pop, while a head-only declaration can leave a
@@ -1480,7 +1478,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_BRZ => {
                 // The pop is the same for every storage, and the zero test is
                 // one comparison on the popped `Val` either way.
-                let pop_val = lj::list_pop(state.selected_ref);
+                let pop_val = lj::pop_base_known_nonempty(state.selected_ref);
                 // pop_val is Val (= i64 repr-transparent). val_is_zero
                 // checks `*v == 0` for smallint, or the tagged form
                 // `(0 << 1) | 1 = 1` for bigint. Use the raw int
@@ -1607,7 +1605,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     // pop helper lowers in value position; a discarded
                     // statement-position `inline_int` call has no lowering and
                     // aborts the trace. Mirrors OP_POPNUM's pop shape.
-                    let _popped = lj::list_pop(state.selected_ref);
+                    let _popped = lj::pop_base_known_nonempty(state.selected_ref);
                 }
             }
             OP_PUSH => {
@@ -1655,7 +1653,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     // was what kept a queue-specialized trace touching `head`
                     // only under descriptors minted for `Queue`. `head` is
                     // declared once now, so the arm can say what rpaheui says.
-                    lj::list_swap(state.selected_ref);
+                    lj::swap_base_known_two(state.selected_ref);
                 }
             }
             OP_SEL => {
@@ -1679,7 +1677,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_MOV => {
                 if stackok {
-                    let r = lj::list_pop(state.selected_ref);
+                    let r = lj::pop_base_known_nonempty(state.selected_ref);
                     let target = program.get_operand(pc - 1) as usize;
                     if target == VAL_QUEUE || target == VAL_PORT {
                         // Queue/Port keep the polymorphic residual (tail-append semantics).
@@ -1719,13 +1717,13 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             // Branch ops handled by dispatch-level if-chain above.
             OP_POPNUM => {
                 if stackok {
-                    let r = lj::list_pop(state.selected_ref);
+                    let r = lj::pop_base_known_nonempty(state.selected_ref);
                     aheui_io::output_write_number(&r);
                 }
             }
             OP_POPCHAR => {
                 if stackok {
-                    let r = lj::list_pop(state.selected_ref);
+                    let r = lj::pop_base_known_nonempty(state.selected_ref);
                     aheui_io::output_write_utf8(&r);
                 }
             }

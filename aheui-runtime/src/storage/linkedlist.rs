@@ -32,6 +32,12 @@ pub fn swap_nodes(node1: *mut Node) {
     assert!(!node1.is_null(), "swap on empty linked list");
     let node2 = unsafe { (*node1).next };
     assert!(!node2.is_null(), "swap on <2 elements");
+    swap_nodes_known_two(node1);
+}
+
+/// Swap two nodes after the storage's length guard has proved they exist.
+pub(super) fn swap_nodes_known_two(node1: *mut Node) {
+    let node2 = unsafe { (*node1).next };
     // Read-then-write through the raw pointers rather than `std::mem::swap`,
     // which would need a `&mut` to each node at once and is undefined the
     // moment they are the same node. Nothing here can rule that out — a chain
@@ -85,6 +91,36 @@ pub struct ListBase {
     /// the depth has to be guarded again.  A list is a chain of 16-byte nodes,
     /// so 2^32 elements is 64 GiB of nodes.
     pub size: u32,
+}
+
+/// Remove and return the head element shared by all linked-list storages.
+pub fn pop_base(list: &mut ListBase) -> Val {
+    assert!(!list.head.is_null(), "pop from empty linked list");
+    pop_base_known_nonempty(list)
+}
+
+/// Pop after the storage's length guard has proved the head exists.
+pub(super) fn pop_base_known_nonempty(list: &mut ListBase) -> Val {
+    let node = list.head;
+    let next = unsafe { (*node).next };
+    let value = unsafe { (*node).value };
+    list.head = next;
+    list.size -= 1;
+    free_node(node);
+    value
+}
+
+/// Swap the first two values shared by all linked-list storages.
+pub fn swap_base(list: &mut ListBase) {
+    assert!(!list.head.is_null(), "swap on empty linked list");
+    let node2 = unsafe { (*list.head).next };
+    assert!(!node2.is_null(), "swap on <2 elements");
+    swap_base_known_two(list);
+}
+
+/// Swap after the storage's length guard has proved two nodes exist.
+pub(super) fn swap_base_known_two(list: &mut ListBase) {
+    swap_nodes_known_two(list.head);
 }
 
 impl ListBase {
@@ -144,14 +180,7 @@ pub trait LinkedList {
     //     self.size -= 1
     //     return value
     fn pop(&mut self) -> Val {
-        let node = self.head();
-        assert!(!node.is_null(), "pop from empty linked list");
-        let next = unsafe { (*node).next };
-        let value = unsafe { (*node).value };
-        self.set_head(next);
-        free_node(node); // del node — return to nursery free list
-        self.set_size(self.size() - 1);
-        value
+        pop_base(self.base_mut())
     }
 
     // linkedlist.py:30-33
@@ -160,7 +189,7 @@ pub trait LinkedList {
     //     node2 = node1.next
     //     node1.value, node2.value = node2.value, node1.value
     fn swap(&mut self) {
-        swap_nodes(self.head());
+        swap_base(self.base_mut());
     }
 
     // linkedlist.py:35-38
@@ -233,7 +262,9 @@ impl Stack {
     //     self.head = None
     //     self.size = 0
     pub fn new() -> Self {
-        Stack { base: ListBase::new() }
+        Stack {
+            base: ListBase::new(),
+        }
     }
 }
 

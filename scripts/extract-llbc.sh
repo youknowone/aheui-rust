@@ -14,7 +14,8 @@
 #
 # Notes:
 #   - Charon invokes `cargo build` internally under its pinned nightly
-#     toolchain (installed by the parent repo's scripts/install-charon.sh).
+#     toolchain (installed by the parent repo's
+#     `python3 scripts/install-charon.py`).
 #   - Outputs are NOT committed (see /build/ in .gitignore). Re-run after
 #     source changes in aheuinterpreter / aheui-runtime; Cargo's
 #     incremental cache keeps re-runs cheap.
@@ -23,7 +24,7 @@ set -euo pipefail
 
 aheui_root="$(cd "$(dirname "$0")/.." && pwd)"
 # The aheui workspace lives inside the parent majit repo; Charon is
-# installed there by scripts/install-charon.sh.
+# installed there by scripts/install-charon.py.
 parent_root="$(cd "$aheui_root/.." && pwd)"
 
 case "$(uname -s)-$(uname -m)" in
@@ -40,7 +41,7 @@ charon_dest="${CHARON_DEST:-$shared_build/charon/$platform_key}"
 charon_bin="${CHARON_BIN:-$charon_dest/charon}"
 if [[ ! -x "$charon_bin" ]]; then
     echo "extract-llbc.sh: charon not installed at $charon_bin" >&2
-    echo "  run the parent repo's: scripts/install-charon.sh" >&2
+    echo "  run the parent repo's: python3 scripts/install-charon.py" >&2
     echo "  or set CHARON_BIN to a charon binary." >&2
     exit 1
 fi
@@ -110,7 +111,12 @@ for crate in $targets; do
         # runtime snapshot it translates.
         cargo_features=(--features jit)
     fi
-    "$charon_bin" cargo --ullbc --dest-file "$dest" -- "${cargo_features[@]}" "${charon_host_config[@]}"
+    cargo_config=()
+    if [[ -n "${AHEUI_CARGO_CONFIG:-}" ]]; then
+        cargo_config=(--config "$AHEUI_CARGO_CONFIG")
+    fi
+    "$charon_bin" cargo --ullbc --dest-file "$dest" -- \
+        "${cargo_features[@]}" "${cargo_config[@]}" "${charon_host_config[@]}"
     popd > /dev/null
 
     size="$(du -h "$dest" | cut -f1)"

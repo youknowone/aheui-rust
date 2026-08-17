@@ -203,13 +203,14 @@ mod tests {
     #[test]
     fn a_named_lookup_and_a_pool_slot_reach_one_object() {
         let table = pipeline_table();
-        let by_name = pipeline_jitcode_by_name("add").expect("the pipeline emits a storage `add`");
+        let by_name = pipeline_jitcode_by_name("swap_base_known_two")
+            .expect("the pipeline emits `swap_base_known_two`");
         let from_pool = table
             .descrs()
             .iter()
             .filter_map(majit_metainterp::RuntimeBhDescr::as_jitcode)
-            .find(|callee| callee.name() == "add")
-            .expect("`add` is inline-called, so a `j` slot names it");
+            .find(|callee| callee.name() == "swap_base_known_two")
+            .expect("`swap_base_known_two` is inline-called, so a `j` slot names it");
         assert!(
             Arc::ptr_eq(&by_name, from_pool),
             "the dispatch builder registers what the name lookup returns and the \
@@ -223,18 +224,20 @@ mod tests {
     #[test]
     fn a_callee_reached_through_the_pool_resolves_its_own_inline_calls() {
         let table = pipeline_table();
-        // `add` inline-calls `val_add`, which reaches the allocator below it.
-        let add = pipeline_jitcode_by_name("add").expect("the pipeline emits a storage `add`");
-        let val_add =
-            pipeline_jitcode_by_name("val_add").expect("the pipeline emits `val_add` under `add`");
+        let swap_base = pipeline_jitcode_by_name("swap_base_known_two")
+            .expect("the pipeline emits `swap_base_known_two`");
+        let swap_nodes = pipeline_jitcode_by_name("swap_nodes_known_two")
+            .expect("the pipeline emits `swap_nodes_known_two` under `swap_base_known_two`");
         for (index, _) in table.descrs().iter().enumerate() {
             // Both must answer the same pool, at every index — that is what
             // resolving through the global fallback rather than a per-shell
             // copy buys, and it is what a second hop needs.
             assert!(
                 std::ptr::eq(
-                    add.descr_at(index).expect("global pool covers every index"),
-                    val_add
+                    swap_base
+                        .descr_at(index)
+                        .expect("global pool covers every index"),
+                    swap_nodes
                         .descr_at(index)
                         .expect("global pool covers every index"),
                 ),

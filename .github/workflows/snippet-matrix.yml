@@ -9,6 +9,10 @@ on:
       - "aheui-runtime/src/**"
       - "aheui-runtime/tests/**"
       - "aheui-runtime/Cargo.toml"
+      - "aheui-jit/src/**"
+      - "aheui-jit/tests/**"
+      - "aheui-jit/build.rs"
+      - "aheui-jit/Cargo.toml"
       - "aheuinterpreter/src/**"
       - "aheuinterpreter/tests/**"
       - "aheuinterpreter/examples/**"
@@ -18,7 +22,9 @@ on:
       - "compaheuiler/examples/**"
       - "compaheuiler/Cargo.toml"
       - "scripts/snippet_matrix.py"
+      - "scripts/extract-llbc.sh"
       - "snippets"
+      - ".github/majit-ci-config.toml"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/snippet-matrix.yml"
@@ -34,6 +40,60 @@ permissions:
   pull-requests: write
 
 jobs:
+  jit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      # The JIT changes span aheui and majit. Keep the integration checkout in
+      # pyre/aheui so extract-llbc.sh sees the same sibling layout as a local
+      # pyre worktree; Cargo's checked-in CI patch redirects every pinned majit
+      # dependency to that checkout.
+      - name: Check out majit integration branch
+        uses: actions/checkout@v4
+        with:
+          repository: youknowone/pyre
+          ref: aheui
+          path: pyre
+
+      - name: Check out this aheui revision
+        uses: actions/checkout@v4
+        with:
+          path: pyre/aheui
+          submodules: true
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Cargo, Charon, LLBC, and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .pyre-build/charon
+            pyre/aheui/build/llbc
+            pyre/aheui/target
+          key: ${{ runner.os }}-aheui-jit-${{ hashFiles('pyre/Cargo.lock', 'pyre/majit/**/Cargo.toml', 'pyre/aheui/Cargo.toml', 'pyre/aheui/**/Cargo.toml', 'pyre/aheui/aheui-runtime/src/**', 'pyre/aheui/aheuinterpreter/src/**') }}
+          restore-keys: |
+            ${{ runner.os }}-aheui-jit-
+
+      - name: Install Charon and extract the JIT inputs
+        working-directory: pyre
+        run: |
+          python3 scripts/install-charon.py
+          AHEUI_CARGO_CONFIG="$GITHUB_WORKSPACE/pyre/aheui/.github/majit-ci-config.toml" \
+            aheui/scripts/extract-llbc.sh
+
+      - name: Check and test the dynasm JIT
+        working-directory: pyre/aheui
+        run: |
+          mkdir -p .cargo
+          cp .github/majit-ci-config.toml .cargo/config.toml
+          cargo check --workspace --features dynasm
+          cargo test --workspace --features dynasm
+
   snippets:
     runs-on: ubuntu-latest
     timeout-minutes: 90

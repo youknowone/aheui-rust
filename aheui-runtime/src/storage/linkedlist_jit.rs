@@ -14,7 +14,7 @@
 //! ref register bank and uses explicit `ref(Stack)` metadata on inline helpers
 //! to lower field access without changing the concrete Rust ABI.
 
-use super::linkedlist::{LinkedList, Queue, Stack};
+use super::linkedlist::{LinkedList, ListBase, Queue, Stack};
 use crate::value::*;
 
 // Stack helpers.
@@ -46,39 +46,11 @@ pub fn stack_push(stack: usize, value: Val) {
     stack.size = stack.size + 1u32;
 }
 
-// linkedlist.py:22-28: `pop` is defined once on `LinkedList` and inherited
-// unchanged by every storage -- it unlinks the head node, returns its value and
-// decrements the count, reaching nothing a subclass adds and calling nothing
-// virtual.  Taking the base as its parameter says that in this file's
-// vocabulary.  Contrast the arithmetic helpers below: `add` is likewise a
-// single definition upstream, but it routes through `_get_2_values` /
-// `_put_value`, which every storage overrides, so those stay one helper per
-// storage and open by flattening this same pop.
+// Concrete ABI shim for the graph-pipeline
+// `linkedlist::pop_base_known_nonempty` jitcode.
 #[inline(always)]
-#[majit_macros::jit_inline(
-    ref_params = {
-        list: ref(super::linkedlist::ListBase),
-    },
-    int_fields = {
-        super::linkedlist::ListBase::size => u32,
-    },
-    ref_fields = {
-        super::linkedlist::ListBase::head => super::linkedlist::Node,
-        super::linkedlist::Node::next => super::linkedlist::Node,
-    },
-    calls = {
-        free_node_jit => concrete_only_void,
-    },
-    headerless_structs = { super::linkedlist::Node, },
-)]
-pub fn list_pop(list: usize) -> Val {
-    let top_node = list.head;
-    let value = top_node.value;
-    let next = top_node.next;
-    list.head = next;
-    list.size = list.size - 1u32;
-    free_node_jit(top_node);
-    value
+pub fn pop_base_known_nonempty(list: usize) -> Val {
+    unsafe { super::linkedlist::pop_base_known_nonempty(&mut *(list as *mut ListBase)) }
 }
 
 #[cfg(feature = "bigint-backend")]
@@ -355,29 +327,11 @@ pub fn stack_dup(stack: usize) {
     stack.size = stack.size + 1u32;
 }
 
-// linkedlist.py:30-33: `swap` is defined once on `LinkedList` and every
-// storage inherits it -- it exchanges the two leading values and touches
-// nothing a subclass adds.  Taking the base as its parameter is the same
-// statement in this file's vocabulary, where the per-storage twins it
-// replaces differed only in the type they named.
+// Concrete ABI shim for the graph-pipeline `linkedlist::swap_base_known_two`
+// jitcode.
 #[inline(always)]
-#[majit_macros::jit_inline(
-    ref_params = {
-        list: ref(super::linkedlist::ListBase),
-    },
-    ref_fields = {
-        super::linkedlist::ListBase::head => super::linkedlist::Node,
-        super::linkedlist::Node::next => super::linkedlist::Node,
-    },
-    headerless_structs = { super::linkedlist::Node, },
-)]
-pub fn list_swap(list: usize) {
-    let node1 = list.head;
-    let node2 = node1.next;
-    let v1 = node1.value;
-    let v2 = node2.value;
-    node1.value = v2;
-    node2.value = v1;
+pub fn swap_base_known_two(list: usize) {
+    unsafe { super::linkedlist::swap_base_known_two(&mut *(list as *mut ListBase)) }
 }
 
 #[cfg(feature = "bigint-backend")]
@@ -1538,9 +1492,9 @@ mod tests {
         stack_push(p, val_from_i32(1));
         stack_push(p, val_from_i32(2));
         stack_push(p, val_from_i32(3));
-        assert_eq!(val_to_i64(&list_pop(p)), 3);
-        assert_eq!(val_to_i64(&list_pop(p)), 2);
-        assert_eq!(val_to_i64(&list_pop(p)), 1);
+        assert_eq!(val_to_i64(&pop_base_known_nonempty(p)), 3);
+        assert_eq!(val_to_i64(&pop_base_known_nonempty(p)), 2);
+        assert_eq!(val_to_i64(&pop_base_known_nonempty(p)), 1);
     }
 
     #[test]
@@ -1552,7 +1506,7 @@ mod tests {
         stack_push(p, val_from_i32(3));
         // add: r1=3, r2=7, push r2+r1=10 (replaces top)
         stack_add(p);
-        assert_eq!(val_to_i64(&list_pop(p)), 10);
+        assert_eq!(val_to_i64(&pop_base_known_nonempty(p)), 10);
     }
 
     #[test]
@@ -1563,9 +1517,9 @@ mod tests {
         queue_push(p, val_from_i32(1));
         queue_push(p, val_from_i32(2));
         queue_push(p, val_from_i32(3));
-        assert_eq!(val_to_i64(&list_pop(p)), 1);
-        assert_eq!(val_to_i64(&list_pop(p)), 2);
-        assert_eq!(val_to_i64(&list_pop(p)), 3);
+        assert_eq!(val_to_i64(&pop_base_known_nonempty(p)), 1);
+        assert_eq!(val_to_i64(&pop_base_known_nonempty(p)), 2);
+        assert_eq!(val_to_i64(&pop_base_known_nonempty(p)), 3);
     }
 
     #[test]
@@ -1577,6 +1531,6 @@ mod tests {
         queue_push(p, val_from_i32(3));
         // Queue::add pops front twice (r1=7, r2=3), pushes r2+r1=10 to back.
         queue_add(p);
-        assert_eq!(val_to_i64(&list_pop(p)), 10);
+        assert_eq!(val_to_i64(&pop_base_known_nonempty(p)), 10);
     }
 }
