@@ -345,22 +345,24 @@ pub fn stack_dup(stack: usize) {
     stack.size = stack.size + 1u32;
 }
 
+// linkedlist.py:30-33: `swap` is defined once on `LinkedList` and every
+// storage inherits it -- it exchanges the two leading values and touches
+// nothing a subclass adds.  Taking the base as its parameter is the same
+// statement in this file's vocabulary, where the per-storage twins it
+// replaces differed only in the type they named.
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
-        stack: ref(super::linkedlist::Stack),
+        list: ref(super::linkedlist::ListBase),
     },
     ref_fields = {
         super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     headerless_structs = { super::linkedlist::Node, },
-    inlined_prefix = {
-        super::linkedlist::Stack::base => super::linkedlist::ListBase,
-    },
 )]
-pub fn stack_swap(stack: usize) {
-    let node1 = stack.head;
+pub fn list_swap(list: usize) {
+    let node1 = list.head;
     let node2 = node1.next;
     let v1 = node1.value;
     let v2 = node2.value;
@@ -902,29 +904,6 @@ pub fn queue_dup(queue: usize) {
     };
     queue.head = new_node;
     queue.size = queue.size + 1u32;
-}
-
-#[inline(always)]
-#[majit_macros::jit_inline(
-    ref_params = {
-        queue: ref(super::linkedlist::Queue),
-    },
-    ref_fields = {
-        super::linkedlist::ListBase::head => super::linkedlist::Node,
-        super::linkedlist::Node::next => super::linkedlist::Node,
-    },
-    headerless_structs = { super::linkedlist::Node, },
-    inlined_prefix = {
-        super::linkedlist::Queue::base => super::linkedlist::ListBase,
-    },
-)]
-pub fn queue_swap(queue: usize) {
-    let node1 = queue.head;
-    let node2 = node1.next;
-    let v1 = node1.value;
-    let v2 = node2.value;
-    node1.value = v2;
-    node2.value = v1;
 }
 
 #[cfg(feature = "bigint-backend")]

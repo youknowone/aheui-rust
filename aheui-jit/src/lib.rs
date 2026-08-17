@@ -1046,10 +1046,11 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         Program::get_op => elidable_int_cannot_raise,
         Program::get_label => elidable_int_cannot_raise,
         Program::get_operand => elidable_int_cannot_raise,
-        // Monomorphic storage helpers. The hot Stack ops and the
-        // cold queue_pop/queue_swap are `#[jit_inline]` (inline_int /
-        // inline_void), so the lowerer splices their field-level body into
-        // the trace; queue div/mod stay residual — a concrete
+        // Monomorphic storage helpers. The hot Stack ops, the cold queue_pop
+        // and the storage-independent list_swap are `#[jit_inline]`
+        // (inline_int / inline_void), so the lowerer splices their
+        // field-level body into the trace; queue div/mod stay residual — a
+        // concrete
         // `call_void_args` / `call_int_args` — rather than silent-skipping
         // the storage op. Their stack twins are not registered because the
         // arms hand-inline the pop and call `val_div`/`val_mod` on the
@@ -1064,7 +1065,6 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::stack_sub => inline_void,
         lj::stack_mul => inline_void,
         lj::stack_dup => inline_void,
-        lj::stack_swap => inline_void,
         lj::stack_cmp => inline_void,
         lj::queue_push => inline_void,
         lj::queue_pop => inline_int,
@@ -1074,8 +1074,10 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::queue_div => residual_void,
         lj::queue_mod => residual_void,
         lj::queue_dup => inline_void,
-        lj::queue_swap => inline_void,
         lj::queue_cmp => inline_void,
+        // Named by neither family: its parameter is the base the three
+        // storages embed, so one registration covers every selection.
+        lj::list_swap => inline_void,
         // Mode-0 twins of the arithmetic helpers, selected on the `bm` green.
         // All inline, including div and mod, which are residual above: their
         // mode-0 form carries a guard that only survives inside the trace.
@@ -1630,11 +1632,13 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_SWAP => {
                 if stackok {
-                    if is_queue {
-                        lj::queue_swap(state.selected_ref);
-                    } else {
-                        lj::stack_swap(state.selected_ref);
-                    }
+                    // linkedlist.py:30-33: one `swap` on `LinkedList`, which
+                    // every storage inherits unchanged. The split this replaces
+                    // was not dispatch -- the two helpers were identical -- it
+                    // was what kept a queue-specialized trace touching `head`
+                    // only under descriptors minted for `Queue`. `head` is
+                    // declared once now, so the arm can say what rpaheui says.
+                    lj::list_swap(state.selected_ref);
                 }
             }
             OP_SEL => {
