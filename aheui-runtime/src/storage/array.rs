@@ -17,10 +17,14 @@
 //!   `linkedlist.py:134-145` keeps and that `Port::dup` reads.
 //!
 //! Layout: every pool is `#[repr(C)]` with the buffer base pointer at offset 0
-//! and the element count at offset 8, so `Storage::pools` can keep punning all
-//! three through one pointer type exactly as it does for the linked list. The
-//! buffer is a hand-rolled allocation rather than a `Vec` field: `Vec`'s field
-//! order is unspecified, and the JIT bakes in `offset_of!` for the base.
+//! and the element count at offset 8, so one pointer type could address all
+//! three. Reaching a field that way is a reinterpretation of one pool as
+//! another, which is not how the linked-list backend does it: there the two
+//! shared words are declared on a base each storage embeds at offset 0, and an
+//! access resolves against that base. Giving this backend the same treatment
+//! is owed work whenever it acquires a consumer. The buffer is a hand-rolled
+//! allocation rather than a `Vec` field: `Vec`'s field order is unspecified,
+//! and the JIT bakes in `offset_of!` for the base.
 //!
 //! Growth may reallocate. Any operation that can push may move the buffer, so a
 //! base pointer read before a push must not be reused after it. The linked
