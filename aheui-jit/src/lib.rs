@@ -633,7 +633,7 @@ impl AheuiState {
         }
         dump.push_str(&format!(
             " queue.tail={:?} port.head={:?}",
-            self.storage.queue.tail, self.storage.port.head,
+            self.storage.queue.tail, self.storage.port.base.head,
         ));
         dump
     }
@@ -998,9 +998,10 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // instead of _gc_i (int-kind) when accessing these fields through a
     // ref(T) state scalar or a local ref binding.
     ref_fields = {
-        aheui_runtime::storage::linkedlist::Stack::head => aheui_runtime::storage::linkedlist::Node,
-        aheui_runtime::storage::linkedlist::Queue::head => aheui_runtime::storage::linkedlist::Node,
-        aheui_runtime::storage::linkedlist::Port::head => aheui_runtime::storage::linkedlist::Node,
+        // Declared once, on the type that owns it.  A `Stack`, `Queue` or
+        // `Port` access resolves onto `ListBase` and so mints one descriptor
+        // for the one word, whichever of the three it was spelled through.
+        aheui_runtime::storage::linkedlist::ListBase::head => aheui_runtime::storage::linkedlist::Node,
         aheui_runtime::storage::linkedlist::Node::next => aheui_runtime::storage::linkedlist::Node,
         // Declared for the same reason as the `Queue`/`Port` entries in
         // `int_fields`: the `residual_writes` group below mints this word from
@@ -1015,16 +1016,15 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // `intbounds` can bound a load of it. Without a bound the depth's `+ 1`
     // may overflow, the sum goes rangeless, and the `stackok` check has to be
     // guarded again at every opcode instead of following from the last one.
-    // `Queue`/`Port` are named here for the `residual_writes` aliases below,
-    // not for any access site: a field key is built from the declared type of
-    // the base an access goes through, and the only such type here is `Stack`.
-    // The alias entries mint the write-set descr under each nominal struct, so
-    // dropping either name would leave a residual Queue/Port mutation unable to
-    // invalidate the descr a specialized trace cached.
     int_fields = {
-        aheui_runtime::storage::linkedlist::Stack::size => u32,
-        aheui_runtime::storage::linkedlist::Queue::size => u32,
-        aheui_runtime::storage::linkedlist::Port::size => u32,
+        aheui_runtime::storage::linkedlist::ListBase::size => u32,
+    },
+    // The three storages embed `ListBase` as their leading field, so a field
+    // they do not declare themselves is resolved against it.
+    inlined_prefix = {
+        aheui_runtime::storage::linkedlist::Stack::base => aheui_runtime::storage::linkedlist::ListBase,
+        aheui_runtime::storage::linkedlist::Queue::base => aheui_runtime::storage::linkedlist::ListBase,
+        aheui_runtime::storage::linkedlist::Port::base => aheui_runtime::storage::linkedlist::ListBase,
     },
     struct_allocs = { aheui_runtime::storage::linkedlist::Node => jit_alloc_node },
     headerless_structs = { aheui_runtime::storage::linkedlist::Node },
@@ -1141,6 +1141,10 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // traced setfield barriers. The lists are
     // conservative supersets because an extra reload is harmless while a
     // missing invalidation is not.
+    // The `@ Struct` alias groups this used to carry are gone: `head` and
+    // `size` are declared once, on the type that owns them, so there is one
+    // descriptor per word to invalidate rather than one per nominal struct
+    // an access might be spelled through.
     residual_writes = {
         selected_ref.size => [
             lj::queue_push, lj::queue_add, lj::queue_sub,
@@ -1148,38 +1152,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
             lj::queue_cmp,
             jit_storage_push, jit_storage_dup,
         ],
-        // `Storage::pools` type-puns its `*mut Stack` slots over Stack,
-        // Queue, and Port.  All three share size@8, but the JIT's field
-        // descr identity includes the nominal struct type.  Register every
-        // compatible layout so a residual mutation invalidates whichever
-        // getfield descriptor the specialized trace cached.
-        selected_ref.size @ aheui_runtime::storage::linkedlist::Queue => [
-            lj::queue_push, lj::queue_add, lj::queue_sub,
-            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
-            lj::queue_cmp,
-            jit_storage_push, jit_storage_dup,
-        ],
-        selected_ref.size @ aheui_runtime::storage::linkedlist::Port => [
-            lj::queue_push, lj::queue_add, lj::queue_sub,
-            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
-            lj::queue_cmp,
-            jit_storage_push, jit_storage_dup,
-        ],
         selected_ref.head => [
-            lj::queue_push, lj::queue_add, lj::queue_sub,
-            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
-            lj::queue_cmp,
-            jit_storage_push, jit_storage_dup,
-        ],
-        // See the size aliases above.  Missing one of these nominal descrs
-        // lets a cached pre-call head survive an opaque Queue/Port mutation.
-        selected_ref.head @ aheui_runtime::storage::linkedlist::Queue => [
-            lj::queue_push, lj::queue_add, lj::queue_sub,
-            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
-            lj::queue_cmp,
-            jit_storage_push, jit_storage_dup,
-        ],
-        selected_ref.head @ aheui_runtime::storage::linkedlist::Port => [
             lj::queue_push, lj::queue_add, lj::queue_sub,
             lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
             lj::queue_cmp,

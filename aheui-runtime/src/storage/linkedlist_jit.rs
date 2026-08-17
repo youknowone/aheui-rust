@@ -25,13 +25,16 @@ use crate::value::*;
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
     },
     struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_push(stack: usize, value: Val) {
     let old_head = stack.head;
@@ -49,16 +52,19 @@ pub fn stack_push(stack: usize, value: Val) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
         free_node_jit => concrete_only_void,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_pop(stack: usize) -> Val {
     let top_node = stack.head;
@@ -77,10 +83,10 @@ pub fn stack_pop(stack: usize) -> Val {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -90,6 +96,9 @@ pub fn stack_pop(stack: usize) -> Val {
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_add(stack: usize) {
     let top_node = stack.head;
@@ -114,10 +123,10 @@ pub fn stack_add(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -126,6 +135,9 @@ pub fn stack_add(stack: usize) {
     },
     native_int_binops = { val_add => IntAdd },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_add(stack: usize) {
     let top_node = stack.head;
@@ -145,10 +157,10 @@ pub fn stack_add(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -158,6 +170,9 @@ pub fn stack_add(stack: usize) {
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_sub(stack: usize) {
     let top_node = stack.head;
@@ -182,10 +197,10 @@ pub fn stack_sub(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -194,6 +209,9 @@ pub fn stack_sub(stack: usize) {
     },
     native_int_binops = { val_sub => IntSub },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_sub(stack: usize) {
     let top_node = stack.head;
@@ -213,10 +231,10 @@ pub fn stack_sub(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -226,6 +244,9 @@ pub fn stack_sub(stack: usize) {
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_mul(stack: usize) {
     let top_node = stack.head;
@@ -259,10 +280,10 @@ pub fn stack_mul(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -271,6 +292,9 @@ pub fn stack_mul(stack: usize) {
     },
     native_int_binops = { val_mul => IntMul },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_mul(stack: usize) {
     let top_node = stack.head;
@@ -299,13 +323,16 @@ pub fn stack_mod(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
     },
     struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_dup(stack: usize) {
     let head = stack.head;
@@ -324,10 +351,13 @@ pub fn stack_dup(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_swap(stack: usize) {
     let node1 = stack.head;
@@ -345,10 +375,10 @@ pub fn stack_swap(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -358,6 +388,9 @@ pub fn stack_swap(stack: usize) {
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_cmp(stack: usize) {
     let top_node = stack.head;
@@ -381,16 +414,19 @@ pub fn stack_cmp(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
         free_node_jit => concrete_only_void,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_cmp(stack: usize) {
     let top_node = stack.head;
@@ -443,7 +479,7 @@ pub fn val_ge_jit(a: Val, b: Val) -> Val {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
         super::linkedlist::Queue::tail => super::linkedlist::Node,
@@ -454,6 +490,9 @@ pub fn val_ge_jit(a: Val, b: Val) -> Val {
         val_from_i32 => elidable_int_cannot_raise,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_push(queue: usize, value: Val) {
     // linkedlist.py:103-110 Queue.push — write the value into the current tail
@@ -481,16 +520,19 @@ pub fn queue_push(queue: usize, value: Val) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
         free_node_jit => concrete_only_void,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_pop(queue: usize) -> Val {
     let top_node = queue.head;
@@ -516,10 +558,10 @@ pub fn queue_pop(queue: usize) -> Val {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -532,6 +574,9 @@ pub fn queue_pop(queue: usize) -> Val {
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_add(queue: usize) {
     let n1 = queue.head;
@@ -567,10 +612,10 @@ pub fn queue_add(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -582,6 +627,9 @@ pub fn queue_add(queue: usize) {
     },
     native_int_binops = { val_add => IntAdd },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_add(queue: usize) {
     let n1 = queue.head;
@@ -612,10 +660,10 @@ pub fn queue_add(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -628,6 +676,9 @@ pub fn queue_add(queue: usize) {
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_sub(queue: usize) {
     let n1 = queue.head;
@@ -663,10 +714,10 @@ pub fn queue_sub(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -678,6 +729,9 @@ pub fn queue_sub(queue: usize) {
     },
     native_int_binops = { val_sub => IntSub },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_sub(queue: usize) {
     let n1 = queue.head;
@@ -708,10 +762,10 @@ pub fn queue_sub(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -724,6 +778,9 @@ pub fn queue_sub(queue: usize) {
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_mul(queue: usize) {
     let n1 = queue.head;
@@ -764,10 +821,10 @@ pub fn queue_mul(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -779,6 +836,9 @@ pub fn queue_mul(queue: usize) {
     },
     native_int_binops = { val_mul => IntMul },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_mul(queue: usize) {
     let n1 = queue.head;
@@ -818,13 +878,16 @@ pub fn queue_mod(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
     },
     struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_dup(queue: usize) {
     // linkedlist.py:112-116 Queue.dup — duplicate the head node (front). Same
@@ -847,10 +910,13 @@ pub fn queue_dup(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_swap(queue: usize) {
     let node1 = queue.head;
@@ -868,10 +934,10 @@ pub fn queue_swap(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -884,6 +950,9 @@ pub fn queue_swap(queue: usize) {
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_cmp(queue: usize) {
     let n1 = queue.head;
@@ -918,10 +987,10 @@ pub fn queue_cmp(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -931,6 +1000,9 @@ pub fn queue_cmp(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_cmp(queue: usize) {
     let n1 = queue.head;
@@ -985,10 +1057,10 @@ pub fn queue_cmp(queue: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -996,6 +1068,9 @@ pub fn queue_cmp(queue: usize) {
         val_add => elidable_int,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_add_raw(stack: usize) {
     let top_node = stack.head;
@@ -1018,10 +1093,10 @@ pub fn stack_add_raw(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -1029,6 +1104,9 @@ pub fn stack_add_raw(stack: usize) {
         val_sub => elidable_int,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_sub_raw(stack: usize) {
     let top_node = stack.head;
@@ -1051,10 +1129,10 @@ pub fn stack_sub_raw(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -1062,6 +1140,9 @@ pub fn stack_sub_raw(stack: usize) {
         val_mul => elidable_int,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_mul_raw(stack: usize) {
     let top_node = stack.head;
@@ -1084,10 +1165,10 @@ pub fn stack_mul_raw(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -1096,6 +1177,9 @@ pub fn stack_mul_raw(stack: usize) {
     },
     native_int_binops = { val_ge_raw => IntGe },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_cmp_raw(stack: usize) {
     let top_node = stack.head;
@@ -1115,10 +1199,10 @@ pub fn stack_cmp_raw(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -1127,6 +1211,9 @@ pub fn stack_cmp_raw(stack: usize) {
         val_div_raw => elidable_int_cannot_raise,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_div_raw(stack: usize) {
     let top_node = stack.head;
@@ -1155,10 +1242,10 @@ pub fn stack_div_raw(stack: usize) {
         stack: ref(super::linkedlist::Stack),
     },
     int_fields = {
-        super::linkedlist::Stack::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Stack::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
     calls = {
@@ -1166,6 +1253,9 @@ pub fn stack_div_raw(stack: usize) {
         val_mod_raw => elidable_int_cannot_raise,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Stack::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn stack_mod_raw(stack: usize) {
     let top_node = stack.head;
@@ -1186,10 +1276,10 @@ pub fn stack_mod_raw(stack: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -1200,6 +1290,9 @@ pub fn stack_mod_raw(stack: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_add_raw(queue: usize) {
     let n1 = queue.head;
@@ -1233,10 +1326,10 @@ pub fn queue_add_raw(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -1247,6 +1340,9 @@ pub fn queue_add_raw(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_sub_raw(queue: usize) {
     let n1 = queue.head;
@@ -1280,10 +1376,10 @@ pub fn queue_sub_raw(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -1294,6 +1390,9 @@ pub fn queue_sub_raw(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_mul_raw(queue: usize) {
     let n1 = queue.head;
@@ -1327,10 +1426,10 @@ pub fn queue_mul_raw(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -1342,6 +1441,9 @@ pub fn queue_mul_raw(queue: usize) {
     },
     native_int_binops = { val_ge_raw => IntGe },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_cmp_raw(queue: usize) {
     let n1 = queue.head;
@@ -1372,10 +1474,10 @@ pub fn queue_cmp_raw(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -1387,6 +1489,9 @@ pub fn queue_cmp_raw(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_div_raw(queue: usize) {
     let n1 = queue.head;
@@ -1422,10 +1527,10 @@ pub fn queue_div_raw(queue: usize) {
         queue: ref(super::linkedlist::Queue),
     },
     int_fields = {
-        super::linkedlist::Queue::size => u32,
+        super::linkedlist::ListBase::size => u32,
     },
     ref_fields = {
-        super::linkedlist::Queue::head => super::linkedlist::Node,
+        super::linkedlist::ListBase::head => super::linkedlist::Node,
         super::linkedlist::Queue::tail => super::linkedlist::Node,
         super::linkedlist::Node::next => super::linkedlist::Node,
     },
@@ -1436,6 +1541,9 @@ pub fn queue_div_raw(queue: usize) {
         alloc_node_jit => nursery_alloc_ref,
     },
     headerless_structs = { super::linkedlist::Node, },
+    inlined_prefix = {
+        super::linkedlist::Queue::base => super::linkedlist::ListBase,
+    },
 )]
 pub fn queue_mod_raw(queue: usize) {
     let n1 = queue.head;

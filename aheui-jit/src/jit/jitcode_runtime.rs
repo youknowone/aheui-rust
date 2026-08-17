@@ -69,19 +69,19 @@ pub fn prebuild_pipeline_liveness(assembler: &mut majit_metainterp::Assembler) {
 // definitions. The graph pipeline lowers the shared LinkedList accessors as
 // host calls, so these shims expose that prefix through the call-stub C ABI.
 extern "C" fn linked_list_head(storage: usize) -> i64 {
-    unsafe { (*(storage as *const Stack)).head as i64 }
+    unsafe { (*(storage as *const Stack)).base.head as i64 }
 }
 
 extern "C" fn linked_list_set_head(storage: usize, head: i64) {
-    unsafe { (*(storage as *mut Stack)).head = head as *mut Node };
+    unsafe { (*(storage as *mut Stack)).base.head = head as *mut Node };
 }
 
 extern "C" fn linked_list_size(storage: usize) -> i64 {
-    unsafe { (*(storage as *const Stack)).size as i64 }
+    unsafe { (*(storage as *const Stack)).base.size as i64 }
 }
 
 extern "C" fn linked_list_set_size(storage: usize, size: i64) {
-    unsafe { (*(storage as *mut Stack)).size = size as u32 };
+    unsafe { (*(storage as *mut Stack)).base.size = size as u32 };
 }
 
 extern "C" fn linked_list_free_node(node: usize) {

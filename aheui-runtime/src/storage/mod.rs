@@ -415,11 +415,11 @@ impl Nursery {
         for i in 0..STORAGE_COUNT {
             let stackp = storage.pools[i];
             if !stackp.is_null() {
-                self.forward_root(&mut copy, unsafe { std::ptr::addr_of_mut!((*stackp).head) });
+                self.forward_root(&mut copy, unsafe { std::ptr::addr_of_mut!((*stackp).base.head) });
             }
         }
         self.forward_root(&mut copy, std::ptr::addr_of_mut!(storage.queue.tail));
-        self.forward_root(&mut copy, std::ptr::addr_of_mut!(storage.port.head));
+        self.forward_root(&mut copy, std::ptr::addr_of_mut!(storage.port.base.head));
 
         let hook_addr = NODE_ROOT_WALK_HOOK.load(Ordering::Relaxed);
         if hook_addr != 0 {
@@ -677,11 +677,11 @@ pub fn walk_bigint_root_values(visit: &mut dyn FnMut(&mut Val)) {
         let storage = unsafe { &mut *(storage_addr as *mut Storage) };
         for i in 0..STORAGE_COUNT {
             if i != VAL_QUEUE && i != VAL_PORT {
-                walk_node_chain(storage.stacks[i].head, visit);
+                walk_node_chain(storage.stacks[i].base.head, visit);
             }
         }
-        walk_node_chain(storage.queue.head, visit);
-        walk_node_chain(storage.port.head, visit);
+        walk_node_chain(storage.queue.base.head, visit);
+        walk_node_chain(storage.port.base.head, visit);
         visit(&mut storage.port.last_push);
     }
 
@@ -1128,14 +1128,14 @@ impl Storage {
         for (i, &(sidx, _)) in storage_layout.iter().enumerate() {
             if let Some(&head_raw) = heads.get(i) {
                 let stack = unsafe { &mut *self.pools[sidx] };
-                stack.head = head_raw as *mut linkedlist::Node;
+                stack.base.head = head_raw as *mut linkedlist::Node;
                 let mut count = 0usize;
-                let mut cur = stack.head;
+                let mut cur = stack.base.head;
                 while !cur.is_null() {
                     count += 1;
                     cur = unsafe { (*cur).next };
                 }
-                stack.size = count as u32;
+                stack.base.size = count as u32;
             }
         }
     }
@@ -1370,7 +1370,7 @@ mod tests {
             "stack pushes did not trigger copying collection"
         );
         assert_chain_in_current_chunks(
-            storage.stack(stack_idx).head,
+            storage.stack(stack_idx).base.head,
             STACK_VALUES as usize,
             "stack",
         );
@@ -1382,7 +1382,7 @@ mod tests {
             COPYING_COLLECT_COUNT_FOR_TESTS.load(Ordering::Relaxed) > 1,
             "queue pushes did not trigger copying collection"
         );
-        assert_chain_in_current_chunks(storage.queue().head, QUEUE_VALUES as usize + 1, "queue");
+        assert_chain_in_current_chunks(storage.queue().base.head, QUEUE_VALUES as usize + 1, "queue");
 
         assert_eq!(storage.stack(stack_idx).__len__(), STACK_VALUES as usize);
         for expected in (0..STACK_VALUES).rev() {
@@ -1398,6 +1398,6 @@ mod tests {
             assert_eq!(val_to_i64(&storage.queue_mut().pop()), expected as i64);
         }
         assert_eq!(storage.queue().__len__(), 0);
-        assert_chain_in_current_chunks(storage.queue().head, 1, "queue sentinel");
+        assert_chain_in_current_chunks(storage.queue().base.head, 1, "queue sentinel");
     }
 }

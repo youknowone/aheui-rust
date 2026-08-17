@@ -63,12 +63,65 @@ pub const NODE_NEXT_OFFSET: usize = 8;
 // `head`/`size` accessors and the two `_get_2_values`/`_put_value`
 // hooks. The arithmetic methods (`add` ... `cmp`), `pop`, `swap` and
 // `__len__` follow the Python default implementations.
+/// The fields `LinkedList` declares, as a struct the subclasses embed.
+///
+/// `linkedlist.py:15-17` puts `head` and `size` on `LinkedList` itself, and
+/// `rclass.py:548` lays a subclass out as `MkStruct(name, ('super',
+/// rbase.object_type), *own_fields)` — the base is a real type inlined as the
+/// leading field, not a layout the subclasses each happen to repeat.  Spelling
+/// it that way here is what lets one physical `head` word carry one field
+/// descriptor for all three storages: `rclass.py:987-1001` resolves a field
+/// against the struct that DECLARES it, so `Stack`, `Queue` and `Port` accesses
+/// all name this type.
+///
+/// Named `ListBase` rather than `LinkedList` because that name is taken by the
+/// trait below, which carries the other half of the Python class — its methods.
+#[repr(C)]
+pub struct ListBase {
+    pub head: *mut Node,
+    /// The element count.  `u32`, not `usize`, so the JIT's field descr is
+    /// sub-word and `intbounds` can bound a load of it: with no upper bound a
+    /// depth `+ 1` may overflow, the sum goes rangeless, and every re-check of
+    /// the depth has to be guarded again.  A list is a chain of 16-byte nodes,
+    /// so 2^32 elements is 64 GiB of nodes.
+    pub size: u32,
+}
+
+impl ListBase {
+    pub fn new() -> Self {
+        ListBase {
+            head: std::ptr::null_mut(),
+            size: 0,
+        }
+    }
+}
+
+impl Default for ListBase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub trait LinkedList {
+    /// The inlined base every storage embeds as its leading field.  The
+    /// accessors below are derived from it once, where each subclass used to
+    /// repeat them over its own copies of the two fields.
+    fn base(&self) -> &ListBase;
+    fn base_mut(&mut self) -> &mut ListBase;
+
     // __slots__ accessors
-    fn head(&self) -> *mut Node;
-    fn set_head(&mut self, h: *mut Node);
-    fn size(&self) -> usize;
-    fn set_size(&mut self, s: usize);
+    fn head(&self) -> *mut Node {
+        self.base().head
+    }
+    fn set_head(&mut self, h: *mut Node) {
+        self.base_mut().head = h;
+    }
+    fn size(&self) -> usize {
+        self.base().size as usize
+    }
+    fn set_size(&mut self, s: usize) {
+        self.base_mut().size = s as u32;
+    }
 
     // Subclass-supplied (Python: overridden in Stack/Queue/Port).
     fn push(&mut self, value: Val);
@@ -165,13 +218,7 @@ pub trait LinkedList {
 //     __slots__ = ('head', 'size')
 #[repr(C)]
 pub struct Stack {
-    pub head: *mut Node,
-    /// The element count.  `u32`, not `usize`, so the JIT's field descr is
-    /// sub-word and `intbounds` can bound a load of it: with no upper bound a
-    /// depth `+ 1` may overflow, the sum goes rangeless, and every re-check of
-    /// the depth has to be guarded again.  A list is a chain of 16-byte nodes,
-    /// so 2^32 elements is 64 GiB of nodes.
-    pub size: u32,
+    pub base: ListBase,
 }
 
 impl Default for Stack {
@@ -186,25 +233,16 @@ impl Stack {
     //     self.head = None
     //     self.size = 0
     pub fn new() -> Self {
-        Stack {
-            head: std::ptr::null_mut(),
-            size: 0,
-        }
+        Stack { base: ListBase::new() }
     }
 }
 
 impl LinkedList for Stack {
-    fn head(&self) -> *mut Node {
-        self.head
+    fn base(&self) -> &ListBase {
+        &self.base
     }
-    fn set_head(&mut self, h: *mut Node) {
-        self.head = h;
-    }
-    fn size(&self) -> usize {
-        self.size as usize
-    }
-    fn set_size(&mut self, s: usize) {
-        self.size = s as u32;
+    fn base_mut(&mut self) -> &mut ListBase {
+        &mut self.base
     }
 
     // linkedlist.py:76-80
@@ -216,9 +254,9 @@ impl LinkedList for Stack {
         let rooted = value;
         let mut root = rooted;
         with_bigint_transient_root(&mut root, || {
-            let node = alloc_node(rooted, self.head);
-            self.head = node;
-            self.size += 1;
+            let node = alloc_node(rooted, self.base.head);
+            self.base.head = node;
+            self.base.size += 1;
             maybe_collect_bigints();
         });
     }
@@ -226,8 +264,8 @@ impl LinkedList for Stack {
     // linkedlist.py:82-83
     // def dup(self): self.push(self.head.value)
     fn dup(&mut self) {
-        assert!(!self.head.is_null(), "dup on empty stack");
-        let top = unsafe { (*self.head).value };
+        assert!(!self.base.head.is_null(), "dup on empty stack");
+        let top = unsafe { (*self.base.head).value };
         self.push(top);
     }
 
@@ -235,8 +273,8 @@ impl LinkedList for Stack {
     // def _get_2_values(self): return self.pop(), self.head.value
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
-        assert!(!self.head.is_null(), "_get_2_values on <2 elements");
-        let r2 = unsafe { (*self.head).value };
+        assert!(!self.base.head.is_null(), "_get_2_values on <2 elements");
+        let r2 = unsafe { (*self.base.head).value };
         (r1, r2)
     }
 
@@ -247,7 +285,7 @@ impl LinkedList for Stack {
         let mut root = rooted;
         with_bigint_transient_root(&mut root, || {
             unsafe {
-                (*self.head).value = rooted;
+                (*self.base.head).value = rooted;
             }
             maybe_collect_bigints();
         });
@@ -259,9 +297,7 @@ impl LinkedList for Stack {
 //     __slots__ = ('head', 'tail', 'size')
 #[repr(C)]
 pub struct Queue {
-    pub head: *mut Node,
-    /// The element count, narrowed for the same reason as [`Stack::size`].
-    pub size: u32,
+    pub base: ListBase,
     pub tail: *mut Node,
 }
 
@@ -280,25 +316,21 @@ impl Queue {
     pub fn new() -> Self {
         let sentinel = alloc_node(val_from_i32(0), std::ptr::null_mut());
         Queue {
-            head: sentinel,
-            size: 0,
+            base: ListBase {
+                head: sentinel,
+                size: 0,
+            },
             tail: sentinel,
         }
     }
 }
 
 impl LinkedList for Queue {
-    fn head(&self) -> *mut Node {
-        self.head
+    fn base(&self) -> &ListBase {
+        &self.base
     }
-    fn set_head(&mut self, h: *mut Node) {
-        self.head = h;
-    }
-    fn size(&self) -> usize {
-        self.size as usize
-    }
-    fn set_size(&mut self, s: usize) {
-        self.size = s as u32;
+    fn base_mut(&mut self) -> &mut ListBase {
+        &mut self.base
     }
 
     // linkedlist.py:103-110
@@ -327,7 +359,7 @@ impl LinkedList for Queue {
                 (*tail).next = new;
             }
             self.tail = new;
-            self.size += 1;
+            self.base.size += 1;
             maybe_collect_bigints();
         });
     }
@@ -339,12 +371,12 @@ impl LinkedList for Queue {
     //     self.head = node
     //     self.size += 1
     fn dup(&mut self) {
-        let head = self.head;
+        let head = self.base.head;
         assert!(!head.is_null(), "dup on empty queue");
         let head_value = unsafe { (*head).value };
         let node = alloc_node(head_value, head);
-        self.head = node;
-        self.size += 1;
+        self.base.head = node;
+        self.base.size += 1;
     }
 
     // linkedlist.py:118-119
@@ -367,54 +399,25 @@ impl LinkedList for Queue {
 //     __slots__ = ('head', 'size', 'last_push')
 #[repr(C)]
 pub struct Port {
-    pub head: *mut Node,
-    /// The element count, narrowed for the same reason as [`Stack::size`].
-    pub size: u32,
+    pub base: ListBase,
     pub last_push: Val,
 }
 
-/// The three storages share a `{ head, size }` prefix, and the JIT depends on
-/// it: `pools[selected]` is declared to load a `*mut Stack`, so a selected
-/// queue or port is read at `Stack`'s offsets for as long as it stays in the
-/// trace.  `#[repr(C)]` does not promise this by itself — it fixes each layout
-/// independently, and nothing relates one to another.  Widening `Stack::size`,
-/// or inserting a field ahead of `Queue::size`, would compile clean here and
-/// leave the JIT reading a queue's `head` word as its element count.
+/// The three storages embed `ListBase` as their leading field, and the JIT
+/// depends on it: an access spelled `queue.head` is resolved against the struct
+/// that declares `head`, and the resulting offset is applied to the pointer the
+/// access already had.  That names the right word only if the base starts at
+/// zero.  `lltype.py:296-305` admits an inlined substructure on the same terms.
 ///
-/// Stated as one assert per shared field rather than a size comparison: two
-/// layouts can agree on total size and disagree on where a field sits.
+/// Sharing the fields by declaring one type is stronger than the offset and
+/// width asserts this replaced.  Those compared three independently-written
+/// layouts and could only report a drift after the fact; there is now one
+/// declaration of `head` and `size`, so there is nothing left to drift.
 const _: () = assert!(
-    core::mem::offset_of!(Stack, head) == core::mem::offset_of!(Queue, head)
-        && core::mem::offset_of!(Stack, head) == core::mem::offset_of!(Port, head),
+    core::mem::offset_of!(Stack, base) == 0
+        && core::mem::offset_of!(Queue, base) == 0
+        && core::mem::offset_of!(Port, base) == 0,
 );
-const _: () = assert!(
-    core::mem::offset_of!(Stack, size) == core::mem::offset_of!(Queue, size)
-        && core::mem::offset_of!(Stack, size) == core::mem::offset_of!(Port, size),
-);
-
-/// The other half of the same invariant: where the field starts is only half of
-/// which bytes it owns.
-///
-/// A field descr carries an offset AND a width, and the JIT registers one of
-/// each per field under `Stack`'s type id.  Equal offsets with unequal widths
-/// still read a queue's next word as part of its count — the failure the
-/// offsets above are asserted against, arriving from the other side.
-///
-/// Written against the fields rather than the types they are declared as, so
-/// that renaming `Stack::size`'s type does not quietly retire the check.
-const _: () = {
-    const fn width<S, T>(_: fn(&S) -> T) -> usize {
-        core::mem::size_of::<T>()
-    }
-    assert!(
-        width(|s: &Stack| s.head) == width(|q: &Queue| q.head)
-            && width(|s: &Stack| s.head) == width(|p: &Port| p.head),
-    );
-    assert!(
-        width(|s: &Stack| s.size) == width(|q: &Queue| q.size)
-            && width(|s: &Stack| s.size) == width(|p: &Port| p.size),
-    );
-};
 
 impl Default for Port {
     fn default() -> Self {
@@ -430,25 +433,18 @@ impl Port {
     //     self.last_push = bigint.fromint(0)
     pub fn new() -> Self {
         Port {
-            head: std::ptr::null_mut(),
-            size: 0,
+            base: ListBase::new(),
             last_push: val_from_i32(0),
         }
     }
 }
 
 impl LinkedList for Port {
-    fn head(&self) -> *mut Node {
-        self.head
+    fn base(&self) -> &ListBase {
+        &self.base
     }
-    fn set_head(&mut self, h: *mut Node) {
-        self.head = h;
-    }
-    fn size(&self) -> usize {
-        self.size as usize
-    }
-    fn set_size(&mut self, s: usize) {
-        self.size = s as u32;
+    fn base_mut(&mut self) -> &mut ListBase {
+        &mut self.base
     }
 
     // linkedlist.py:134-139
@@ -461,9 +457,9 @@ impl LinkedList for Port {
         let rooted = value;
         let mut root = rooted;
         with_bigint_transient_root(&mut root, || {
-            let node = alloc_node(rooted, self.head);
-            self.head = node;
-            self.size += 1;
+            let node = alloc_node(rooted, self.base.head);
+            self.base.head = node;
+            self.base.size += 1;
             self.last_push = rooted;
             maybe_collect_bigints();
         });
@@ -479,8 +475,8 @@ impl LinkedList for Port {
     // def _get_2_values(self): return self.pop(), self.head.value
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
-        assert!(!self.head.is_null(), "_get_2_values on <2 elements");
-        let r2 = unsafe { (*self.head).value };
+        assert!(!self.base.head.is_null(), "_get_2_values on <2 elements");
+        let r2 = unsafe { (*self.base.head).value };
         (r1, r2)
     }
 
@@ -488,7 +484,7 @@ impl LinkedList for Port {
     // def _put_value(self, value): self.head.value = value
     fn _put_value(&mut self, value: Val) {
         unsafe {
-            (*self.head).value = value;
+            (*self.base.head).value = value;
         }
     }
 }
@@ -515,7 +511,7 @@ mod tests {
         s.push(val_from_i32(3));
         // add: r1=3, r2=10, result=13, replaces top
         s.add();
-        assert_eq!(s.size, 1);
+        assert_eq!(s.base.size, 1);
         assert_eq!(val_to_i64(&s.pop()), 13);
     }
 
@@ -525,7 +521,7 @@ mod tests {
         let mut s = Stack::new();
         s.push(val_from_i32(5));
         s.dup();
-        assert_eq!(s.size, 2);
+        assert_eq!(s.base.size, 2);
         s.push(val_from_i32(7));
         s.swap();
         assert_eq!(val_to_i64(&s.pop()), 5);
@@ -551,7 +547,7 @@ mod tests {
         q.push(val_from_i32(3));
         // add: r1=10 (front), r2=3 (front), result=13 pushed to back
         q.add();
-        assert_eq!(q.size, 1);
+        assert_eq!(q.base.size, 1);
         assert_eq!(val_to_i64(&q.pop()), 13);
     }
 
