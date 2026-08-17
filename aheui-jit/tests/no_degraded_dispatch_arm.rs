@@ -129,24 +129,8 @@ fn no_aheui_dispatch_arm_lowered_to_an_abort_stub() {
         stats.loops_aborted,
     );
 
-    let all = majit_metainterp::degraded_dispatch_arms();
-    let degraded: Vec<_> = all
-        .iter()
-        .filter(|arm| arm.interp == AHEUI_INTERP)
-        .collect();
-
-    assert!(
-        degraded.is_empty(),
-        "{} aheui dispatch arm(s) lowered to an abort stub. Every trace that \
-         reaches one aborts, so programs executing that opcode compile \
-         nothing:\n{}",
-        degraded.len(),
-        degraded
-            .iter()
-            .map(|arm| format!(
-                "  {}::{}\n    because: {}\n",
-                arm.interp, arm.arm, arm.reason
-            ))
-            .collect::<String>(),
-    );
+    // The assertion itself belongs to whoever owns the census, and it
+    // carries what a filter here cannot: the arm count the degraded ones
+    // are out of, and a panic when this machine has no census entry at all.
+    majit_metainterp::assert_no_degraded_dispatch_arms(AHEUI_INTERP);
 }
