@@ -21,7 +21,7 @@ use majit_metainterp::EmbeddedJitCodeTable;
 use majit_metainterp::JitCode as RuntimeJitCode;
 use majit_translate::jitcode::{BhDescr, JitCode};
 
-use aheui_runtime::storage::linkedlist::{Node, Stack};
+use aheui_runtime::storage::linkedlist::{ListBase, Node};
 
 /// Deserialize the build-time `pipeline.jitcodes` blob.
 fn load_pipeline_jitcodes() -> Vec<Arc<JitCode>> {
@@ -65,23 +65,23 @@ pub fn prebuild_pipeline_liveness(assembler: &mut majit_metainterp::Assembler) {
     assembler.prepend_embedded_liveness(BYTES);
 }
 
-// Stack, Queue, and Port have the same head/size prefix, asserted beside their
-// definitions. The graph pipeline lowers the shared LinkedList accessors as
-// host calls, so these shims expose that prefix through the call-stub C ABI.
+// The graph pipeline lowers the shared LinkedList accessors as host calls, so
+// these shims expose the base every storage embeds through the call-stub C ABI.
+// The pointer they receive is a `pools` element, which already names that base.
 extern "C" fn linked_list_head(storage: usize) -> i64 {
-    unsafe { (*(storage as *const Stack)).base.head as i64 }
+    unsafe { (*(storage as *const ListBase)).head as i64 }
 }
 
 extern "C" fn linked_list_set_head(storage: usize, head: i64) {
-    unsafe { (*(storage as *mut Stack)).base.head = head as *mut Node };
+    unsafe { (*(storage as *mut ListBase)).head = head as *mut Node };
 }
 
 extern "C" fn linked_list_size(storage: usize) -> i64 {
-    unsafe { (*(storage as *const Stack)).base.size as i64 }
+    unsafe { (*(storage as *const ListBase)).size as i64 }
 }
 
 extern "C" fn linked_list_set_size(storage: usize, size: i64) {
-    unsafe { (*(storage as *mut Stack)).base.size = size as u32 };
+    unsafe { (*(storage as *mut ListBase)).size = size as u32 };
 }
 
 extern "C" fn linked_list_free_node(node: usize) {

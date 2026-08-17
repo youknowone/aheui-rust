@@ -6,14 +6,14 @@
 //!
 //! The aggregate [`Storage`] below mirrors `rpaheui/aheui/aheui.py::class Storage`.
 //! RPython relies on Python duck typing and the GC to carry Stack/Queue/
-//! Port references inside `pools`. Rust can not store mixed subclass
-//! instances in a flat array, so we split them: a per-index `Stack`
-//! array plus a dedicated `Queue` (slot `VAL_QUEUE`) and `Port`
-//! (slot `VAL_PORT`). The `pools` indirection array gives the JIT and
-//! the interpreter a uniform `*mut Stack` handle compatible with the
-//! Stack/Queue head/size layout; polymorphic dispatch for push / dup /
-//! _get_2_values / _put_value still goes through the [`LinkedList`]
-//! trait via [`Storage::dispatch_mut`].
+//! Port references inside `pools`, where the element type is the common
+//! base. Rust can not store mixed subclass instances in a flat array, so we
+//! split them: a per-index `Stack` array plus a dedicated `Queue` (slot
+//! `VAL_QUEUE`) and `Port` (slot `VAL_PORT`). The `pools` indirection array
+//! restores the flat list by holding the address of the [`ListBase`] each
+//! storage embeds, which is that same element type; polymorphic dispatch for
+//! push / dup / _get_2_values / _put_value still goes through the
+//! [`LinkedList`] trait via [`Storage::dispatch_mut`].
 
 pub mod array;
 #[cfg(test)]
@@ -23,7 +23,7 @@ pub mod linkedlist;
 pub mod linkedlist_jit;
 
 pub use linkedlist::{
-    LinkedList, NODE_NEXT_OFFSET, NODE_SIZE, NODE_VALUE_OFFSET, Node, Port, Queue, Stack,
+    LinkedList, ListBase, NODE_NEXT_OFFSET, NODE_SIZE, NODE_VALUE_OFFSET, Node, Port, Queue, Stack,
 };
 
 use crate::aheui::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
@@ -413,9 +413,9 @@ impl Nursery {
 
         self.forward_root(&mut copy, keep as *mut *mut linkedlist::Node);
         for i in 0..STORAGE_COUNT {
-            let stackp = storage.pools[i];
-            if !stackp.is_null() {
-                self.forward_root(&mut copy, unsafe { std::ptr::addr_of_mut!((*stackp).base.head) });
+            let listp = storage.pools[i];
+            if !listp.is_null() {
+                self.forward_root(&mut copy, unsafe { std::ptr::addr_of_mut!((*listp).head) });
             }
         }
         self.forward_root(&mut copy, std::ptr::addr_of_mut!(storage.queue.tail));
@@ -882,12 +882,14 @@ fn init_nursery() {
 //     def __getitem__(self, idx):
 //         return self.pools[idx]
 //
-// Python stores mixed subclass instances in a flat `pools` list.
-// Rust splits them: a flat `Stack` array plus dedicated `Queue` / `Port`
-// fields. The `pools` indirection array gives the JIT a uniform
-// `*mut Stack`-compatible pointer for all 28 slots (Queue/Port share
-// the `head`/`size` prefix thanks to `#[repr(C)]`), while polymorphic
-// method dispatch still goes through the [`LinkedList`] trait.
+// Python stores mixed subclass instances in a flat `pools` list, so the
+// element type there is the common base. Rust splits the instances up: a flat
+// `Stack` array plus dedicated `Queue` / `Port` fields. The `pools`
+// indirection array puts the flat list back, holding the address of the
+// [`ListBase`] each of the 28 storages embeds -- the same element type the
+// Python list has, and a pointer each storage genuinely contains rather than a
+// reinterpretation of one storage's address as another's. Polymorphic method
+// dispatch still goes through the [`LinkedList`] trait.
 
 /// Size of `Stack` for JIT stride calculation.
 pub const STACK_SIZE: usize = std::mem::size_of::<Stack>();
@@ -908,9 +910,9 @@ pub struct Storage {
     /// may sit anywhere and moving it moves the load with it.  Immutable after
     /// construction (`pools` is fixed-size).
     pub pools_len: usize,
-    /// JIT indirection: `pools[idx]` returns a `*mut Stack`-compatible pointer.
-    /// Initialized to `&mut stacks[idx]` or `&mut queue`.
-    pub pools: [*mut Stack; STORAGE_COUNT],
+    /// JIT indirection: `pools[idx]` is the address of the [`ListBase`] the
+    /// storage at that index embeds.
+    pub pools: [*mut ListBase; STORAGE_COUNT],
     /// Flat array of `Stack` (one per index).
     pub stacks: [Stack; STORAGE_COUNT],
     /// Queue storage (slot `VAL_QUEUE`).
@@ -955,12 +957,11 @@ impl Storage {
     /// silently and `OP_SEL`'s `stacksize = len(selected)` reads 0.
     pub fn refresh_pools(&mut self) {
         for i in 0..STORAGE_COUNT {
-            self.pools[i] = &mut self.stacks[i] as *mut Stack;
+            self.pools[i] = &mut self.stacks[i].base as *mut ListBase;
         }
-        // VAL_QUEUE / VAL_PORT: alias &mut queue / &mut port (head/size share
-        // `#[repr(C)]` layout with Stack).
-        self.pools[VAL_QUEUE] = &mut self.queue as *mut Queue as *mut Stack;
-        self.pools[VAL_PORT] = &mut self.port as *mut Port as *mut Stack;
+        // VAL_QUEUE / VAL_PORT hold their own storage, not a `stacks` entry.
+        self.pools[VAL_QUEUE] = &mut self.queue.base as *mut ListBase;
+        self.pools[VAL_PORT] = &mut self.port.base as *mut ListBase;
     }
 
     /// Walk every storage's node chain and compare its length with the
@@ -1065,10 +1066,10 @@ impl Storage {
     //     return self.pools[idx]
     //
     // Rust needs two entry points: a thin raw-pointer version used by
-    // the JIT (`get_stack_ptr`) and a polymorphic trait-object version
+    // the JIT (`get_list_ptr`) and a polymorphic trait-object version
     // used by the interpreter for correct `Queue` / `Port` dispatch.
     #[inline(always)]
-    pub fn get_stack_ptr(&mut self, idx: usize) -> *mut Stack {
+    pub fn get_list_ptr(&mut self, idx: usize) -> *mut ListBase {
         debug_assert!(idx < STORAGE_COUNT);
         self.pools[idx]
     }
@@ -1127,15 +1128,15 @@ impl Storage {
     pub fn restore_heads(&mut self, storage_layout: &[(usize, usize)], heads: &[i64]) {
         for (i, &(sidx, _)) in storage_layout.iter().enumerate() {
             if let Some(&head_raw) = heads.get(i) {
-                let stack = unsafe { &mut *self.pools[sidx] };
-                stack.base.head = head_raw as *mut linkedlist::Node;
+                let list = unsafe { &mut *self.pools[sidx] };
+                list.head = head_raw as *mut linkedlist::Node;
                 let mut count = 0usize;
-                let mut cur = stack.base.head;
+                let mut cur = list.head;
                 while !cur.is_null() {
                     count += 1;
                     cur = unsafe { (*cur).next };
                 }
-                stack.base.size = count as u32;
+                list.size = count as u32;
             }
         }
     }

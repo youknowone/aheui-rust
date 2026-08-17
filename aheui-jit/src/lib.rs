@@ -547,8 +547,8 @@ fn walk_aheui_jit_node_roots(
 /// * `selected_ref: GcRef` — The JIT backend reads `head` / `size` at
 ///   fixed byte offsets through a raw pointer. This mirrors rpaheui's
 ///   `selected` object reference at the machine level: `GcRef` is
-///   literally the raw pointer to the selected `Stack` (Queue/Port
-///   share the `head`/`size` prefix via `#[repr(C)]`). We keep it next
+///   literally the raw pointer to the base the selected storage embeds,
+///   which is where those two words are declared. We keep it next
 ///   to `selected: usize` because `refresh_selected_ref` has to run any
 ///   time `selected` changes; treating them as a single logical field
 ///   avoided plumbing a dedicated getter through the `#[jit_interp]`
@@ -567,23 +567,23 @@ struct AheuiState {
     storage: Storage,
     selected: usize,
     stacksize: i64,
-    /// `&mut state.storage.pools[selected]` packed as `usize`. Tracked as
-    /// `ref(Stack)` in `state_fields` so it is carried in the ref register
+    /// `state.storage.pools[selected]` packed as `usize`. Tracked as
+    /// `ref(ListBase)` in `state_fields` so it is carried in the ref register
     /// bank as a genuine `InputArgRef`: promoted with `ref_guard_value` and
-    /// passed to monomorphic storage helpers (`stack_*` / `queue_*`) as a
-    /// ref-kind arg. The `usize` carrier round-trips the raw pointer bits.
+    /// passed to the monomorphic storage helpers as a ref-kind arg. The
+    /// `usize` carrier round-trips the raw pointer bits.
     selected_ref: usize,
     /// `&mut state.storage as *mut Storage` packed as `usize` — the base the
-    /// contiguous `pools: [*mut Stack; N]` array is read off.
+    /// contiguous `pools: [*mut ListBase; N]` array is read off.
     /// Tracked as `ref(Storage)` and declared a `pool_arrays` base so the
     /// OP_SEL `selected_ref = pools[selected]` read lowers to a re-producible
     /// `getarrayitem_gc_r` on this base instead of an opaque residual call;
-    /// the loaded stack ref then re-derives from `selected` each loop entry
+    /// the loaded list ref then re-derives from `selected` each loop entry
     /// rather than being carried as an independent, divergence-prone red.
     /// The sole carrier of the storage pointer: `aheui.py:27` carries
     /// `storage` as one red, so the residual storage helpers take this same
     /// ref-kind field rather than an aliased `int` copy (an int/ref pair for
-    /// one value makes the resume box kind of every `pools[N]` stack ref
+    /// one value makes the resume box kind of every `pools[N]` list ref
     /// ambiguous, seeding Ref-typed loop-header slots with Int boxes).
     storage_ref: usize,
 }
@@ -592,10 +592,10 @@ impl AheuiState {
     #[inline(always)]
     fn refresh_selected_ref(&mut self) {
         // rpaheui/aheui/aheui.py:233,282: selected = storage[idx].
-        // Point directly at `Stack` in the flat stacks array so the JIT
-        // can read head (offset 0) and size (offset 8) without going
-        // through the indirection helper.
-        self.selected_ref = self.storage.get_stack_ptr(self.selected) as usize;
+        // `pools[idx]` already holds the address of the base the storage at
+        // that index embeds, so the JIT reads `head` and `size` straight off
+        // it without a further step.
+        self.selected_ref = self.storage.get_list_ptr(self.selected) as usize;
     }
 
     /// rpaheui: selected.push/pop/add — polymorphic dispatch (Stack/Queue/Port).
@@ -914,7 +914,7 @@ extern "C" fn jit_storage_dup(pool_ptr: usize, target: usize) {
 #[majit_macros::dont_look_inside_cannot_raise]
 fn jit_sel_get_ref(pool_ptr: usize, selected: usize) -> usize {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.get_stack_ptr(selected) as usize
+    storage.get_list_ptr(selected) as usize
 }
 
 fn jit_stacksize_delta(op: usize) -> i64 {
@@ -970,12 +970,17 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // The selected list's object reference (aheui.py:256
         // `selected = jit.promote(selected)`). Carried in the ref register
         // bank as a genuine `InputArgRef` so it can be promoted with
-        // `ref_guard_value` and passed to the monomorphic `stack_*` /
-        // `queue_*` helpers as a ref-kind arg (`JitCallArg::reference`). The
-        // `usize` carrier round-trips the raw pointer bits; `Stack` is a
-        // nominal tag (Queue/Port share the head/size prefix via repr(C)).
-        selected_ref: ref(aheui_runtime::storage::linkedlist::Stack),
-        // Base the `pools: [*mut Stack; N]` array is read off.
+        // `ref_guard_value` and passed to the monomorphic storage helpers as a
+        // ref-kind arg (`JitCallArg::reference`). The `usize` carrier
+        // round-trips the raw pointer bits.
+        //
+        // The type is the base every storage embeds, matching
+        // `aheui.py:251 selected = storage[value]`, where the list holds a
+        // Stack, a Queue or a Port and the binding's type is what they have in
+        // common. Naming one of the three here instead would make every access
+        // through this field a reinterpretation of one storage as another.
+        selected_ref: ref(aheui_runtime::storage::linkedlist::ListBase),
+        // Base the `pools: [*mut ListBase; N]` array is read off.
         // Declared `ref(Storage)` + listed in `pool_arrays` so OP_SEL's
         // `selected_ref = jit_sel_get_ref(storage_ref, selected)` lowers to a
         // re-producible `getarrayitem_gc_r` on this base. aheui.py:27 carries
@@ -992,7 +997,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // residual call below.  Keyed on the getter identity so only this call —
     // not any other helper sharing the `(state.storage_ref, int)` shape — is
     // recognized as a pool read.
-    pool_arrays = { storage_ref.pools[pools_len] => jit_sel_get_ref -> aheui_runtime::storage::linkedlist::Stack },
+    pool_arrays = { storage_ref.pools[pools_len] => jit_sel_get_ref -> aheui_runtime::storage::linkedlist::ListBase },
     // Struct field type declarations for ref-kind field access.
     // Tells the lowerer to emit getfield_gc_r / setfield_gc_r (ref-kind)
     // instead of _gc_i (int-kind) when accessing these fields through a
@@ -1098,7 +1103,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // `storage[idx]` returns the selected list's object reference; the
         // result lands in the ref register bank. Elidable + cannot-raise:
         // `pools` is an immutable array (`_immutable_fields_ = ['pools']`)
-        // of stable `Stack` pointers, so `pools[selected]` is a pure,
+        // of stable base pointers, so `pools[selected]` is a pure,
         // exception-free function of (pool_ptr, selected). Elidable lowers
         // to CALL_PURE, which the optimizer can re-emit in the short
         // preamble — required because the stacksize is now a getfield on
