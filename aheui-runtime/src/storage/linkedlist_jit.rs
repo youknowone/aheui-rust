@@ -46,10 +46,18 @@ pub fn stack_push(stack: usize, value: Val) {
     stack.size = stack.size + 1u32;
 }
 
+// linkedlist.py:22-28: `pop` is defined once on `LinkedList` and inherited
+// unchanged by every storage -- it unlinks the head node, returns its value and
+// decrements the count, reaching nothing a subclass adds and calling nothing
+// virtual.  Taking the base as its parameter says that in this file's
+// vocabulary.  Contrast the arithmetic helpers below: `add` is likewise a
+// single definition upstream, but it routes through `_get_2_values` /
+// `_put_value`, which every storage overrides, so those stay one helper per
+// storage and open by flattening this same pop.
 #[inline(always)]
 #[majit_macros::jit_inline(
     ref_params = {
-        stack: ref(super::linkedlist::Stack),
+        list: ref(super::linkedlist::ListBase),
     },
     int_fields = {
         super::linkedlist::ListBase::size => u32,
@@ -62,16 +70,13 @@ pub fn stack_push(stack: usize, value: Val) {
         free_node_jit => concrete_only_void,
     },
     headerless_structs = { super::linkedlist::Node, },
-    inlined_prefix = {
-        super::linkedlist::Stack::base => super::linkedlist::ListBase,
-    },
 )]
-pub fn stack_pop(stack: usize) -> Val {
-    let top_node = stack.head;
+pub fn list_pop(list: usize) -> Val {
+    let top_node = list.head;
     let value = top_node.value;
     let next = top_node.next;
-    stack.head = next;
-    stack.size = stack.size - 1u32;
+    list.head = next;
+    list.size = list.size - 1u32;
     free_node_jit(top_node);
     value
 }
@@ -335,6 +340,11 @@ pub fn stack_mod(stack: usize) {
     },
 )]
 pub fn stack_dup(stack: usize) {
+    // linkedlist.py:82-83 Stack.dup -- `self.push(self.head.value)`, flattened
+    // here into the three statements that push expands to.  The queue's `dup`
+    // is a separate definition (:112-116) that happens to expand the same way;
+    // they are two implementations of a method every storage overrides, not one
+    // implementation reached twice, so they stay two helpers.
     let head = stack.head;
     let top_val = head.value;
     let new_node = super::linkedlist::Node {
@@ -514,36 +524,6 @@ pub fn queue_push(queue: usize, value: Val) {
     tail.next = new_sentinel;
     queue.tail = new_sentinel;
     queue.size = queue.size + 1u32;
-}
-
-#[inline(always)]
-#[majit_macros::jit_inline(
-    ref_params = {
-        queue: ref(super::linkedlist::Queue),
-    },
-    int_fields = {
-        super::linkedlist::ListBase::size => u32,
-    },
-    ref_fields = {
-        super::linkedlist::ListBase::head => super::linkedlist::Node,
-        super::linkedlist::Node::next => super::linkedlist::Node,
-    },
-    calls = {
-        free_node_jit => concrete_only_void,
-    },
-    headerless_structs = { super::linkedlist::Node, },
-    inlined_prefix = {
-        super::linkedlist::Queue::base => super::linkedlist::ListBase,
-    },
-)]
-pub fn queue_pop(queue: usize) -> Val {
-    let top_node = queue.head;
-    let value = top_node.value;
-    let next = top_node.next;
-    queue.head = next;
-    queue.size = queue.size - 1u32;
-    free_node_jit(top_node);
-    value
 }
 
 // Queue arithmetic (linkedlist.py:99-127): _get_2_values pops two front values,
@@ -1558,9 +1538,9 @@ mod tests {
         stack_push(p, val_from_i32(1));
         stack_push(p, val_from_i32(2));
         stack_push(p, val_from_i32(3));
-        assert_eq!(val_to_i64(&stack_pop(p)), 3);
-        assert_eq!(val_to_i64(&stack_pop(p)), 2);
-        assert_eq!(val_to_i64(&stack_pop(p)), 1);
+        assert_eq!(val_to_i64(&list_pop(p)), 3);
+        assert_eq!(val_to_i64(&list_pop(p)), 2);
+        assert_eq!(val_to_i64(&list_pop(p)), 1);
     }
 
     #[test]
@@ -1572,7 +1552,7 @@ mod tests {
         stack_push(p, val_from_i32(3));
         // add: r1=3, r2=7, push r2+r1=10 (replaces top)
         stack_add(p);
-        assert_eq!(val_to_i64(&stack_pop(p)), 10);
+        assert_eq!(val_to_i64(&list_pop(p)), 10);
     }
 
     #[test]
@@ -1583,9 +1563,9 @@ mod tests {
         queue_push(p, val_from_i32(1));
         queue_push(p, val_from_i32(2));
         queue_push(p, val_from_i32(3));
-        assert_eq!(val_to_i64(&queue_pop(p)), 1);
-        assert_eq!(val_to_i64(&queue_pop(p)), 2);
-        assert_eq!(val_to_i64(&queue_pop(p)), 3);
+        assert_eq!(val_to_i64(&list_pop(p)), 1);
+        assert_eq!(val_to_i64(&list_pop(p)), 2);
+        assert_eq!(val_to_i64(&list_pop(p)), 3);
     }
 
     #[test]
@@ -1597,6 +1577,6 @@ mod tests {
         queue_push(p, val_from_i32(3));
         // Queue::add pops front twice (r1=7, r2=3), pushes r2+r1=10 to back.
         queue_add(p);
-        assert_eq!(val_to_i64(&queue_pop(p)), 10);
+        assert_eq!(val_to_i64(&list_pop(p)), 10);
     }
 }

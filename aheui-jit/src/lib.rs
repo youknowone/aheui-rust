@@ -1046,8 +1046,8 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         Program::get_op => elidable_int_cannot_raise,
         Program::get_label => elidable_int_cannot_raise,
         Program::get_operand => elidable_int_cannot_raise,
-        // Monomorphic storage helpers. The hot Stack ops, the cold queue_pop
-        // and the storage-independent list_swap are `#[jit_inline]`
+        // Monomorphic storage helpers. The hot Stack ops and the
+        // storage-independent list_pop / list_swap are `#[jit_inline]`
         // (inline_int / inline_void), so the lowerer splices their
         // field-level body into the trace; queue div/mod stay residual — a
         // concrete
@@ -1067,7 +1067,6 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::stack_dup => inline_void,
         lj::stack_cmp => inline_void,
         lj::queue_push => inline_void,
-        lj::queue_pop => inline_int,
         lj::queue_add => inline_void,
         lj::queue_sub => inline_void,
         lj::queue_mul => inline_void,
@@ -1075,8 +1074,9 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::queue_mod => residual_void,
         lj::queue_dup => inline_void,
         lj::queue_cmp => inline_void,
-        // Named by neither family: its parameter is the base the three
+        // Named by neither family: their parameter is the base the three
         // storages embed, so one registration covers every selection.
+        lj::list_pop => inline_int,
         lj::list_swap => inline_void,
         // Mode-0 twins of the arithmetic helpers, selected on the `bm` green.
         // All inline, including div and mod, which are residual above: their
@@ -1132,10 +1132,10 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // Residual storage mutators that change `Stack.size` or its `head` chain
     // pointer.  Traced push/pop methods emit in-trace `setfield_gc` stores,
     // which invalidate the matching heapcache entries directly.
-    // The inline_int / inline_void helpers (stack_push/add/sub/mul/dup/swap/
-    // cmp and queue_pop/swap) splice that `self.size` setfield into the trace
+    // The inline_int / inline_void helpers (stack_push/add/sub/mul/dup/cmp and
+    // list_pop/list_swap) splice that `self.size` setfield into the trace
     // directly, so they reproduce the barrier and need no entry here, and so
-    // do the pops the arms hand-inline as head/next/size stores.
+    // do the pops the arithmetic arms hand-inline as head/next/size stores.
     // The remaining ops lower to opaque residual calls, which carry an empty
     // write-set by default. A size-only declaration can leave a stale head
     // cached after a residual pop, while a head-only declaration can leave a
@@ -1440,20 +1440,9 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 continue;
             }
             OP_BRZ => {
-                // Only the pop differs between the two storages; the zero test
-                // is one comparison on the popped `Val` either way.
-                let pop_val = if is_queue {
-                    lj::queue_pop(state.selected_ref)
-                } else {
-                    // inline pop for Stack
-                    let top_node = state.selected_ref.head;
-                    let v = top_node.value;
-                    let next = top_node.next;
-                    state.selected_ref.head = next;
-                    state.selected_ref.size = state.selected_ref.size - 1u32;
-                    jit_free_node(top_node);
-                    v
-                };
+                // The pop is the same for every storage, and the zero test is
+                // one comparison on the popped `Val` either way.
+                let pop_val = lj::list_pop(state.selected_ref);
                 // pop_val is Val (= i64 repr-transparent). val_is_zero
                 // checks `*v == 0` for smallint, or the tagged form
                 // `(0 << 1) | 1 = 1` for bigint. Use the raw int
@@ -1577,20 +1566,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_POP => {
                 if stackok {
                     // Bind the popped value (discarded) so the `inline_int`
-                    // pop helpers lower in value position; a discarded
+                    // pop helper lowers in value position; a discarded
                     // statement-position `inline_int` call has no lowering and
                     // aborts the trace. Mirrors OP_POPNUM's pop shape.
-                    let _popped = if is_queue {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        let top_node = state.selected_ref.head;
-                        let pop_val = top_node.value;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1u32;
-                        jit_free_node(top_node);
-                        pop_val
-                    };
+                    let _popped = lj::list_pop(state.selected_ref);
                 }
             }
             OP_PUSH => {
@@ -1662,18 +1641,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_MOV => {
                 if stackok {
-                    let r = if is_queue {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        // inline pop for Stack
-                        let top_node = state.selected_ref.head;
-                        let pop_val = top_node.value;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1u32;
-                        jit_free_node(top_node);
-                        pop_val
-                    };
+                    let r = lj::list_pop(state.selected_ref);
                     let target = program.get_operand(pc - 1) as usize;
                     if target == VAL_QUEUE || target == VAL_PORT {
                         // Queue/Port keep the polymorphic residual (tail-append semantics).
@@ -1713,33 +1681,13 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             // Branch ops handled by dispatch-level if-chain above.
             OP_POPNUM => {
                 if stackok {
-                    let r = if is_queue {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        let top_node = state.selected_ref.head;
-                        let pop_val = top_node.value;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1u32;
-                        jit_free_node(top_node);
-                        pop_val
-                    };
+                    let r = lj::list_pop(state.selected_ref);
                     aheui_io::output_write_number(&r);
                 }
             }
             OP_POPCHAR => {
                 if stackok {
-                    let r = if is_queue {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        let top_node = state.selected_ref.head;
-                        let pop_val = top_node.value;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1u32;
-                        jit_free_node(top_node);
-                        pop_val
-                    };
+                    let r = lj::list_pop(state.selected_ref);
                     aheui_io::output_write_utf8(&r);
                 }
             }
