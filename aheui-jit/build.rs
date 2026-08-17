@@ -48,29 +48,27 @@ fn main() {
         format!("{base}/aheui-runtime/src"),
     ];
 
-    let mut sources = Vec::new();
     let mut source_paths = Vec::new();
     for dir in &source_dirs {
-        collect_rs_files(dir, &mut sources, &mut source_paths);
+        source_paths.extend(majit_translate::module_path::collect_rs_files(dir));
     }
 
     eprintln!(
         "[aheui-jit build.rs] reading {} source files from {} dirs",
-        sources.len(),
+        source_paths.len(),
         source_dirs.len(),
     );
 
     // The graph surface comes from the Charon-extracted LLBC set
     // (`PYRE_MIR_FRONTEND_LLBC` above). `module_paths[i]` is the
-    // crate-stripped module path of the i-th source file; the analyzer keys
-    // `register_struct_origins` / method resolution on it, and an empty
-    // entry silently drops that file's graphs (lib.rs:374-382) — the portal
-    // `mainloop` would then never resolve. Derive real paths as pyre does.
+    // crate-stripped module path of the i-th source file, derived by the
+    // translator that consumes it — the spelling is its invariant, not a
+    // label this build script gets to choose.
     // aheui carries no host vinfo / fnaddr / static-singleton bindings —
     // the `#[jit_interp]` macro plus the `Minimal` flavor cover those.
     let module_paths: Vec<String> = source_paths
         .iter()
-        .map(|p| module_path_from_source_file(p))
+        .map(|p| majit_translate::module_path::module_path_from_source_file(p))
         .collect();
     let module_path_refs: Vec<&str> = module_paths.iter().map(|s| s.as_str()).collect();
     let vinfo_factory: &majit_translate::VirtualizableInfoFactory<'_> = &|_, _| None;
@@ -213,53 +211,4 @@ fn build_call_effect_overrides() -> Vec<majit_translate::CallEffectOverride> {
             majit_translate::CallEffectOverride::new(target, effect)
         })
         .collect()
-}
-
-fn collect_rs_files(dir: &str, sources: &mut Vec<String>, paths: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        eprintln!("[aheui-jit build.rs] warning: cannot read {dir}");
-        return;
-    };
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rs_files(&path.to_string_lossy(), sources, paths);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            let path_str = path.to_string_lossy().to_string();
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    paths.push(path_str);
-                    sources.push(content);
-                }
-                Err(e) => {
-                    eprintln!("[aheui-jit build.rs] warning: cannot read {path_str}: {e}");
-                }
-            }
-        }
-    }
-}
-
-/// Crate-stripped module path of a source file: the `/src/`-relative path
-/// with `.rs`, trailing `/lib`, and `/mod` removed and `/` rewritten to
-/// `::` (e.g. `aheui-runtime/src/storage/linkedlist_jit.rs` →
-/// `storage::linkedlist_jit`). The analyzer keys struct-origin and method
-/// resolution on this; an empty path silently drops the file's graphs.
-fn module_path_from_source_file(path: &str) -> String {
-    let normalized_path = path.replace('\\', "/");
-    let path = normalized_path.as_str();
-    let marker = "/src/";
-    let Some(idx) = path.rfind(marker) else {
-        return String::new();
-    };
-    let rest = &path[idx + marker.len()..];
-    let stem = rest.strip_suffix(".rs").unwrap_or(rest);
-    let normalized = stem
-        .strip_suffix("/lib")
-        .or_else(|| stem.strip_suffix("/mod"))
-        .unwrap_or(stem);
-    if normalized == "lib" || normalized == "mod" {
-        return String::new();
-    }
-    normalized.replace('/', "::")
 }
