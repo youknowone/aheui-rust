@@ -1002,6 +1002,14 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         aheui_runtime::storage::linkedlist::Queue::head => aheui_runtime::storage::linkedlist::Node,
         aheui_runtime::storage::linkedlist::Port::head => aheui_runtime::storage::linkedlist::Node,
         aheui_runtime::storage::linkedlist::Node::next => aheui_runtime::storage::linkedlist::Node,
+        // Declared for the same reason as the `Queue`/`Port` entries in
+        // `int_fields`: the `residual_writes` group below mints this word from
+        // here, and the field's kind comes from whichever producer describes
+        // it. The linked-list helpers declare it a pointer; left undeclared
+        // here it minted as a signed 8-byte integer instead, so a ref-kind
+        // access read a descr that called the field an int — one word with two
+        // descriptions, and a wrong width on a 32-bit pointer target.
+        aheui_runtime::storage::linkedlist::Queue::tail => aheui_runtime::storage::linkedlist::Node,
     },
     // The element count is `u32`, so the field descr is sub-word and
     // `intbounds` can bound a load of it. Without a bound the depth's `+ 1`
