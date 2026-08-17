@@ -891,15 +891,6 @@ fn init_nursery() {
 // reinterpretation of one storage's address as another's. Polymorphic method
 // dispatch still goes through the [`LinkedList`] trait.
 
-/// Size of `Stack` for JIT stride calculation.
-pub const STACK_SIZE: usize = std::mem::size_of::<Stack>();
-/// `Stack.head` offset (== 0 for `#[repr(C)]`).
-pub const STACK_HEAD_OFFSET: usize = 0;
-/// `Stack.size` offset (== 8).
-pub const STACK_SIZE_OFFSET: usize = 8;
-/// `Queue.tail` offset (== 16). Queue push appends to tail.
-pub const QUEUE_TAIL_OFFSET: usize = 16;
-
 #[repr(C)]
 pub struct Storage {
     /// Length of the `pools` array (always `STORAGE_COUNT`).  Read only by the
