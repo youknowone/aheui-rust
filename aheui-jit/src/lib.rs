@@ -318,7 +318,6 @@ include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));
 use aheui_runtime::aheui::*;
 use aheui_runtime::io as aheui_io;
 use aheui_runtime::storage::linkedlist_jit as lj;
-use aheui_runtime::storage::linkedlist as ll;
 use aheui_runtime::storage::{LinkedList, Storage};
 use ahsembler::compiler::Program;
 
@@ -865,22 +864,13 @@ fn jit_free_node(node: usize) {
     aheui_runtime::storage::linkedlist_jit::free_node_jit(node)
 }
 
-#[inline(always)]
-fn swap_nodes_word(node: usize) {
-    ll::swap_nodes(node as *mut aheui_runtime::storage::linkedlist::Node);
-}
-
 /// Pipeline jitcode resolver for `inline_pipeline_*` call policies.
 /// The `#[jit_interp]` macro's dispatch JitCode builder calls this to
 /// resolve a function name (e.g. `"val_add"`) to the pipeline-built
 /// sub-jitcode that the tracer will inline-call into.
 #[allow(non_snake_case)]
 fn __majit_pipeline_jitcode(name: &str) -> std::sync::Arc<majit_metainterp::JitCode> {
-    let pipeline_name = match name {
-        "swap_nodes_word" => "swap_nodes",
-        _ => name,
-    };
-    jit::jitcode_runtime::pipeline_jitcode_by_name(pipeline_name)
+    jit::jitcode_runtime::pipeline_jitcode_by_name(name)
         .unwrap_or_else(|| panic!("pipeline jitcode for '{name}' not found"))
 }
 
