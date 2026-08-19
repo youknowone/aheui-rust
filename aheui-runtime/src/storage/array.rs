@@ -185,46 +185,78 @@ pub trait ArrayStorage {
 // `linkedlist.py:76-91`'s head.
 
 /// `linkedlist.py:67-91 class Stack` over a flat buffer.
+/// The fields every pool declares, as a struct the pools embed at offset 0.
+///
+/// The module note above called this owed work: reaching `data`/`size`/`cap`
+/// by reinterpreting one pool's address as another's gives one physical field
+/// a descriptor per nominal pool it can be spelled through, and a per-object
+/// cache keyed on the descriptor then serves one pool's value out of another's
+/// slot. Declaring the shared words once, on a base each pool embeds at offset
+/// 0, is the shape the linked-list backend already uses (`ListBase`), and it is
+/// what lets an access resolve against the struct that declares the field.
 #[repr(C)]
-pub struct Stack {
+pub struct ArrayBase {
+    /// Base pointer of the element buffer. Null until the first push.
     pub data: *mut Val,
     /// The element count. `u32` rather than `usize` so the JIT's field descr
     /// is sub-word and `intbounds` can bound a load of it; without an upper
     /// bound a depth `+ 1` may overflow, the sum goes rangeless, and every
     /// re-check of the depth has to be guarded again.
     pub size: u32,
+    /// Elements the buffer has room for. A push past it must reallocate, so
+    /// the JIT guards `size < cap` and leaves growth to the interpreter.
     pub cap: u32,
 }
 
-impl Stack {
-    pub fn new() -> Self {
-        Stack {
+impl ArrayBase {
+    /// An empty pool: no buffer, so the first push allocates.
+    pub const fn new() -> Self {
+        ArrayBase {
             data: std::ptr::null_mut(),
             size: 0,
             cap: 0,
         }
     }
+}
+
+impl Default for ArrayBase {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[repr(C)]
+pub struct Stack {
+    pub base: ArrayBase,
+}
+
+impl Stack {
+    pub fn new() -> Self {
+        Stack {
+            base: ArrayBase::new(),
+        }
+    }
 
     /// Ensure room for one more element, reallocating if full.
     ///
-    /// Callers must re-read `self.data` afterwards: this may move the buffer.
+    /// Callers must re-read `self.base.data` afterwards: this may move the buffer.
     fn reserve_one(&mut self) {
-        if self.size < self.cap {
+        if self.base.size < self.base.cap {
             return;
         }
-        let new_cap = if self.cap == 0 {
+        let new_cap = if self.base.cap == 0 {
             INITIAL_CAPACITY
         } else {
-            self.cap * 2
+            self.base.cap * 2
         };
-        self.data = unsafe { grow_buffer(self.data, self.cap, new_cap, self.size) };
-        self.cap = new_cap;
+        self.base.data = unsafe { grow_buffer(self.base.data, self.base.cap, new_cap, self.base.size) };
+        self.base.cap = new_cap;
     }
 
     /// The top element without popping. Panics when empty.
     pub fn top(&self) -> Val {
-        assert!(self.size > 0, "top of empty stack");
-        unsafe { *self.data.add(self.size as usize - 1) }
+        assert!(self.base.size > 0, "top of empty stack");
+        unsafe { *self.base.data.add(self.base.size as usize - 1) }
     }
 }
 
@@ -239,13 +271,13 @@ impl Default for Stack {
 // pool inline, so this runs when the storage does.
 impl Drop for Stack {
     fn drop(&mut self) {
-        unsafe { free_buffer(self.data, self.cap) };
+        unsafe { free_buffer(self.base.data, self.base.cap) };
     }
 }
 
 impl ArrayStorage for Stack {
     fn len(&self) -> usize {
-        self.size as usize
+        self.base.size as usize
     }
 
     // linkedlist.py:76-80
@@ -254,18 +286,18 @@ impl ArrayStorage for Stack {
         with_bigint_transient_root(&mut root, || {
             self.reserve_one();
             unsafe {
-                *self.data.add(self.size as usize) = value;
+                *self.base.data.add(self.base.size as usize) = value;
             }
-            self.size += 1;
+            self.base.size += 1;
             maybe_collect_bigints();
         });
     }
 
     // linkedlist.py:22-28
     fn pop(&mut self) -> Val {
-        assert!(self.size > 0, "pop from empty stack");
-        self.size -= 1;
-        unsafe { *self.data.add(self.size as usize) }
+        assert!(self.base.size > 0, "pop from empty stack");
+        self.base.size -= 1;
+        unsafe { *self.base.data.add(self.base.size as usize) }
     }
 
     // linkedlist.py:82-83 — `self.push(self.head.value)`.
@@ -276,10 +308,10 @@ impl ArrayStorage for Stack {
 
     // linkedlist.py:30-33 — swap the two topmost values in place.
     fn swap(&mut self) {
-        assert!(self.size >= 2, "swap on <2 elements");
+        assert!(self.base.size >= 2, "swap on <2 elements");
         unsafe {
-            let a = self.data.add(self.size as usize - 1);
-            let b = self.data.add(self.size as usize - 2);
+            let a = self.base.data.add(self.base.size as usize - 1);
+            let b = self.base.data.add(self.base.size as usize - 2);
             std::ptr::swap(a, b);
         }
     }
@@ -294,11 +326,11 @@ impl ArrayStorage for Stack {
     // linkedlist.py:90-91 — `self.head.value = value`, i.e. overwrite the top
     // rather than push.
     fn _put_value(&mut self, value: Val) {
-        assert!(self.size > 0, "_put_value on empty stack");
+        assert!(self.base.size > 0, "_put_value on empty stack");
         let mut root = value;
         with_bigint_transient_root(&mut root, || {
             unsafe {
-                *self.data.add(self.size as usize - 1) = value;
+                *self.base.data.add(self.base.size as usize - 1) = value;
             }
             maybe_collect_bigints();
         });
@@ -318,10 +350,7 @@ impl ArrayStorage for Stack {
 /// `linkedlist.py:94-122 class Queue` over a ring buffer.
 #[repr(C)]
 pub struct Queue {
-    pub data: *mut Val,
-    /// Element count, narrowed for the same reason as [`Stack::size`].
-    pub size: u32,
-    pub cap: u32,
+    pub base: ArrayBase,
     /// Index of the front element; the ring spans `[front, front + size)`.
     pub front: u32,
 }
@@ -329,49 +358,47 @@ pub struct Queue {
 impl Queue {
     pub fn new() -> Self {
         Queue {
-            data: std::ptr::null_mut(),
-            size: 0,
-            cap: 0,
+            base: ArrayBase::new(),
             front: 0,
         }
     }
 
     fn slot(&self, offset: u32) -> *mut Val {
-        debug_assert!(self.cap > 0);
-        let idx = (self.front as usize + offset as usize) % self.cap as usize;
-        unsafe { self.data.add(idx) }
+        debug_assert!(self.base.cap > 0);
+        let idx = (self.front as usize + offset as usize) % self.base.cap as usize;
+        unsafe { self.base.data.add(idx) }
     }
 
     /// Ensure room for one more element. On growth the ring is unrolled so
     /// `front` returns to 0, which keeps the copy a pair of contiguous runs.
     fn reserve_one(&mut self) {
-        if self.size < self.cap {
+        if self.base.size < self.base.cap {
             return;
         }
-        let new_cap = if self.cap == 0 {
+        let new_cap = if self.base.cap == 0 {
             INITIAL_CAPACITY
         } else {
-            self.cap * 2
+            self.base.cap * 2
         };
         let fresh = unsafe { alloc_buffer(new_cap) };
-        for i in 0..self.size {
+        for i in 0..self.base.size {
             unsafe {
                 *fresh.add(i as usize) = *self.slot(i);
             }
         }
-        if !self.data.is_null() {
+        if !self.base.data.is_null() {
             let layout =
-                std::alloc::Layout::array::<Val>(self.cap as usize).expect("storage buffer layout");
-            unsafe { std::alloc::dealloc(self.data as *mut u8, layout) };
+                std::alloc::Layout::array::<Val>(self.base.cap as usize).expect("storage buffer layout");
+            unsafe { std::alloc::dealloc(self.base.data as *mut u8, layout) };
         }
-        self.data = fresh;
-        self.cap = new_cap;
+        self.base.data = fresh;
+        self.base.cap = new_cap;
         self.front = 0;
     }
 
     /// The front element without popping. Panics when empty.
     pub fn front_value(&self) -> Val {
-        assert!(self.size > 0, "front of empty queue");
+        assert!(self.base.size > 0, "front of empty queue");
         unsafe { *self.slot(0) }
     }
 
@@ -381,14 +408,14 @@ impl Queue {
         with_bigint_transient_root(&mut root, || {
             self.reserve_one();
             self.front = if self.front == 0 {
-                self.cap - 1
+                self.base.cap - 1
             } else {
                 self.front - 1
             };
             unsafe {
                 *self.slot(0) = value;
             }
-            self.size += 1;
+            self.base.size += 1;
             maybe_collect_bigints();
         });
     }
@@ -405,13 +432,13 @@ impl Default for Queue {
 // pool inline, so this runs when the storage does.
 impl Drop for Queue {
     fn drop(&mut self) {
-        unsafe { free_buffer(self.data, self.cap) };
+        unsafe { free_buffer(self.base.data, self.base.cap) };
     }
 }
 
 impl ArrayStorage for Queue {
     fn len(&self) -> usize {
-        self.size as usize
+        self.base.size as usize
     }
 
     // linkedlist.py:103-110 — append at the back.
@@ -419,21 +446,21 @@ impl ArrayStorage for Queue {
         let mut root = value;
         with_bigint_transient_root(&mut root, || {
             self.reserve_one();
-            let size = self.size;
+            let size = self.base.size;
             unsafe {
                 *self.slot(size) = value;
             }
-            self.size += 1;
+            self.base.size += 1;
             maybe_collect_bigints();
         });
     }
 
     // linkedlist.py:22-28 — take from the front.
     fn pop(&mut self) -> Val {
-        assert!(self.size > 0, "pop from empty queue");
+        assert!(self.base.size > 0, "pop from empty queue");
         let value = unsafe { *self.slot(0) };
-        self.front = (self.front + 1) % self.cap;
-        self.size -= 1;
+        self.front = (self.front + 1) % self.base.cap;
+        self.base.size -= 1;
         value
     }
 
@@ -446,7 +473,7 @@ impl ArrayStorage for Queue {
 
     // linkedlist.py:30-33 — swap the two frontmost values in place.
     fn swap(&mut self) {
-        assert!(self.size >= 2, "swap on <2 elements");
+        assert!(self.base.size >= 2, "swap on <2 elements");
         unsafe {
             std::ptr::swap(self.slot(0), self.slot(1));
         }
@@ -472,39 +499,34 @@ impl ArrayStorage for Queue {
 /// `linkedlist.py:125-148 class Port` — a stack plus the `last_push` shadow.
 #[repr(C)]
 pub struct Port {
-    pub data: *mut Val,
-    /// Element count, narrowed for the same reason as [`Stack::size`].
-    pub size: u32,
-    pub cap: u32,
+    pub base: ArrayBase,
     pub last_push: Val,
 }
 
 impl Port {
     pub fn new() -> Self {
         Port {
-            data: std::ptr::null_mut(),
-            size: 0,
-            cap: 0,
+            base: ArrayBase::new(),
             last_push: val_from_i32(0),
         }
     }
 
     fn reserve_one(&mut self) {
-        if self.size < self.cap {
+        if self.base.size < self.base.cap {
             return;
         }
-        let new_cap = if self.cap == 0 {
+        let new_cap = if self.base.cap == 0 {
             INITIAL_CAPACITY
         } else {
-            self.cap * 2
+            self.base.cap * 2
         };
-        self.data = unsafe { grow_buffer(self.data, self.cap, new_cap, self.size) };
-        self.cap = new_cap;
+        self.base.data = unsafe { grow_buffer(self.base.data, self.base.cap, new_cap, self.base.size) };
+        self.base.cap = new_cap;
     }
 
     pub fn top(&self) -> Val {
-        assert!(self.size > 0, "top of empty port");
-        unsafe { *self.data.add(self.size as usize - 1) }
+        assert!(self.base.size > 0, "top of empty port");
+        unsafe { *self.base.data.add(self.base.size as usize - 1) }
     }
 }
 
@@ -519,13 +541,13 @@ impl Default for Port {
 // pool inline, so this runs when the storage does.
 impl Drop for Port {
     fn drop(&mut self) {
-        unsafe { free_buffer(self.data, self.cap) };
+        unsafe { free_buffer(self.base.data, self.base.cap) };
     }
 }
 
 impl ArrayStorage for Port {
     fn len(&self) -> usize {
-        self.size as usize
+        self.base.size as usize
     }
 
     // linkedlist.py:134-139 — push records `last_push`.
@@ -534,9 +556,9 @@ impl ArrayStorage for Port {
         with_bigint_transient_root(&mut root, || {
             self.reserve_one();
             unsafe {
-                *self.data.add(self.size as usize) = value;
+                *self.base.data.add(self.base.size as usize) = value;
             }
-            self.size += 1;
+            self.base.size += 1;
             self.last_push = value;
             maybe_collect_bigints();
         });
@@ -544,9 +566,9 @@ impl ArrayStorage for Port {
 
     // linkedlist.py:22-28
     fn pop(&mut self) -> Val {
-        assert!(self.size > 0, "pop from empty port");
-        self.size -= 1;
-        unsafe { *self.data.add(self.size as usize) }
+        assert!(self.base.size > 0, "pop from empty port");
+        self.base.size -= 1;
+        unsafe { *self.base.data.add(self.base.size as usize) }
     }
 
     // linkedlist.py:141-142 — `self.push(self.last_push)`: the SHADOW, not the
@@ -557,10 +579,10 @@ impl ArrayStorage for Port {
 
     // linkedlist.py:30-33
     fn swap(&mut self) {
-        assert!(self.size >= 2, "swap on <2 elements");
+        assert!(self.base.size >= 2, "swap on <2 elements");
         unsafe {
-            let a = self.data.add(self.size as usize - 1);
-            let b = self.data.add(self.size as usize - 2);
+            let a = self.base.data.add(self.base.size as usize - 1);
+            let b = self.base.data.add(self.base.size as usize - 2);
             std::ptr::swap(a, b);
         }
     }
@@ -576,9 +598,9 @@ impl ArrayStorage for Port {
     // `last_push` alone, which is what makes `dup` observably differ from
     // duplicating the top.
     fn _put_value(&mut self, value: Val) {
-        assert!(self.size > 0, "_put_value on empty port");
+        assert!(self.base.size > 0, "_put_value on empty port");
         unsafe {
-            *self.data.add(self.size as usize - 1) = value;
+            *self.base.data.add(self.base.size as usize - 1) = value;
         }
     }
 }
@@ -636,7 +658,7 @@ mod tests {
         s.push(val_from_i32(3));
         // r1=3, r2=10, result=13 replaces the top.
         s.add();
-        assert_eq!(s.size, 1);
+        assert_eq!(s.base.size, 1);
         assert_eq!(val_to_i64(&s.pop()), 13);
     }
 
@@ -645,7 +667,7 @@ mod tests {
         let mut s = Stack::new();
         s.push(val_from_i32(5));
         s.dup();
-        assert_eq!(s.size, 2);
+        assert_eq!(s.base.size, 2);
         s.push(val_from_i32(7));
         s.swap();
         assert_eq!(val_to_i64(&s.pop()), 5);
@@ -669,7 +691,7 @@ mod tests {
         q.push(val_from_i32(3));
         // r1=10 and r2=3 both come off the FRONT; 13 goes to the BACK.
         q.add();
-        assert_eq!(q.size, 1);
+        assert_eq!(q.base.size, 1);
         assert_eq!(val_to_i64(&q.pop()), 13);
     }
 
@@ -695,11 +717,11 @@ mod tests {
         for i in 0..n {
             s.push(val_from_i32(i));
         }
-        assert_eq!(s.size as i32, n);
+        assert_eq!(s.base.size as i32, n);
         for i in (0..n).rev() {
             assert_eq!(val_to_i64(&s.pop()), i as i64);
         }
-        assert_eq!(s.size, 0);
+        assert_eq!(s.base.size, 0);
     }
 
     #[test]
@@ -721,7 +743,7 @@ mod tests {
         for i in (INITIAL_CAPACITY as i32 / 2)..n {
             assert_eq!(val_to_i64(&q.pop()), i as i64);
         }
-        assert_eq!(q.size, 0);
+        assert_eq!(q.base.size, 0);
     }
 
     #[test]
@@ -732,7 +754,7 @@ mod tests {
         p.push(val_from_i32(5));
         p.push(val_from_i32(10));
         p.add();
-        assert_eq!(p.size, 1);
+        assert_eq!(p.base.size, 1);
         assert_eq!(val_to_i64(&p.top()), 15);
         p.dup();
         assert_eq!(val_to_i64(&p.pop()), 10);
@@ -746,7 +768,7 @@ mod tests {
         q.push(val_from_i32(1));
         q.push(val_from_i32(2));
         q.dup();
-        assert_eq!(q.size, 3);
+        assert_eq!(q.base.size, 3);
         assert_eq!(val_to_i64(&q.pop()), 1);
         assert_eq!(val_to_i64(&q.pop()), 1);
         assert_eq!(val_to_i64(&q.pop()), 2);

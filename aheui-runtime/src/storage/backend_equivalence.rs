@@ -185,10 +185,10 @@ fn arr_stackish_contents(data: *const Val, size: u32) -> Vec<Val> {
 
 /// The ring `[front, front + size)`, front first.
 fn arr_queue_contents(q: &array::Queue) -> Vec<Val> {
-    (0..q.size as usize)
+    (0..q.base.size as usize)
         .map(|i| {
-            let idx = (q.front as usize + i) % q.cap as usize;
-            unsafe { *q.data.add(idx) }
+            let idx = (q.front as usize + i) % q.base.cap as usize;
+            unsafe { *q.base.data.add(idx) }
         })
         .collect()
 }
@@ -424,7 +424,7 @@ fn stack_backends_agree_step_for_step() {
     let coverage = drive(
         &mut ll,
         &mut arr,
-        |a| arr_stackish_contents(a.data, a.size),
+        |a| arr_stackish_contents(a.base.data, a.base.size),
         &ops,
     )
     .unwrap_or_else(|e| panic!("Stack: {e}"));
@@ -451,7 +451,7 @@ fn port_backends_agree_step_for_step() {
     let coverage = drive(
         &mut ll,
         &mut arr,
-        |a| arr_stackish_contents(a.data, a.size),
+        |a| arr_stackish_contents(a.base.data, a.base.size),
         &ops,
     )
     .unwrap_or_else(|e| panic!("Port: {e}"));
@@ -472,7 +472,7 @@ fn port_dup_from_empty_agrees() {
     compare(
         "empty port dup",
         &ll_contents(&ll),
-        &arr_stackish_contents(arr.data, arr.size),
+        &arr_stackish_contents(arr.base.data, arr.base.size),
     )
     .unwrap_or_else(|e| panic!("Port: {e}"));
 
@@ -490,7 +490,7 @@ fn port_dup_from_empty_agrees() {
     compare(
         "port dup after add",
         &reference,
-        &arr_stackish_contents(arr.data, arr.size),
+        &arr_stackish_contents(arr.base.data, arr.base.size),
     )
     .unwrap_or_else(|e| panic!("Port: {e}"));
     assert!(
