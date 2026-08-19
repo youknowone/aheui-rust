@@ -16,6 +16,8 @@
 //! [`LinkedList`] trait via [`Storage::dispatch_mut`].
 
 pub mod array;
+#[cfg(feature = "jit")]
+pub mod array_jit;
 #[cfg(test)]
 mod backend_equivalence;
 pub mod linkedlist;
