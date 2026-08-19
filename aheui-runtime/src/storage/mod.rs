@@ -1,19 +1,24 @@
 //! Storage system for Aheui: 28 storage spaces (Stacks, Queue, Port).
 //!
 //! Directory layout mirrors `rpaheui/aheui/storage/`:
-//!   * [`linkedlist`] — `linkedlist.py` (Node / LinkedList / Stack / Queue / Port).
-//!   * [`array`] — parity stub for `array.py` (CPython-only backend).
+//!   * [`array`] — `array.py` (contiguous buffers). The live representation.
+//!   * [`linkedlist`] — `linkedlist.py` (Node / LinkedList / Stack / Queue /
+//!     Port), kept as the reference implementation the differential oracle in
+//!     `backend_equivalence` grades `array` against, and as the owner of the
+//!     node nursery below.
 //!
-//! The aggregate [`Storage`] below mirrors `rpaheui/aheui/aheui.py::class Storage`.
-//! RPython relies on Python duck typing and the GC to carry Stack/Queue/
-//! Port references inside `pools`, where the element type is the common
-//! base. Rust can not store mixed subclass instances in a flat array, so we
-//! split them: a per-index `Stack` array plus a dedicated `Queue` (slot
-//! `VAL_QUEUE`) and `Port` (slot `VAL_PORT`). The `pools` indirection array
-//! restores the flat list by holding the address of the [`ListBase`] each
-//! storage embeds, which is that same element type; polymorphic dispatch for
-//! push / dup / _get_2_values / _put_value still goes through the
-//! [`LinkedList`] trait via [`Storage::dispatch_mut`].
+//! [`Storage`] is [`array::Storage`]; the node-chain aggregate that carries
+//! the nursery's root set is [`NodeStorage`]. Both mirror
+//! `rpaheui/aheui/aheui.py::class Storage`: RPython relies on Python duck
+//! typing and the GC to carry Stack/Queue/Port references inside `pools`,
+//! where the element type is the common base. Rust can not store mixed
+//! subclass instances in a flat array, so we split them: a per-index `Stack`
+//! array plus a dedicated `Queue` (slot `VAL_QUEUE`) and `Port` (slot
+//! `VAL_PORT`). The `pools` indirection array restores the flat list by
+//! holding the address of the base each storage embeds, which is that same
+//! element type; polymorphic dispatch for push / dup / _get_2_values /
+//! _put_value still goes through the storage trait via
+//! [`Storage::dispatch_mut`].
 
 pub mod array;
 #[cfg(feature = "jit")]
@@ -24,8 +29,9 @@ pub mod linkedlist;
 #[cfg(feature = "jit")]
 pub mod linkedlist_jit;
 
+pub use array::{ArrayBase, ArrayStorage, Port, Queue, Stack, Storage};
 pub use linkedlist::{
-    LinkedList, ListBase, NODE_NEXT_OFFSET, NODE_SIZE, NODE_VALUE_OFFSET, Node, Port, Queue, Stack,
+    LinkedList, ListBase, NODE_NEXT_OFFSET, NODE_SIZE, NODE_VALUE_OFFSET, Node,
 };
 
 use crate::aheui::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
@@ -377,7 +383,7 @@ impl Nursery {
     /// allocation as an explicit keep root because collection may move it.
     #[cold]
     fn collect(&mut self, keep: &mut *mut linkedlist::Node) {
-        let storage_addr = GC_ROOTS.load(Ordering::Relaxed);
+        let storage_addr = NODE_GC_ROOTS.load(Ordering::Relaxed);
         if storage_addr == 0 || self.chunks.is_empty() {
             return;
         }
@@ -389,7 +395,7 @@ impl Nursery {
         }
         self.collect_count += 1;
         self.collected = true;
-        let storage = unsafe { &mut *(storage_addr as *mut Storage) };
+        let storage = unsafe { &mut *(storage_addr as *mut NodeStorage) };
         let from_chunks = self.chunks.clone();
         let mut copy = CopyState::new(from_chunks);
         let gc_log = gc_log_enabled();
@@ -636,11 +642,18 @@ impl CopyState {
 
 static mut NURSERY: Nursery = Nursery::uninit();
 
-/// Root set for `Nursery::collect`: raw `*mut Storage` whose pool heads,
+/// Root set for `Nursery::collect`: raw `*mut NodeStorage` whose pool heads,
 /// queue tail, and port head enumerate interpreter-visible live nodes.
-/// Registered by the mainloop via [`set_gc_roots`] after
-/// `Storage::refresh_pools`. Zero until set, which disables collection (the
-/// allocator then only bumps / grows).
+/// Registered via [`set_node_gc_roots`] after `NodeStorage::refresh_pools`.
+/// Zero until set, which disables collection (the allocator then only bumps /
+/// grows).
+static NODE_GC_ROOTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Root set for the bignum walks: raw `*mut Storage` whose 28 buffers hold
+/// every interpreter-visible [`Val`]. Registered by the mainloop via
+/// [`set_gc_roots`] after `Storage::refresh_pools`. Zero until set, which
+/// makes [`promote_all_root_values`] report that it reached nothing rather
+/// than silently walking an empty root set.
 static GC_ROOTS: AtomicUsize = AtomicUsize::new(0);
 
 pub type NodeRootWalkHook = fn(&mut dyn FnMut(*mut *mut Node));
@@ -653,48 +666,31 @@ pub static NODE_ROOT_WALK_HOOK: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static COPYING_COLLECT_COUNT_FOR_TESTS: AtomicUsize = AtomicUsize::new(0);
 
-/// Register the live `Storage` as the collection root set. Called once from
-/// the mainloop after the storage pointers are refreshed.
+/// Register the live [`Storage`] as the bignum root set. Called once from the
+/// mainloop after the storage pointers are refreshed.
 pub fn set_gc_roots(storage: *mut Storage) {
     GC_ROOTS.store(storage as usize, Ordering::Relaxed);
 }
 
+/// Register a live [`NodeStorage`] as the node nursery's collection root set.
+pub fn set_node_gc_roots(storage: *mut NodeStorage) {
+    NODE_GC_ROOTS.store(storage as usize, Ordering::Relaxed);
+}
+
 #[cfg(feature = "bigint-backend")]
 pub fn walk_bigint_root_values(visit: &mut dyn FnMut(&mut Val)) {
-    fn walk_node_chain(mut node: *mut linkedlist::Node, visit: &mut dyn FnMut(&mut Val)) {
-        // Deliberately walk to NULL to over-approximate liveness: bounding by
-        // `size` would drop the last live node when a pop decrements `size`
-        // before committing its `head` store. `chain_digest` bounds instead
-        // because it reports an observable rather than deciding liveness.
-        while !node.is_null() {
-            unsafe {
-                visit(&mut (*node).value);
-                node = (*node).next;
-            }
-        }
-    }
-
     let storage_addr = GC_ROOTS.load(Ordering::Relaxed);
     if storage_addr != 0 {
         let storage = unsafe { &mut *(storage_addr as *mut Storage) };
-        for i in 0..STORAGE_COUNT {
-            if i != VAL_QUEUE && i != VAL_PORT {
-                walk_node_chain(storage.stacks[i].base.head, visit);
-            }
-        }
-        walk_node_chain(storage.queue.base.head, visit);
-        walk_node_chain(storage.port.base.head, visit);
-        visit(&mut storage.port.last_push);
+        storage.walk_values(visit);
     }
 
     // Bignum roots come only from Storage. The collection safepoint is the
     // bignum allocation itself (`alloc_bigint_oldgen`), reached at an aheui op
-    // boundary where every live bignum is in a committed Storage node; the
+    // boundary where every live bignum is in a committed storage slot; the
     // just-computed result is not yet a GC object. Do NOT reuse the untyped JIT
-    // shadow-stack node hook here: its slots can hold Stack*/Storage* pointers,
-    // and blindly following `.next` from those addresses walks arbitrary memory
-    // forever. `Nursery::collect` may use the hook because `forward_root`
-    // range-checks each slot against node chunks before treating it as a Node.
+    // shadow-stack node hook here: its slots can hold Stack*/Storage* pointers
+    // rather than values.
 
     crate::value::walk_bigint_transient_roots(visit);
 }
@@ -742,11 +738,11 @@ fn gc_log_check_chains(when: &str) {
     if !gc_log_enabled() {
         return;
     }
-    let storage_addr = GC_ROOTS.load(Ordering::Relaxed);
+    let storage_addr = NODE_GC_ROOTS.load(Ordering::Relaxed);
     if storage_addr == 0 {
         return;
     }
-    let storage = unsafe { &*(storage_addr as *const Storage) };
+    let storage = unsafe { &*(storage_addr as *const NodeStorage) };
     let digest = storage.chain_digest();
     let violation = storage.check_chains();
     let violation = violation.as_deref().unwrap_or("ok");
@@ -877,9 +873,9 @@ fn init_nursery() {
 //     def __init__(self):
 //         pools = []
 //         for i in range(0, c.STORAGE_COUNT):
-//             if i == c.VAL_QUEUE: pools.append(Queue())
-//             elif i == c.VAL_PORT: pools.append(Port())
-//             else: pools.append(Stack())
+//             if i == c.VAL_QUEUE: pools.append(linkedlist::Queue())
+//             elif i == c.VAL_PORT: pools.append(linkedlist::Port())
+//             else: pools.append(linkedlist::Stack())
 //         self.pools = pools
 //     @jit.elidable
 //     def __getitem__(self, idx):
@@ -887,7 +883,7 @@ fn init_nursery() {
 //
 // Python stores mixed subclass instances in a flat `pools` list, so the
 // element type there is the common base. Rust splits the instances up: a flat
-// `Stack` array plus dedicated `Queue` / `Port` fields. The `pools`
+// `linkedlist::Stack` array plus dedicated `linkedlist::Queue` / `linkedlist::Port` fields. The `pools`
 // indirection array puts the flat list back, holding the address of the
 // [`ListBase`] each of the 28 storages embeds -- the same element type the
 // Python list has, and a pointer each storage genuinely contains rather than a
@@ -895,7 +891,7 @@ fn init_nursery() {
 // dispatch still goes through the [`LinkedList`] trait.
 
 #[repr(C)]
-pub struct Storage {
+pub struct NodeStorage {
     /// Length of the `pools` array (always `STORAGE_COUNT`).  Read only by the
     /// JIT, whose `pool_arrays` declaration names it as the array's length
     /// word: `ARRAYLEN_GC` loads it to re-establish the `len > selected` bound
@@ -907,44 +903,44 @@ pub struct Storage {
     /// JIT indirection: `pools[idx]` is the address of the [`ListBase`] the
     /// storage at that index embeds.
     pub pools: [*mut ListBase; STORAGE_COUNT],
-    /// Flat array of `Stack` (one per index).
-    pub stacks: [Stack; STORAGE_COUNT],
-    /// Queue storage (slot `VAL_QUEUE`).
-    pub queue: Queue,
-    /// Port storage (slot `VAL_PORT`).
-    pub port: Port,
+    /// Flat array of `linkedlist::Stack` (one per index).
+    pub stacks: [linkedlist::Stack; STORAGE_COUNT],
+    /// linkedlist::Queue storage (slot `VAL_QUEUE`).
+    pub queue: linkedlist::Queue,
+    /// linkedlist::Port storage (slot `VAL_PORT`).
+    pub port: linkedlist::Port,
 }
 
 // SAFETY: raw pointers are only to self.stacks / self.queue, not shared across threads.
-unsafe impl Send for Storage {}
+unsafe impl Send for NodeStorage {}
 
-impl Default for Storage {
+impl Default for NodeStorage {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Storage {
+impl NodeStorage {
     // aheui.py:40-49
     pub fn new() -> Self {
         init_nursery();
 
-        let mut storage = Storage {
+        let mut storage = NodeStorage {
             pools_len: STORAGE_COUNT,
             pools: [std::ptr::null_mut(); STORAGE_COUNT],
-            stacks: std::array::from_fn(|_| Stack::new()),
-            queue: Queue::new(),
-            port: Port::new(),
+            stacks: std::array::from_fn(|_| linkedlist::Stack::new()),
+            queue: linkedlist::Queue::new(),
+            port: linkedlist::Port::new(),
         };
         storage.refresh_pools();
         storage
     }
 
     /// Sync the `pools` indirection array to point at `stacks[i]` /
-    /// `queue` / `port`. Must be called after `Storage` is moved, because
+    /// `queue` / `port`. Must be called after `NodeStorage` is moved, because
     /// the pointers are self-referencing.
     ///
-    /// Every slot `aheui.py:40-49` fills with a non-`Stack` instance has to
+    /// Every slot `aheui.py:40-49` fills with a non-`linkedlist::Stack` instance has to
     /// be aliased here, or `get_stack_ptr` hands the JIT a decoy
     /// `stacks[idx]` that no other path ever writes: `dispatch_mut` reaches
     /// the real object, so the two views of one storage index drift apart
@@ -1061,7 +1057,7 @@ impl Storage {
     //
     // Rust needs two entry points: a thin raw-pointer version used by
     // the JIT (`get_list_ptr`) and a polymorphic trait-object version
-    // used by the interpreter for correct `Queue` / `Port` dispatch.
+    // used by the interpreter for correct `linkedlist::Queue` / `linkedlist::Port` dispatch.
     #[inline(always)]
     pub fn get_list_ptr(&mut self, idx: usize) -> *mut ListBase {
         debug_assert!(idx < STORAGE_COUNT);
@@ -1092,22 +1088,22 @@ impl Storage {
 
     // Convenience accessors for tests / I/O paths that need a concrete
     // subclass rather than polymorphic dispatch.
-    pub fn stack(&self, idx: usize) -> &Stack {
+    pub fn stack(&self, idx: usize) -> &linkedlist::Stack {
         &self.stacks[idx]
     }
-    pub fn stack_mut(&mut self, idx: usize) -> &mut Stack {
+    pub fn stack_mut(&mut self, idx: usize) -> &mut linkedlist::Stack {
         &mut self.stacks[idx]
     }
-    pub fn queue(&self) -> &Queue {
+    pub fn queue(&self) -> &linkedlist::Queue {
         &self.queue
     }
-    pub fn queue_mut(&mut self) -> &mut Queue {
+    pub fn queue_mut(&mut self) -> &mut linkedlist::Queue {
         &mut self.queue
     }
-    pub fn port(&self) -> &Port {
+    pub fn port(&self) -> &linkedlist::Port {
         &self.port
     }
-    pub fn port_mut(&mut self) -> &mut Port {
+    pub fn port_mut(&mut self) -> &mut linkedlist::Port {
         &mut self.port
     }
 
@@ -1167,6 +1163,7 @@ mod tests {
             let lock = super::nursery_test_lock();
 
             GC_ROOTS.store(0, Ordering::Relaxed);
+            NODE_GC_ROOTS.store(0, Ordering::Relaxed);
             NODE_ROOT_WALK_HOOK.store(0, Ordering::Relaxed);
             COPYING_COLLECT_COUNT_FOR_TESTS.store(0, Ordering::Relaxed);
             unsafe {
@@ -1180,6 +1177,7 @@ mod tests {
     impl Drop for NurseryTestGuard {
         fn drop(&mut self) {
             GC_ROOTS.store(0, Ordering::Relaxed);
+            NODE_GC_ROOTS.store(0, Ordering::Relaxed);
             NODE_ROOT_WALK_HOOK.store(0, Ordering::Relaxed);
             unsafe {
                 (*std::ptr::addr_of_mut!(NURSERY)).reset_for_test();
@@ -1208,7 +1206,7 @@ mod tests {
     #[test]
     fn test_storage_init() {
         let _lock = super::nursery_test_lock();
-        let storage = Storage::new();
+        let storage = NodeStorage::new();
         assert_eq!(storage.stacks.len(), STORAGE_COUNT);
         assert_eq!(storage.stack(0).__len__(), 0);
         assert_eq!(storage.queue().__len__(), 0);
@@ -1219,7 +1217,7 @@ mod tests {
     fn test_storage_queue_dispatch() {
         // Queue polymorphic dispatch goes through LinkedList trait.
         let _lock = super::nursery_test_lock();
-        let mut storage = Storage::new();
+        let mut storage = NodeStorage::new();
         let q = storage.dispatch_mut(VAL_QUEUE);
         q.push(val_from_i32(1));
         q.push(val_from_i32(2));
@@ -1347,9 +1345,9 @@ mod tests {
     fn test_copying_collect_preserves_deep_stack_and_queue_chains() {
         let _guard = NurseryTestGuard::new();
 
-        let mut storage = Storage::new();
+        let mut storage = NodeStorage::new();
         storage.refresh_pools();
-        set_gc_roots(&mut storage as *mut Storage);
+        set_node_gc_roots(&mut storage as *mut NodeStorage);
 
         let stack_idx = (0..STORAGE_COUNT)
             .find(|&idx| idx != VAL_QUEUE && idx != VAL_PORT)
