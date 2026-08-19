@@ -127,6 +127,11 @@ fn main() {
                         "storage".to_string(),
                         "selected".to_string(),
                     ],
+                    // Empty leaves the positional-kind check disabled, the
+                    // documented default for a driver that does not carry a
+                    // portal signature here.
+                    green_kinds: Vec::new(),
+                    red_kinds: Vec::new(),
                     autoreds: false,
                     virtualizables: Vec::new(),
                     red_types: Vec::new(),
