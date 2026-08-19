@@ -231,13 +231,6 @@ pub struct Stack {
 }
 
 impl Stack {
-    /// Every live element, bottom to top.
-    pub fn walk_values(&mut self, visit: &mut dyn FnMut(&mut Val)) {
-        for i in 0..self.base.size {
-            visit(unsafe { &mut *self.base.data.add(i as usize) });
-        }
-    }
-
     pub fn new() -> Self {
         Stack {
             base: ArrayBase::new(),
@@ -248,13 +241,6 @@ impl Stack {
     ///
     /// Callers must re-read `self.base.data` afterwards: this may move the buffer.
     fn reserve_one(&mut self) {
-        assert!(
-            self.base.size <= self.base.cap,
-            "pool invariant broken before reserve: size {} cap {} data {:?}",
-            self.base.size,
-            self.base.cap,
-            self.base.data
-        );
         if self.base.size < self.base.cap {
             return;
         }
@@ -370,13 +356,6 @@ pub struct Queue {
 }
 
 impl Queue {
-    /// Every live element, front to back, following the ring.
-    pub fn walk_values(&mut self, visit: &mut dyn FnMut(&mut Val)) {
-        for i in 0..self.base.size {
-            visit(unsafe { &mut *self.slot(i) });
-        }
-    }
-
     pub fn new() -> Self {
         Queue {
             base: ArrayBase::new(),
@@ -393,13 +372,6 @@ impl Queue {
     /// Ensure room for one more element. On growth the ring is unrolled so
     /// `front` returns to 0, which keeps the copy a pair of contiguous runs.
     fn reserve_one(&mut self) {
-        assert!(
-            self.base.size <= self.base.cap,
-            "pool invariant broken before reserve: size {} cap {} data {:?}",
-            self.base.size,
-            self.base.cap,
-            self.base.data
-        );
         if self.base.size < self.base.cap {
             return;
         }
@@ -532,14 +504,6 @@ pub struct Port {
 }
 
 impl Port {
-    /// Every live element, bottom to top. `last_push` lives outside the
-    /// buffer and is visited by the owning `Storage`.
-    pub fn walk_values(&mut self, visit: &mut dyn FnMut(&mut Val)) {
-        for i in 0..self.base.size {
-            visit(unsafe { &mut *self.base.data.add(i as usize) });
-        }
-    }
-
     pub fn new() -> Self {
         Port {
             base: ArrayBase::new(),
@@ -548,13 +512,6 @@ impl Port {
     }
 
     fn reserve_one(&mut self) {
-        assert!(
-            self.base.size <= self.base.cap,
-            "pool invariant broken before reserve: size {} cap {} data {:?}",
-            self.base.size,
-            self.base.cap,
-            self.base.data
-        );
         if self.base.size < self.base.cap {
             return;
         }
@@ -1148,201 +1105,5 @@ mod drop_tests {
             let _ = Queue::new();
             let _ = Port::new();
         }
-    }
-}
-
-// aheui.py:37-53 `class Storage` — the 28 pools a program selects between.
-//
-// The linked-list container in `super` is the same shape over `ListBase`. Both
-// keep a `pools` indirection array holding the address of the base each pool
-// embeds, because that is the element type `aheui.py`'s flat `pools` list has:
-// a pointer the pool genuinely contains, rather than a reinterpretation of one
-// pool's address as another's.
-
-use crate::aheui::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
-
-#[repr(C)]
-pub struct Storage {
-    /// Length of `pools`, always `STORAGE_COUNT`. The JIT's `pool_arrays`
-    /// declaration names it as the array's length word and loads it to
-    /// re-establish the `len > selected` bound on each loop entry, so its
-    /// offset and width come from that declaration.
-    pub pools_len: usize,
-    /// `pools[idx]` is the address of the [`ArrayBase`] the pool at that index
-    /// embeds.
-    pub pools: [*mut ArrayBase; STORAGE_COUNT],
-    pub stacks: [Stack; STORAGE_COUNT],
-    pub queue: Queue,
-    pub port: Port,
-}
-
-// SAFETY: the raw pointers address this value's own pools, and are refreshed
-// after any move; nothing is shared across threads.
-unsafe impl Send for Storage {}
-
-impl Default for Storage {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Storage {
-    pub fn new() -> Self {
-        let mut storage = Storage {
-            pools_len: STORAGE_COUNT,
-            pools: [std::ptr::null_mut(); STORAGE_COUNT],
-            stacks: std::array::from_fn(|_| Stack::new()),
-            queue: Queue::new(),
-            port: Port::new(),
-        };
-        storage.reserve_all();
-        storage.refresh_pools();
-        storage
-    }
-
-    /// Give every pool its initial buffer up front.
-    ///
-    /// A pool whose `cap` is still 0 has no buffer at all, so its first push
-    /// has to reallocate — and the compiled path cannot reallocate, so that
-    /// first push would leave the trace. Reserving here costs
-    /// `STORAGE_COUNT * INITIAL_CAPACITY` words once and lets the very first
-    /// push of every pool take the inline path.
-    fn reserve_all(&mut self) {
-        for i in 0..STORAGE_COUNT {
-            self.stacks[i].reserve_one();
-        }
-        self.queue.reserve_one();
-        self.port.reserve_one();
-    }
-
-    /// Point `pools` at the base each pool embeds. Must run after the value
-    /// moves: the pointers are self-referencing.
-    ///
-    /// Every slot `aheui.py:40-49` fills with a non-`Stack` instance has to be
-    /// aliased here, or the JIT gets a decoy `stacks[idx]` that no other path
-    /// writes and the two views of one index drift apart silently.
-    pub fn refresh_pools(&mut self) {
-        for i in 0..STORAGE_COUNT {
-            self.pools[i] = &mut self.stacks[i].base as *mut ArrayBase;
-        }
-        self.pools[VAL_QUEUE] = &mut self.queue.base as *mut ArrayBase;
-        self.pools[VAL_PORT] = &mut self.port.base as *mut ArrayBase;
-    }
-
-    /// Thin raw-pointer `storage[idx]` for the JIT.
-    #[inline(always)]
-    pub fn get_pool_ptr(&mut self, idx: usize) -> *mut ArrayBase {
-        debug_assert!(idx < STORAGE_COUNT);
-        self.pools[idx]
-    }
-
-    /// Polymorphic `storage[idx]`, for the interpreter's `Queue` / `Port`
-    /// dispatch.
-    pub fn dispatch(&self, idx: usize) -> &dyn ArrayStorage {
-        if idx == VAL_QUEUE {
-            &self.queue
-        } else if idx == VAL_PORT {
-            &self.port
-        } else {
-            &self.stacks[idx]
-        }
-    }
-
-    pub fn dispatch_mut(&mut self, idx: usize) -> &mut dyn ArrayStorage {
-        if idx == VAL_QUEUE {
-            &mut self.queue
-        } else if idx == VAL_PORT {
-            &mut self.port
-        } else {
-            &mut self.stacks[idx]
-        }
-    }
-
-    /// `len(storage[idx])`.
-    pub fn len_at(&self, idx: usize) -> usize {
-        self.dispatch(idx).len()
-    }
-
-    #[inline(always)]
-    pub fn stack(&self, idx: usize) -> &Stack {
-        &self.stacks[idx]
-    }
-
-    #[inline(always)]
-    pub fn stack_mut(&mut self, idx: usize) -> &mut Stack {
-        &mut self.stacks[idx]
-    }
-
-    #[inline(always)]
-    pub fn queue(&self) -> &Queue {
-        &self.queue
-    }
-
-    #[inline(always)]
-    pub fn queue_mut(&mut self) -> &mut Queue {
-        &mut self.queue
-    }
-
-    #[inline(always)]
-    pub fn port(&self) -> &Port {
-        &self.port
-    }
-
-    #[inline(always)]
-    pub fn port_mut(&mut self) -> &mut Port {
-        &mut self.port
-    }
-
-    /// Visit every live value the storage holds, in no particular order.
-    ///
-    /// This is the root set of both bignum walks: the collector's, and the
-    /// dual-mode flip's. `port.last_push` is a value the port keeps outside
-    /// its buffer, so it is enumerated explicitly — a holder added later
-    /// without being added here is a value the flip would leave raw.
-    pub fn walk_values(&mut self, visit: &mut dyn FnMut(&mut Val)) {
-        for i in 0..STORAGE_COUNT {
-            if i != VAL_QUEUE && i != VAL_PORT {
-                self.stacks[i].walk_values(visit);
-            }
-        }
-        self.queue.walk_values(visit);
-        self.port.walk_values(visit);
-        visit(&mut self.port.last_push);
-    }
-
-    /// The values at `idx` in pop order, for diagnostics.
-    pub fn values_at(&self, idx: usize) -> Vec<i64> {
-        let mut out = Vec::new();
-        let base = unsafe { &*self.pools[idx] };
-        if idx == VAL_QUEUE {
-            for i in 0..self.queue.base.size {
-                out.push(unsafe { *(self.queue.slot(i) as *const i64) });
-            }
-        } else {
-            for i in (0..base.size).rev() {
-                out.push(unsafe { *(base.data.add(i as usize) as *const i64) });
-            }
-        }
-        out
-    }
-
-    /// The counterpart of the linked list's `check_chains`: there, `size` and
-    /// the node chain are two representations of one length and can disagree.
-    /// Here the only such pair is `size` and `cap`, and a pool whose `size`
-    /// exceeds its `cap` has written past its buffer.
-    pub fn check_pools(&self) -> Option<String> {
-        for i in 0..STORAGE_COUNT {
-            let base = unsafe { &*self.pools[i] };
-            if base.size > base.cap {
-                return Some(format!(
-                    "storage[{i}] size {} exceeds cap {}",
-                    base.size, base.cap
-                ));
-            }
-            if base.cap > 0 && base.data.is_null() {
-                return Some(format!("storage[{i}] has cap {} but no buffer", base.cap));
-            }
-        }
-        None
     }
 }

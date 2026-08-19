@@ -319,8 +319,8 @@ include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));
 
 use aheui_runtime::aheui::*;
 use aheui_runtime::io as aheui_io;
-use aheui_runtime::storage::array_jit as lj;
-use aheui_runtime::storage::{ArrayStorage, Storage};
+use aheui_runtime::storage::linkedlist_jit as lj;
+use aheui_runtime::storage::{LinkedList, Storage};
 use ahsembler::compiler::Program;
 
 use aheui_runtime::value::*;
@@ -601,13 +601,13 @@ struct AheuiState {
     selected: usize,
     stacksize: i64,
     /// `state.storage.pools[selected]` packed as `usize`. Tracked as
-    /// `ref(ArrayBase)` in `state_fields` so it is carried in the ref register
+    /// `ref(ListBase)` in `state_fields` so it is carried in the ref register
     /// bank as a genuine `InputArgRef`: promoted with `ref_guard_value` and
     /// passed to the monomorphic storage helpers as a ref-kind arg. The
     /// `usize` carrier round-trips the raw pointer bits.
     selected_ref: usize,
     /// `&mut state.storage as *mut Storage` packed as `usize` — the base the
-    /// contiguous `pools: [*mut ArrayBase; N]` array is read off.
+    /// contiguous `pools: [*mut ListBase; N]` array is read off.
     /// Tracked as `ref(Storage)` and declared a `pool_arrays` base so the
     /// OP_SEL `selected_ref = pools[selected]` read lowers to a re-producible
     /// `getarrayitem_gc_r` on this base instead of an opaque residual call;
@@ -626,58 +626,68 @@ impl AheuiState {
     fn refresh_selected_ref(&mut self) {
         // rpaheui/aheui/aheui.py:233,282: selected = storage[idx].
         // `pools[idx]` already holds the address of the base the storage at
-        // that index embeds, so the JIT reads `data`, `size` and `cap`
-        // straight off it without a further step.
-        self.selected_ref = self.storage.get_pool_ptr(self.selected) as usize;
+        // that index embeds, so the JIT reads `head` and `size` straight off
+        // it without a further step.
+        self.selected_ref = self.storage.get_list_ptr(self.selected) as usize;
     }
 
     /// rpaheui: selected.push/pop/add — polymorphic dispatch (Stack/Queue/Port).
-    fn selected_dispatch_mut(&mut self) -> &mut dyn ArrayStorage {
+    fn selected_dispatch_mut(&mut self) -> &mut dyn LinkedList {
         self.storage.dispatch_mut(self.selected)
     }
 
-    fn selected_dispatch(&self) -> &dyn ArrayStorage {
+    fn selected_dispatch(&self) -> &dyn LinkedList {
         self.storage.dispatch(self.selected)
     }
 
     fn spdiag_dump_stacks(&self) -> String {
-        // The queue and the port are storages of their own, so a dump that
-        // skips them cannot show whether one of them moved. Print every
-        // storage, and cap the walk high enough that a one-element
-        // discrepancy is visible rather than truncated away.
+        // The queue and the port are two of the three chains the collector
+        // forwards explicitly, so a dump that skips them cannot show whether a
+        // root moved. Print every storage, and cap the walk high enough that a
+        // one-node discrepancy is visible rather than truncated away.
         let limit = std::env::var("MAJIT_SPDIAG_NODES")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(64);
         let mut dump = String::new();
         for i in 0..STORAGE_COUNT {
-            let vals: Vec<i64> = self
-                .storage
-                .values_at(i)
-                .into_iter()
-                .take(limit)
+            let mut p = self.storage.dispatch(i).head() as *const u8;
+            let mut vals: Vec<i64> = Vec::new();
+            while !p.is_null() && vals.len() < limit {
+                let raw = unsafe { *(p as *const i64) };
                 // bigint Val: small = (v<<1)|1; smallint Val: raw == v.
-                .map(|raw| if raw & 1 != 0 { raw >> 1 } else { raw })
-                .collect();
+                vals.push(if raw & 1 != 0 { raw >> 1 } else { raw });
+                p = unsafe { *(p.add(8) as *const *const u8) };
+            }
             dump.push_str(&format!(
                 " stack[{i}](size={}){vals:?}",
                 self.storage.len_at(i)
             ));
         }
-        dump.push_str(&format!(" queue.front={}", self.storage.queue.front));
+        dump.push_str(&format!(
+            " queue.tail={:?} port.head={:?}",
+            self.storage.queue.tail, self.storage.port.base.head,
+        ));
         dump
     }
 
-    /// Every storage's buffer as (address, size, cap), so a size/cap
-    /// violation can be read as "which pool overran" rather than just a
-    /// count. `spdiag_dump_stacks` prints values only.
-    fn dump_pool_extents(&self) -> String {
+    /// Every storage's `size` and its `head` chain as raw addresses, so a
+    /// chain/size mismatch can be read as "which node is extra/missing"
+    /// rather than just a count. `spdiag_dump_stacks` prints values only.
+    fn dump_chain_addrs(&self) -> String {
         let mut dump = String::new();
         for i in 0..STORAGE_COUNT {
-            let base = unsafe { &*self.storage.pools[i] };
+            let list = self.storage.dispatch(i);
+            let mut node = list.head();
+            let mut addrs: Vec<String> = Vec::new();
+            while !node.is_null() && addrs.len() < 8 {
+                addrs.push(format!("{node:?}"));
+                node = unsafe { (*node).next };
+            }
             dump.push_str(&format!(
-                " storage[{i}]@{:?}(size={} cap={})\n",
-                base.data, base.size, base.cap
+                " storage[{i}]@{:#x}(size={}){addrs:?}\n",
+                list as *const _ as *const u8 as usize,
+                list.size()
             ));
         }
         dump
@@ -709,8 +719,8 @@ impl AheuiState {
         // which `spdiag_dump_stacks` truncates away, and a debug build is too
         // slow to reach the failure.
         if cfg!(debug_assertions) || check_chains_enabled() {
-            if let Some(err) = self.storage.check_pools() {
-                panic!("check_pools: {err}\n{}", self.dump_pool_extents());
+            if let Some(err) = self.storage.check_chains() {
+                panic!("check_chains: {err}\n{}", self.dump_chain_addrs());
             }
         }
         self.stacksize = self.storage.len_at(self.selected) as i64;
@@ -735,12 +745,13 @@ fn dump_storage_ptr(ptr: usize) -> String {
         if storage.len_at(i) == 0 {
             continue;
         }
-        let vals: Vec<i64> = storage
-            .values_at(i)
-            .into_iter()
-            .take(8)
-            .map(|raw| if raw & 1 != 0 { raw >> 1 } else { raw })
-            .collect();
+        let mut p = storage.dispatch(i).head() as *const u8;
+        let mut vals: Vec<i64> = Vec::new();
+        while !p.is_null() && vals.len() < 8 {
+            let raw = unsafe { *(p as *const i64) };
+            vals.push(if raw & 1 != 0 { raw >> 1 } else { raw });
+            p = unsafe { *(p.add(8) as *const *const u8) };
+        }
         dump.push_str(&format!(" stack[{i}]={vals:?}"));
     }
     dump
@@ -871,6 +882,21 @@ fn jit_bigint_mode() -> i64 {
     aheui_runtime::value::bigint_mode() as i64
 }
 
+// Local JIT wrappers for node allocation and value comparison.
+// Local wrappers for functions in aheui_runtime whose `__majit_call_policy_*`
+// probes the macro generates in the LOCAL scope.  Calling `lj::alloc_node_jit`
+// directly would look for the probe in the `lj` module, which doesn't exist.
+
+#[inline(always)]
+fn jit_alloc_node(value: Val, next: usize) -> usize {
+    aheui_runtime::storage::linkedlist_jit::alloc_node_jit(value, next)
+}
+
+#[inline(always)]
+fn jit_free_node(node: usize) {
+    aheui_runtime::storage::linkedlist_jit::free_node_jit(node)
+}
+
 /// Pipeline jitcode resolver for `inline_pipeline_*` call policies.
 /// The `#[jit_interp]` macro's dispatch JitCode builder calls this to
 /// resolve a function name (e.g. `"val_add"`) to the pipeline-built
@@ -906,13 +932,12 @@ extern "C" fn jit_storage_push(pool_ptr: usize, target: usize, value: Val) {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
     storage.dispatch_mut(target).push(value);
 }
-
 extern "C" fn jit_storage_dup(pool_ptr: usize, target: usize) {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
     storage.dispatch_mut(target).dup();
 }
 
-/// OP_SEL helper: return the raw pointer to the selected pool as
+/// OP_SEL helper: return the raw pointer to the selected linked-list as
 /// the new `selected_ref`. `storage[idx]` (aheui.py:280-284) is a list
 /// getitem returning the Stack/Queue/Port object reference; the result is
 /// carried in the ref register bank, so the call is recorded ref-returning
@@ -922,7 +947,7 @@ extern "C" fn jit_storage_dup(pool_ptr: usize, target: usize) {
 #[majit_macros::dont_look_inside_cannot_raise]
 fn jit_sel_get_ref(pool_ptr: usize, selected: usize) -> usize {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
-    storage.get_pool_ptr(selected) as usize
+    storage.get_list_ptr(selected) as usize
 }
 
 fn jit_stacksize_delta(op: usize) -> i64 {
@@ -987,8 +1012,8 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // Stack, a Queue or a Port and the binding's type is what they have in
         // common. Naming one of the three here instead would make every access
         // through this field a reinterpretation of one storage as another.
-        selected_ref: ref(aheui_runtime::storage::array::ArrayBase),
-        // Base the `pools: [*mut ArrayBase; N]` array is read off.
+        selected_ref: ref(aheui_runtime::storage::linkedlist::ListBase),
+        // Base the `pools: [*mut ListBase; N]` array is read off.
         // Declared `ref(Storage)` + listed in `pool_arrays` so OP_SEL's
         // `selected_ref = jit_sel_get_ref(storage_ref, selected)` lowers to a
         // re-producible `getarrayitem_gc_r` on this base. aheui.py:27 carries
@@ -997,7 +1022,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // pointer would leave the resume box kind of every `pools[N]` stack ref
         // ambiguous, seeding Ref-typed loop-header slots with Int boxes and
         // making the bridge unmatchable (VirtualStatesCantMatch).
-        storage_ref: ref(aheui_runtime::storage::array::Storage),
+        storage_ref: ref(aheui_runtime::storage::Storage),
     },
     // `storage_ref` is a raw-pointer-array base: the registered getter
     // `jit_sel_get_ref(state.storage_ref, state.selected)` indexes
@@ -1005,33 +1030,42 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // residual call below.  Keyed on the getter identity so only this call —
     // not any other helper sharing the `(state.storage_ref, int)` shape — is
     // recognized as a pool read.
-    pool_arrays = { storage_ref.pools[pools_len] => jit_sel_get_ref -> aheui_runtime::storage::array::ArrayBase },
-    // `size` and `cap` are `u32`, so their field descrs are sub-word and
-    // `intbounds` can bound a load of them. Without a bound the depth's `+ 1`
+    pool_arrays = { storage_ref.pools[pools_len] => jit_sel_get_ref -> aheui_runtime::storage::linkedlist::ListBase },
+    // Struct field type declarations for ref-kind field access.
+    // Tells the lowerer to emit getfield_gc_r / setfield_gc_r (ref-kind)
+    // instead of _gc_i (int-kind) when accessing these fields through a
+    // ref(T) state scalar or a local ref binding.
+    ref_fields = {
+        // Declared once, on the type that owns it.  A `Stack`, `Queue` or
+        // `Port` access resolves onto `ListBase` and so mints one descriptor
+        // for the one word, whichever of the three it was spelled through.
+        aheui_runtime::storage::linkedlist::ListBase::head => aheui_runtime::storage::linkedlist::Node,
+        aheui_runtime::storage::linkedlist::Node::next => aheui_runtime::storage::linkedlist::Node,
+        // Declared for the same reason as the `Queue`/`Port` entries in
+        // `int_fields`: the `residual_writes` group below mints this word from
+        // here, and the field's kind comes from whichever producer describes
+        // it. The linked-list helpers declare it a pointer; left undeclared
+        // here it minted as a signed 8-byte integer instead, so a ref-kind
+        // access read a descr that called the field an int — one word with two
+        // descriptions, and a wrong width on a 32-bit pointer target.
+        aheui_runtime::storage::linkedlist::Queue::tail => aheui_runtime::storage::linkedlist::Node,
+    },
+    // The element count is `u32`, so the field descr is sub-word and
+    // `intbounds` can bound a load of it. Without a bound the depth's `+ 1`
     // may overflow, the sum goes rangeless, and the `stackok` check has to be
     // guarded again at every opcode instead of following from the last one.
-    // Both are declared once, on the type that owns them: a `Stack`, `Queue`
-    // or `Port` access resolves onto `ArrayBase` and so mints one descriptor
-    // per word, whichever of the three it was spelled through.
     int_fields = {
-        aheui_runtime::storage::array::ArrayBase::size => u32,
-        aheui_runtime::storage::array::ArrayBase::cap => u32,
+        aheui_runtime::storage::linkedlist::ListBase::size => u32,
     },
-    // The element buffer. `data` holds the base of a headerless run of `Val`,
-    // so an element access lowers to a `getfield_gc_r` of the base followed by
-    // a `get`/`setarrayitem_gc_i` — no `arraylen_gc`, because the run carries
-    // no length word of its own; `size` and `cap` are the length words and
-    // they live in the struct.
-    array_fields = {
-        aheui_runtime::storage::array::ArrayBase::data => i64,
-    },
-    // The three storages embed `ArrayBase` as their leading field, so a field
+    // The three storages embed `ListBase` as their leading field, so a field
     // they do not declare themselves is resolved against it.
     inlined_prefix = {
-        aheui_runtime::storage::array::Stack::base => aheui_runtime::storage::array::ArrayBase,
-        aheui_runtime::storage::array::Queue::base => aheui_runtime::storage::array::ArrayBase,
-        aheui_runtime::storage::array::Port::base => aheui_runtime::storage::array::ArrayBase,
+        aheui_runtime::storage::linkedlist::Stack::base => aheui_runtime::storage::linkedlist::ListBase,
+        aheui_runtime::storage::linkedlist::Queue::base => aheui_runtime::storage::linkedlist::ListBase,
+        aheui_runtime::storage::linkedlist::Port::base => aheui_runtime::storage::linkedlist::ListBase,
     },
+    struct_allocs = { aheui_runtime::storage::linkedlist::Node => jit_alloc_node },
+    headerless_structs = { aheui_runtime::storage::linkedlist::Node },
     io_shims = {
         aheui_io::output_write_number => jit_write_number,
         aheui_io::output_write_utf8 => jit_write_utf8,
@@ -1050,13 +1084,14 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         Program::get_op => elidable_int_cannot_raise,
         Program::get_label => elidable_int_cannot_raise,
         Program::get_operand => elidable_int_cannot_raise,
-        // Monomorphic storage helpers. The whole stack family is
-        // `#[jit_inline]`: over a contiguous buffer every one of them is a
-        // pair of element accesses and a `size` store, with no allocation and
-        // no chain to walk. The queue's element index is `(front + i) % cap`,
-        // which carries a division the stack's does not, so its ops stay
-        // residual — a concrete `call_void_args` / `call_int_args` rather
-        // than a silent-skipped storage op.
+        // Monomorphic storage helpers. The hot Stack ops are `#[jit_inline]`,
+        // while the storage-independent pop / swap come from the graph
+        // pipeline's shared `LinkedList` implementation. Queue div/mod stay
+        // residual — a concrete `call_void_args` / `call_int_args` — rather
+        // than silent-skipping the storage op. Their stack twins are not
+        // registered because the arms hand-inline the pop and call
+        // `val_div`/`val_mod` on the operands directly, so there is no
+        // `lj::stack_div` call site left to classify.
         //
         // The registered path segments must match the call site verbatim
         // (the macro compares segment-by-segment); use the `lj::*` alias
@@ -1065,35 +1100,35 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         lj::stack_add => inline_void,
         lj::stack_sub => inline_void,
         lj::stack_mul => inline_void,
-        lj::stack_div => inline_void,
-        lj::stack_mod => inline_void,
         lj::stack_dup => inline_void,
         lj::stack_cmp => inline_void,
-        lj::stack_pop_known_nonempty => inline_int,
-        lj::stack_swap_known_two => inline_void,
-        lj::queue_push => residual_void,
-        lj::queue_pop => residual_int,
-        lj::queue_swap => residual_void,
-        lj::queue_add => residual_void,
-        lj::queue_sub => residual_void,
-        lj::queue_mul => residual_void,
+        lj::queue_push => inline_void,
+        lj::queue_add => inline_void,
+        lj::queue_sub => inline_void,
+        lj::queue_mul => inline_void,
         lj::queue_div => residual_void,
         lj::queue_mod => residual_void,
-        lj::queue_dup => residual_void,
-        lj::queue_cmp => residual_void,
+        lj::queue_dup => inline_void,
+        lj::queue_cmp => inline_void,
+        // Named by neither family: their parameter is the base the three
+        // storages embed, so one registration covers every selection.
+        lj::pop_base_known_nonempty => inline_pipeline_int,
+        lj::swap_base_known_two => inline_pipeline_void,
         // Mode-0 twins of the arithmetic helpers, selected on the `bm` green.
+        // All inline, including div and mod, which are residual above: their
+        // mode-0 form carries a guard that only survives inside the trace.
         lj::stack_add_raw => inline_void,
         lj::stack_sub_raw => inline_void,
         lj::stack_mul_raw => inline_void,
         lj::stack_div_raw => inline_void,
         lj::stack_mod_raw => inline_void,
         lj::stack_cmp_raw => inline_void,
-        lj::queue_add_raw => residual_void,
-        lj::queue_sub_raw => residual_void,
-        lj::queue_mul_raw => residual_void,
-        lj::queue_div_raw => residual_void,
-        lj::queue_mod_raw => residual_void,
-        lj::queue_cmp_raw => residual_void,
+        lj::queue_add_raw => inline_void,
+        lj::queue_sub_raw => inline_void,
+        lj::queue_mul_raw => inline_void,
+        lj::queue_div_raw => inline_void,
+        lj::queue_mod_raw => inline_void,
+        lj::queue_cmp_raw => inline_void,
         jit_storage_push => residual_void,
         jit_storage_dup => residual_void,
         // `storage[idx]` returns the selected list's object reference; the
@@ -1112,8 +1147,17 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_sel_get_ref => elidable_ref_cannot_raise_wrapped,
         jit_stacksize_delta => elidable_int_cannot_raise,
         jit_effective_stacksize_delta => elidable_int_cannot_raise,
-        // Register value arithmetic so field-level Stack operations emit
-        // concrete IR instead of silent-skipping unregistered calls.
+        // Register node frees and value arithmetic so field-level Stack
+        // operations emit concrete IR instead of
+        // silent-skipping unregistered calls. Node allocation now goes through
+        // `struct_allocs` makes concrete execution call `jit_alloc_node`, while
+        // tracing emits a headerless `New(Node)` plus field stores with the
+        // descriptor identity used by graph-pipeline storage helpers.
+        // jit_free_node is `concrete_only_void` — the free runs on the
+        // concrete path only; the JIT trace omits it. The GNE after the
+        // call is a store-scheduling fence for the preceding
+        // setfield_gc_r(selected_ref.head) lazy set.
+        jit_free_node => concrete_only_void,
         val_add => elidable_int,
         val_sub => elidable_int,
         val_mul => elidable_int,
@@ -1121,48 +1165,46 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         val_mod => elidable_int,
         val_from_i32 => elidable_int_cannot_raise,
     },
-    // Residual storage mutators that change a pool's buffer, its `size` or its
-    // `cap`. The inlined stack helpers splice those stores into the trace
-    // directly, so they reproduce the barrier and need no entry here; the
-    // remaining ops lower to opaque residual calls, which carry an empty
-    // write-set by default.
-    //
-    // Every entry below lists the SAME helpers, and that is not redundancy: a
-    // write set's field list is also the layout the field descrs it mints take
-    // their positional slot from. A helper that named only `size` would mint a
-    // `size` descr at slot 0 — the slot `data` occupies in the layout every
-    // access site registers — and one word would then answer for the other.
-    // Naming the whole base at every helper keeps one slot per word. The lists
-    // are conservative supersets for the same reason they were before: an
-    // extra reload is harmless while a missing invalidation is not.
+    // Residual storage mutators that change `Stack.size` or its `head` chain
+    // pointer.  Traced push/pop methods emit in-trace `setfield_gc` stores,
+    // which invalidate the matching heapcache entries directly.
+    // The macro-inlined Stack helpers and graph-pipeline pop/swap jitcodes
+    // splice that `self.size` setfield into the trace directly, so they
+    // reproduce the barrier and need no entry here. The same holds for pops
+    // that arithmetic arms inline as head/next/size stores.
+    // The remaining ops lower to opaque residual calls, which carry an empty
+    // write-set by default. A size-only declaration can leave a stale head
+    // cached after a residual pop, while a head-only declaration can leave a
+    // stale size. Declaring both fields restores the invalidation performed by
+    // traced setfield barriers. The lists are
+    // conservative supersets because an extra reload is harmless while a
+    // missing invalidation is not.
+    // The `@ Struct` alias groups this used to carry are gone: `head` and
+    // `size` are declared once, on the type that owns them, so there is one
+    // descriptor per word to invalidate rather than one per nominal struct
+    // an access might be spelled through.
     residual_writes = {
-        // The buffer pointer. A residual push may reallocate, and a base
-        // cached from before the call would then address freed memory.
-        selected_ref.data => [
-            lj::queue_push, lj::queue_pop, lj::queue_swap, lj::queue_add,
-            lj::queue_sub, lj::queue_mul, lj::queue_div, lj::queue_mod,
-            lj::queue_dup, lj::queue_cmp,
-            jit_storage_push, jit_storage_dup,
-        ],
         selected_ref.size => [
-            lj::queue_push, lj::queue_pop, lj::queue_swap, lj::queue_add,
-            lj::queue_sub, lj::queue_mul, lj::queue_div, lj::queue_mod,
-            lj::queue_dup, lj::queue_cmp,
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
             jit_storage_push, jit_storage_dup,
         ],
-        selected_ref.cap => [
-            lj::queue_push, lj::queue_pop, lj::queue_swap, lj::queue_add,
-            lj::queue_sub, lj::queue_mul, lj::queue_div, lj::queue_mod,
-            lj::queue_dup, lj::queue_cmp,
+        selected_ref.head => [
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
             jit_storage_push, jit_storage_dup,
         ],
-        // The elements behind `data` — an independent claim from the pointer
-        // field above, since a residual that only stores into the buffer moves
-        // nothing.
-        selected_ref.data[] => [
-            lj::queue_push, lj::queue_pop, lj::queue_swap, lj::queue_add,
-            lj::queue_sub, lj::queue_mul, lj::queue_div, lj::queue_mod,
-            lj::queue_dup, lj::queue_cmp,
+        // `tail` exists only on Queue (the dummy-tail sentinel append target).
+        // An opaque residual push/arith that appends at the tail must invalidate
+        // a cached `queue.tail`, else a following inlined queue op reads the
+        // stale sentinel and appends off the live chain, orphaning nodes
+        // (chainlen < size + 1) until a later pop dereferences a null head.
+        selected_ref.tail @ aheui_runtime::storage::linkedlist::Queue => [
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
             jit_storage_push, jit_storage_dup,
         ],
     },
@@ -1434,14 +1476,9 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 continue;
             }
             OP_BRZ => {
-                // The zero test is one comparison on the popped `Val` for
-                // every storage; only the pop itself differs, and `is_queue`
-                // is a green, so the arm not taken never reaches the trace.
-                let pop_val = if is_queue {
-                    lj::queue_pop(state.selected_ref)
-                } else {
-                    lj::stack_pop_known_nonempty(state.selected_ref)
-                };
+                // The pop is the same for every storage, and the zero test is
+                // one comparison on the popped `Val` either way.
+                let pop_val = lj::pop_base_known_nonempty(state.selected_ref);
                 // pop_val is Val (= i64 repr-transparent). val_is_zero
                 // checks `*v == 0` for smallint, or the tagged form
                 // `(0 << 1) | 1 = 1` for bigint. Use the raw int
@@ -1527,7 +1564,14 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_div_raw(state.selected_ref);
                         }
                     } else if bm != 0 {
-                        lj::stack_div(state.selected_ref);
+                        let top_node = state.selected_ref.head;
+                        let r1 = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1u32;
+                        jit_free_node(top_node);
+                        let r2 = next.value;
+                        next.value = val_div(r2, r1);
                     } else {
                         lj::stack_div_raw(state.selected_ref);
                     }
@@ -1542,7 +1586,14 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_mod_raw(state.selected_ref);
                         }
                     } else if bm != 0 {
-                        lj::stack_mod(state.selected_ref);
+                        let top_node = state.selected_ref.head;
+                        let r1 = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1u32;
+                        jit_free_node(top_node);
+                        let r2 = next.value;
+                        next.value = val_mod(r2, r1);
                     } else {
                         lj::stack_mod_raw(state.selected_ref);
                     }
@@ -1554,11 +1605,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     // pop helper lowers in value position; a discarded
                     // statement-position `inline_int` call has no lowering and
                     // aborts the trace. Mirrors OP_POPNUM's pop shape.
-                    let _popped = if is_queue {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        lj::stack_pop_known_nonempty(state.selected_ref)
-                    };
+                    let _popped = lj::pop_base_known_nonempty(state.selected_ref);
                 }
             }
             OP_PUSH => {
@@ -1572,23 +1619,19 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if is_queue {
                     lj::queue_push(state.selected_ref, v);
                 } else if state.selected == VAL_PORT {
-                    // `Port.push` also records `last_push`, and `Port.dup`
-                    // pushes that instead of the top value. `selected_ref` is
-                    // typed as the shared base, so the inline push/dup below
-                    // write the buffer and `size` only and a `push; pop; dup`
-                    // on the port duplicates the wrong value. The port takes
-                    // the polymorphic residual, matching aheui.py:260-389
-                    // `selected.METHOD()`. Only push and dup diverge — `pop`,
-                    // `swap`, `_get_2_values` and `_put_value` are shared.
+                    // linkedlist.py:134-139 `Port.push` also records
+                    // `last_push`, and linkedlist.py:141-142 `Port.dup`
+                    // pushes that instead of the head value. `selected_ref`
+                    // is typed `Stack`, so the inline push/dup below write
+                    // head/size only and a `push; pop; dup` on the port
+                    // duplicates the wrong value. The port takes the
+                    // polymorphic residual, matching aheui.py:260-389
+                    // `selected.METHOD()`. Only push and dup diverge —
+                    // `pop`, `swap`, `_get_2_values` and `_put_value` are
+                    // the shared `LinkedList` implementations.
                     jit_storage_push(state.storage_ref, state.selected, v);
-                } else if state.selected_ref.size < state.selected_ref.cap {
-                    lj::stack_push(state.selected_ref, v);
                 } else {
-                    // The push that outgrows the buffer reallocates, which
-                    // moves `data`. A trace cannot hold a base across that, so
-                    // the O(log n) growing pushes leave through this guard and
-                    // run in the interpreter.
-                    jit_storage_push(state.storage_ref, state.selected, v);
+                    lj::stack_push(state.selected_ref, v);
                 }
             }
             OP_DUP => {
@@ -1597,24 +1640,20 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         lj::queue_dup(state.selected_ref);
                     } else if state.selected == VAL_PORT {
                         jit_storage_dup(state.storage_ref, state.selected);
-                    } else if state.selected_ref.size < state.selected_ref.cap {
-                        lj::stack_dup(state.selected_ref);
                     } else {
-                        jit_storage_dup(state.storage_ref, state.selected);
+                        lj::stack_dup(state.selected_ref);
                     }
                 }
             }
             OP_SWAP => {
                 if stackok {
-                    // linkedlist.py:30-33: one `swap`, which every storage
-                    // inherits unchanged. Over a buffer the two are no longer
-                    // one implementation: the stack exchanges the last two
-                    // elements, the queue the two the ring's `front` names.
-                    if is_queue {
-                        lj::queue_swap(state.selected_ref);
-                    } else {
-                        lj::stack_swap_known_two(state.selected_ref);
-                    }
+                    // linkedlist.py:30-33: one `swap` on `LinkedList`, which
+                    // every storage inherits unchanged. The split this replaces
+                    // was not dispatch -- the two helpers were identical -- it
+                    // was what kept a queue-specialized trace touching `head`
+                    // only under descriptors minted for `Queue`. `head` is
+                    // declared once now, so the arm can say what rpaheui says.
+                    lj::swap_base_known_two(state.selected_ref);
                 }
             }
             OP_SEL => {
@@ -1638,25 +1677,22 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_MOV => {
                 if stackok {
-                    let r = if is_queue {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        lj::stack_pop_known_nonempty(state.selected_ref)
-                    };
+                    let r = lj::pop_base_known_nonempty(state.selected_ref);
                     let target = program.get_operand(pc - 1) as usize;
                     if target == VAL_QUEUE || target == VAL_PORT {
-                        // Queue/Port keep the polymorphic residual (ring
-                        // append / `last_push` semantics).
+                        // Queue/Port keep the polymorphic residual (tail-append semantics).
                         jit_storage_push(state.storage_ref, target, r);
                     } else {
                         // Stack: orthodox inline push into pools[target],
                         // mirroring OP_PUSH into selected_ref.
                         let target_ref = jit_sel_get_ref(state.storage_ref, target);
-                        if target_ref.size < target_ref.cap {
-                            lj::stack_push(target_ref, r);
-                        } else {
-                            jit_storage_push(state.storage_ref, target, r);
-                        }
+                        let old_head = target_ref.head;
+                        let new_node = aheui_runtime::storage::linkedlist::Node {
+                            value: r,
+                            next: old_head,
+                        };
+                        target_ref.head = new_node;
+                        target_ref.size = target_ref.size + 1u32;
                     }
                     if state.selected == target {
                         state.stacksize += 1;
@@ -1681,21 +1717,13 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             // Branch ops handled by dispatch-level if-chain above.
             OP_POPNUM => {
                 if stackok {
-                    let r = if is_queue {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        lj::stack_pop_known_nonempty(state.selected_ref)
-                    };
+                    let r = lj::pop_base_known_nonempty(state.selected_ref);
                     aheui_io::output_write_number(&r);
                 }
             }
             OP_POPCHAR => {
                 if stackok {
-                    let r = if is_queue {
-                        lj::queue_pop(state.selected_ref)
-                    } else {
-                        lj::stack_pop_known_nonempty(state.selected_ref)
-                    };
+                    let r = lj::pop_base_known_nonempty(state.selected_ref);
                     aheui_io::output_write_utf8(&r);
                 }
             }
@@ -1712,10 +1740,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::queue_push(state.selected_ref, v);
                 } else if state.selected == VAL_PORT {
                     jit_storage_push(state.storage_ref, state.selected, v);
-                } else if state.selected_ref.size < state.selected_ref.cap {
-                    lj::stack_push(state.selected_ref, v);
                 } else {
-                    jit_storage_push(state.storage_ref, state.selected, v);
+                    lj::stack_push(state.selected_ref, v);
                 }
             }
             OP_PUSHCHAR => {
@@ -1731,10 +1757,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     lj::queue_push(state.selected_ref, v);
                 } else if state.selected == VAL_PORT {
                     jit_storage_push(state.storage_ref, state.selected, v);
-                } else if state.selected_ref.size < state.selected_ref.cap {
-                    lj::stack_push(state.selected_ref, v);
                 } else {
-                    jit_storage_push(state.storage_ref, state.selected, v);
+                    lj::stack_push(state.selected_ref, v);
                 }
             }
             // Branch ops: concrete execution handled by the pre-dispatch
@@ -1758,7 +1782,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     );
 
     // rpaheui/aheui/aheui.py:363-366
-    if state.selected_dispatch().len() > 0 {
+    if state.selected_dispatch().__len__() > 0 {
         state.selected_dispatch_mut().pop()
     } else {
         val_from_i32(0)
