@@ -1492,7 +1492,13 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // 169.0ms, i.e. within noise. The aheui loop body carries almost nothing
     // loop-invariant to hoist — every operation reads or writes the mutable
     // selected stack — so the second copy buys the optimizer no new facts.
-    driver.set_param_enable_opts("intbounds:rewrite:virtualize:string:pure:earlyforce:heap");
+    // `AHEUI_ENABLE_OPTS` overrides the list, which is how a suspect pass gets
+    // taken out of one arm without a second binary.
+    const ENABLE_OPTS: &str = "intbounds:rewrite:virtualize:string:pure:earlyforce:heap";
+    match std::env::var("AHEUI_ENABLE_OPTS") {
+        Ok(text) => driver.set_param_enable_opts(&text),
+        Err(_) => driver.set_param_enable_opts(ENABLE_OPTS),
+    }
 
     let mut pc: usize = 0;
     // rpaheui/aheui/aheui.py:30: reds=['stacksize','storage','selected']
