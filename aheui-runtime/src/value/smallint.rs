@@ -13,6 +13,18 @@ pub fn val_from_i32(v: i32) -> Val {
     v as i64
 }
 
+/// Mode-0 constructor: `Val` is the word itself here, so this is identity.
+#[inline(always)]
+pub fn val_from_raw_i64(v: i64) -> Val {
+    v
+}
+
+/// The packed word behind a `Val`. Identity in this backend.
+#[inline(always)]
+pub fn val_as_raw_i64(v: Val) -> i64 {
+    v
+}
+
 #[inline(always)]
 pub fn val_is_zero(v: &Val) -> bool {
     *v == 0

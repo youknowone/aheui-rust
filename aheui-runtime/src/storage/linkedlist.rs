@@ -194,34 +194,38 @@ pub trait LinkedList {
 
     // linkedlist.py:35-38
     // def add(self): r1, r2 = self._get_2_values(); r = bigint.add(r2, r1); self._put_value(r)
+    //
+    // The combining half lives in `crate::band`, which is also where a caller
+    // holding its operands outside a chain reaches it. Same fast paths, one
+    // implementation.
     fn add(&mut self) {
         let (r1, r2) = self._get_2_values();
-        self._put_value(val_add(r2, r1));
+        self._put_value(crate::band::band_val_add(r2, r1));
     }
 
     // linkedlist.py:40-43
     fn sub(&mut self) {
         let (r1, r2) = self._get_2_values();
-        self._put_value(val_sub(r2, r1));
+        self._put_value(crate::band::band_val_sub(r2, r1));
     }
 
     // linkedlist.py:45-48
     fn mul(&mut self) {
         let (r1, r2) = self._get_2_values();
-        self._put_value(val_mul(r2, r1));
+        self._put_value(crate::band::band_val_mul(r2, r1));
     }
 
     // linkedlist.py:50-53
     fn div(&mut self) {
         let (r1, r2) = self._get_2_values();
-        self._put_value(val_div(r2, r1));
+        self._put_value(crate::band::band_val_div(r2, r1));
     }
 
     // linkedlist.py:55-58
     // Python name is `mod`; Rust reserves that keyword, so use `modulo`.
     fn modulo(&mut self) {
         let (r1, r2) = self._get_2_values();
-        self._put_value(val_mod(r2, r1));
+        self._put_value(crate::band::band_val_mod(r2, r1));
     }
 
     // linkedlist.py:60-64
@@ -232,12 +236,7 @@ pub trait LinkedList {
     //     self._put_value(big_r)
     fn cmp(&mut self) {
         let (r1, r2) = self._get_2_values();
-        let r = if val_ge(&r2, &r1) {
-            val_from_i32(1)
-        } else {
-            val_from_i32(0)
-        };
-        self._put_value(r);
+        self._put_value(crate::band::band_val_cmp(r2, r1));
     }
 }
 

@@ -92,6 +92,8 @@ fn val_add_driver(portal: [&str; 3]) -> JitDriverSpec {
         portal: CallPath::from_segments(portal),
         greens: Vec::new(),
         reds: Vec::new(),
+        green_kinds: Vec::new(),
+        red_kinds: Vec::new(),
         autoreds: false,
         virtualizables: Vec::new(),
         red_types: Vec::new(),
@@ -174,6 +176,8 @@ fn aheui_census_mainloop() {
                 reds: ["stacksize", "storage", "selected"]
                     .map(String::from)
                     .to_vec(),
+                green_kinds: Vec::new(),
+                red_kinds: Vec::new(),
                 autoreds: false,
                 virtualizables: Vec::new(),
                 red_types: Vec::new(),

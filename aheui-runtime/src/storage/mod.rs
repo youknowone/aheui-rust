@@ -650,6 +650,18 @@ pub type NodeRootWalkHook = fn(&mut dyn FnMut(*mut *mut Node));
 /// reference before copying collection swaps spaces.
 pub static NODE_ROOT_WALK_HOOK: AtomicUsize = AtomicUsize::new(0);
 
+/// Signature of [`BAND_ROOT_WALK_HOOK`].
+pub type BandRootWalkHook = fn(&mut dyn FnMut(&mut Val));
+
+/// Optional walker for operand words a caller holds outside the pool chains.
+///
+/// A caller may keep a pool's top elements somewhere the chains do not reach.
+/// Those words are values like any other — a heap value among them is live, and
+/// a mode flip has to convert them exactly once — so they belong to the same
+/// enumeration, and only the caller can bound which slots are live. Zero when
+/// nobody holds any, which is the plain interpreter's case.
+pub static BAND_ROOT_WALK_HOOK: AtomicUsize = AtomicUsize::new(0);
+
 #[cfg(test)]
 static COPYING_COLLECT_COUNT_FOR_TESTS: AtomicUsize = AtomicUsize::new(0);
 
@@ -687,8 +699,15 @@ pub fn walk_bigint_root_values(visit: &mut dyn FnMut(&mut Val)) {
         visit(&mut storage.port.last_push);
     }
 
-    // Bignum roots come only from Storage. The collection safepoint is the
-    // bignum allocation itself (`alloc_bigint_oldgen`), reached at an aheui op
+    let band_hook = BAND_ROOT_WALK_HOOK.load(Ordering::Relaxed);
+    if band_hook != 0 {
+        let hook: BandRootWalkHook = unsafe { std::mem::transmute(band_hook) };
+        hook(visit);
+    }
+
+    // Bignum roots come from Storage and from whatever the band hook adds. The
+    // collection safepoint is the bignum allocation itself
+    // (`alloc_bigint_oldgen`), reached at an aheui op
     // boundary where every live bignum is in a committed Storage node; the
     // just-computed result is not yet a GC object. Do NOT reuse the untyped JIT
     // shadow-stack node hook here: its slots can hold Stack*/Storage* pointers,

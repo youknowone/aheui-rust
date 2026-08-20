@@ -498,6 +498,17 @@ pub fn val_from_raw_i64(v: i64) -> Val {
     Val(v)
 }
 
+/// The packed word behind a `Val`, for a store into an int-kind buffer.
+///
+/// Inverse of [`val_from_raw_i64`]. The word is the whole value in mode 0 and
+/// the tagged encoding in mode 1, so a round trip through it is exact in both;
+/// what it does NOT carry is the mode, so a buffer holding these words is only
+/// interpretable alongside the mode the words were taken in.
+#[inline(always)]
+pub fn val_as_raw_i64(v: Val) -> i64 {
+    v.0
+}
+
 /// Mode-0 `>=` as a value, 1 or 0.
 ///
 /// Raw word ordering, which is what mode 0 wants and what mode 1's tagged

@@ -88,7 +88,50 @@ extern "C" fn linked_list_free_node(node: usize) {
     aheui_runtime::storage::free_node(node as *mut Node);
 }
 
-fn runtime_fnaddr_bindings() -> [(&'static str, i64); 5] {
+// Integer division and remainder are the only primitives the graph pipeline
+// leaves as host calls — every other arithmetic operator it lowers to an IR op.
+// A pipeline helper that divides therefore needs these bound, or its call site
+// keeps the symbolic placeholder and jumps into it.
+extern "C" fn wrapping_div_i64(numerator: i64, denominator: i64) -> i64 {
+    numerator.wrapping_div(denominator)
+}
+
+extern "C" fn wrapping_rem_i64(numerator: i64, denominator: i64) -> i64 {
+    numerator.wrapping_rem(denominator)
+}
+
+// The dual-mode flag is a static, and the pipeline spells a read of it as a call
+// to the static's path. The macro-lowered dispatch reads it through its own
+// registered helper; a pipeline helper needs this binding to reach the same bit.
+extern "C" fn bigint_mode_flag() -> i64 {
+    aheui_runtime::value::bigint_mode() as i64
+}
+
+// `aheui_runtime::band`'s six escapes. The band helpers reach `val_*` only
+// through these, so binding them is what keeps the pipeline from having to lower
+// the value layer's closures and generics — see the escape block in `band.rs`.
+macro_rules! band_escape {
+    ($shim:ident, $val_op:ident) => {
+        extern "C" fn $shim(r2: i64, r1: i64) -> i64 {
+            use aheui_runtime::value::{val_as_raw_i64, val_from_raw_i64, $val_op};
+            val_as_raw_i64($val_op(val_from_raw_i64(r2), val_from_raw_i64(r1)))
+        }
+    };
+}
+
+band_escape!(band_promote_add, val_add);
+band_escape!(band_promote_sub, val_sub);
+band_escape!(band_promote_mul, val_mul);
+band_escape!(band_promote_div, val_div);
+band_escape!(band_promote_mod, val_mod);
+
+extern "C" fn band_compare_ge(r2: i64, r1: i64) -> i64 {
+    use aheui_runtime::value::{val_as_raw_i64, val_from_i32, val_from_raw_i64, val_ge};
+    let ge = val_ge(&val_from_raw_i64(r2), &val_from_raw_i64(r1));
+    val_as_raw_i64(val_from_i32(ge as i32))
+}
+
+fn runtime_fnaddr_bindings() -> [(&'static str, i64); 14] {
     [
         (
             "LinkedList::head",
@@ -109,6 +152,42 @@ fn runtime_fnaddr_bindings() -> [(&'static str, i64); 5] {
         (
             "aheui_runtime::storage::free_node",
             linked_list_free_node as *const () as usize as i64,
+        ),
+        (
+            "core::num::<Impl>::wrapping_div",
+            wrapping_div_i64 as *const () as usize as i64,
+        ),
+        (
+            "core::num::<Impl>::wrapping_rem",
+            wrapping_rem_i64 as *const () as usize as i64,
+        ),
+        (
+            "aheui_runtime::value::bigint::BIGINT_MODE",
+            bigint_mode_flag as *const () as usize as i64,
+        ),
+        (
+            "aheui_runtime::band::promote_add",
+            band_promote_add as *const () as usize as i64,
+        ),
+        (
+            "aheui_runtime::band::promote_sub",
+            band_promote_sub as *const () as usize as i64,
+        ),
+        (
+            "aheui_runtime::band::promote_mul",
+            band_promote_mul as *const () as usize as i64,
+        ),
+        (
+            "aheui_runtime::band::promote_div",
+            band_promote_div as *const () as usize as i64,
+        ),
+        (
+            "aheui_runtime::band::promote_mod",
+            band_promote_mod as *const () as usize as i64,
+        ),
+        (
+            "aheui_runtime::band::compare_ge",
+            band_compare_ge as *const () as usize as i64,
         ),
     ]
 }
@@ -152,6 +231,70 @@ pub fn pipeline_jitcode_by_name(name: &str) -> Option<Arc<RuntimeJitCode>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every path `band.rs` leaves its fast paths through must be bound here.
+    ///
+    /// An unbound path keeps the `symbolic_fnaddr_for_path` placeholder, and the
+    /// first trace that reaches the slow path calls it — the metainterp aborts
+    /// naming the hash, but only once a program happens to overflow or divide.
+    /// Checking the table directly names the path instead.
+    #[test]
+    fn band_escape_paths_are_bound() {
+        let bound: Vec<&str> = runtime_fnaddr_bindings().iter().map(|(p, _)| *p).collect();
+        let symbolic = load_symbolic_fnaddr_paths();
+        for escape in [
+            "aheui_runtime::band::promote_add",
+            "aheui_runtime::band::promote_sub",
+            "aheui_runtime::band::promote_mul",
+            "aheui_runtime::band::promote_div",
+            "aheui_runtime::band::promote_mod",
+            "aheui_runtime::band::compare_ge",
+            "aheui_runtime::value::bigint::BIGINT_MODE",
+        ] {
+            assert!(
+                symbolic.iter().any(|(_, path)| path == escape),
+                "`{escape}` is not a symbolic path the pipeline emitted; \
+                 either it was renamed or the pipeline now lowers it inline",
+            );
+            assert!(bound.contains(&escape), "`{escape}` has no runtime binding");
+        }
+    }
+
+    /// Every helper the mainloop names with `inline_pipeline_int` must end in a
+    /// typed return opcode.
+    ///
+    /// `lower_value.rs` reads the callee's trailing return to learn which
+    /// register carries the result, and a helper whose last block is a join
+    /// instead of a return fails there — at aheui startup, as a panic, with no
+    /// mention of which helper is at fault. Checking it here names the helper.
+    #[test]
+    fn band_helpers_end_in_a_typed_return() {
+        use majit_metainterp::jitcode::JitCodeRuntimeExt as _;
+        for name in [
+            "pop_base_known_nonempty",
+            "band_add",
+            "band_sub",
+            "band_mul",
+            "band_div",
+            "band_mod",
+            "band_cmp",
+            "band_add_raw",
+            "band_sub_raw",
+            "band_mul_raw",
+            "band_div_raw",
+            "band_mod_raw",
+            "band_cmp_raw",
+        ] {
+            let jitcode = pipeline_jitcode_by_name(name)
+                .unwrap_or_else(|| panic!("pipeline jitcode `{name}` is missing"));
+            assert!(
+                jitcode.trailing_return_info().is_some(),
+                "`{name}` does not end in a typed return opcode; \
+                 its last bytes are {:?}",
+                &jitcode.code[jitcode.code.len().saturating_sub(8)..],
+            );
+        }
+    }
 
     #[test]
     fn deserializes_pipeline_jitcodes_with_mainloop_portal() {
