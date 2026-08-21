@@ -692,18 +692,15 @@ extern "C" fn jit_band_count() -> i64 {
 /// band, and capping below them lets one comparison answer both questions.
 /// Pools above the queue trade their band for that single comparison.
 fn banded_pool_count(program: &Program) -> usize {
-    // Opt-in because the band is correct but slower, not because it is unsound.
-    // logo compiles and answers byte-identically over a band; it spends 936ms
-    // against the node chain's 478ms, and the whole difference is one guard.
-    // A banded DIV lowers its floor-division sign fixup to a `rem != 0` test the
-    // node-chain arm never emits, that test is false for one input in eight, and
-    // the retrace from it aborts, so the guard deopts 62115 times instead of the
-    // 200 it would take to earn a bridge. Until a bridge is compiled there, the
-    // default stays the node-chain shape.
+    // One band. Over logo that arm spends 146ms against the node chain's 421ms,
+    // a second band 157ms and a fifth 200ms: a declared slot is paid for in
+    // compile time and in per-iteration work whether or not the program ever
+    // selects its pool, so reaching past the first pool loses more than the band
+    // there wins.
     // `AHEUI_BANDS` selects the arm, which is also what an A/B needs — both arms
     // then come from one binary.
     let Ok(text) = std::env::var("AHEUI_BANDS") else {
-        return 0;
+        return 1;
     };
     match text.parse::<usize>() {
         Ok(count) => return count.min(VAL_QUEUE),
