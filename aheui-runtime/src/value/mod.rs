@@ -42,23 +42,31 @@ pub use smallint::*;
 // force a non-negative remainder, so they answer `7 / -2` with `-3` where
 // flooring answers `-4`.
 
-/// Whether a truncating division of `a` by `b` needs the floor correction.
+/// All ones when a truncating division of `a` by `b` needs the floor
+/// correction, zero otherwise. `r` is the truncated remainder, which carries
+/// `a`'s sign.
 ///
-/// `r` is the truncated remainder, which carries `a`'s sign.
+/// A mask rather than a `bool` because the caller adds it: spelled as a branch,
+/// the correction is a run-time test on the remainder, and a JIT compiling the
+/// division records one arm of it and guards the other. logo's banded DIV made
+/// that guard fail 62115 times. Bit 63 of `r | -r` is set exactly when `r` is
+/// non-zero, and bit 63 of `r ^ b` exactly when the two signs differ, so the
+/// arithmetic shift broadcasts their conjunction with nothing to guard.
+///
+/// The negation is spelled as a subtraction because the graph pipeline lowers
+/// binary integer arithmetic to IR ops but leaves `wrapping_neg` a call to a
+/// path no host binds, which reaches compiled code as an unresolved target.
 #[inline(always)]
-pub(crate) fn floor_correction_needed(r: i64, b: i64) -> bool {
-    r != 0 && (r < 0) != (b < 0)
+pub(crate) fn floor_correction_mask(r: i64, b: i64) -> i64 {
+    ((r | 0i64.wrapping_sub(r)) & (r ^ b)) >> 63
 }
 
 /// `a // b` for a non-zero `b`, floored.
 #[inline(always)]
 pub(crate) fn floor_div_i64(a: i64, b: i64) -> i64 {
     let q = a.wrapping_div(b);
-    if floor_correction_needed(a.wrapping_rem(b), b) {
-        q.wrapping_sub(1)
-    } else {
-        q
-    }
+    let r = a.wrapping_rem(b);
+    q.wrapping_add(floor_correction_mask(r, b))
 }
 
 /// `a % b` for a non-zero `b`, floored.
@@ -68,16 +76,50 @@ pub(crate) fn floor_div_i64(a: i64, b: i64) -> i64 {
 #[inline(always)]
 pub(crate) fn floor_mod_i64(a: i64, b: i64) -> i64 {
     let r = a.wrapping_rem(b);
-    if floor_correction_needed(r, b) {
-        r.wrapping_add(b)
-    } else {
-        r
-    }
+    r.wrapping_add(b & floor_correction_mask(r, b))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mask has to agree with the branching form it replaced everywhere,
+    /// including where the remainder is zero and where either operand is
+    /// negative — the cases the two spellings can disagree on.
+    #[test]
+    fn floor_correction_mask_matches_the_branching_form() {
+        fn branching(a: i64, b: i64) -> (i64, i64) {
+            let q = a.wrapping_div(b);
+            let r = a.wrapping_rem(b);
+            let corrected = r != 0 && (r < 0) != (b < 0);
+            if corrected {
+                (q.wrapping_sub(1), r.wrapping_add(b))
+            } else {
+                (q, r)
+            }
+        }
+        let mut operands: Vec<i64> = (-40..=40).collect();
+        operands.extend([
+            i64::MIN,
+            i64::MIN + 1,
+            i64::MAX,
+            i64::MAX - 1,
+            1 << 40,
+            -1 << 40,
+        ]);
+        for &a in &operands {
+            for &b in &operands {
+                if b == 0 {
+                    continue;
+                }
+                assert_eq!(
+                    (floor_div_i64(a, b), floor_mod_i64(a, b)),
+                    branching(a, b),
+                    "a={a} b={b}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_val_from_i32() {
