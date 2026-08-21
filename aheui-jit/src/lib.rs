@@ -2353,7 +2353,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     );
 
     // rpaheui/aheui/aheui.py:363-366
-    let bands = state.vals.len() / CAP;
+    // The armed count for the same reason `walk_band_values` takes it: a pool
+    // at or above it holds every word in its chain, and its band slots are
+    // whatever an earlier arming left there.
+    let bands = jit_band_count() as usize;
     let selected = state.selected;
     if selected != VAL_QUEUE && selected != VAL_PORT && selected < bands {
         if state.stacksize > 0 {
