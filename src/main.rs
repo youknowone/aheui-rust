@@ -159,6 +159,14 @@ fn maybe_print_jit_stats() {
         "[jit-stats] mc_diag {}",
         aheui_jit::majit_metainterp::mc_diag_summary()
     );
+    // `guard_failures` is one total, and a total cannot tell one guard failing
+    // tens of thousands of times from tens of thousands of guards failing once.
+    // Those want opposite fixes, so print the distribution the counter is a sum
+    // of. Empty unless `MAJIT_GUARD_CENSUS` armed the recording.
+    eprintln!(
+        "[jit-stats] {}",
+        aheui_jit::majit_metainterp::guard_census_summary(8)
+    );
     eprintln!(
         "[jit-stats] loops_compiled={} bridges_compiled={} loops_aborted={} \
          guard_failures={} internal_compile_panics={}",

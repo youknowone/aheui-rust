@@ -188,11 +188,7 @@ pub fn band_div_raw(r2: i64, r1: i64) -> i64 {
 #[inline(always)]
 pub fn band_mod_raw(r2: i64, r1: i64) -> i64 {
     // Every remainder fits the word, `i64::MIN % -1` included.
-    if r1 == 0 {
-        0
-    } else {
-        floor_mod_i64(r2, r1)
-    }
+    if r1 == 0 { 0 } else { floor_mod_i64(r2, r1) }
 }
 
 #[cfg(feature = "bigint-backend")]

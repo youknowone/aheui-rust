@@ -318,8 +318,8 @@ include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));
 // Imports required by generated JIT code.
 
 use aheui_runtime::aheui::*;
-use aheui_runtime::io as aheui_io;
 use aheui_runtime::band as bd;
+use aheui_runtime::io as aheui_io;
 use aheui_runtime::storage::linkedlist_jit as lj;
 use aheui_runtime::storage::{LinkedList, Storage};
 use ahsembler::compiler::Program;
@@ -688,14 +688,14 @@ extern "C" fn jit_band_count() -> i64 {
 /// band, and capping below them lets one comparison answer both questions.
 /// Pools above the queue trade their band for that single comparison.
 fn banded_pool_count(program: &Program) -> usize {
-    // Opt-in until the band passes the byte gate: a compiled trace over a banded
-    // pool loops without exiting, so the default must stay the node-chain shape.
-    // The loop label promotes the ring index to a `GuardValue` on `depth & CAP_MASK`
-    // and the closing jump feeds that slot back as the folded constant while `sp`
-    // comes back live, so the guard tests a constant, never fails, and the body
-    // keeps addressing slot 0 after the real stack pointer has moved on.
-    // Interpreted the same band is correct and costs nothing (logo 10.80s vs the
-    // node chain's 10.96s), so what the band needs is the trace, not the arm.
+    // Opt-in because the band is correct but slower, not because it is unsound.
+    // logo compiles and answers byte-identically over a band; it spends 936ms
+    // against the node chain's 478ms, and the whole difference is one guard.
+    // A banded DIV lowers its floor-division sign fixup to a `rem != 0` test the
+    // node-chain arm never emits, that test is false for one input in eight, and
+    // the retrace from it aborts, so the guard deopts 62115 times instead of the
+    // 200 it would take to earn a bridge. Until a bridge is compiled there, the
+    // default stays the node-chain shape.
     // `AHEUI_BANDS` selects the arm, which is also what an A/B needs — both arms
     // then come from one binary.
     let Ok(text) = std::env::var("AHEUI_BANDS") else {
@@ -870,7 +870,17 @@ impl AheuiState {
                 panic!("check_chains: {err}\n{}", self.dump_chain_addrs());
             }
         }
-        self.stacksize = self.storage.len_at(self.selected) as i64;
+        // `len_at` counts the node chain, which is the pool's whole content
+        // only while the pool is unbanded. A banded pool keeps its top `CAP`
+        // words in `vals`, which the chain cannot see, and the number of them
+        // it holds is `min(stacksize, CAP)` — so the chain under-reports by
+        // exactly the quantity that would be needed to correct it, and no
+        // count derived from storage can name the pool's depth. `stacksize` is
+        // a scalar state field written back from the walk immediately before
+        // this hook runs, so for a banded pool it is already the answer.
+        if self.selected >= BAND_COUNT.load(std::sync::atomic::Ordering::Relaxed) {
+            self.stacksize = self.storage.len_at(self.selected) as i64;
+        }
     }
 }
 
@@ -1527,7 +1537,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // leaves the arrays exactly as long as the banded arm would make them while
     // taking every band arm out of reach. That separates the cost of declaring
     // the slots from the cost of using them.
-    let arms = match std::env::var("AHEUI_BAND_ARMS").ok().and_then(|t| t.parse::<usize>().ok()) {
+    let arms = match std::env::var("AHEUI_BAND_ARMS")
+        .ok()
+        .and_then(|t| t.parse::<usize>().ok())
+    {
         Some(limit) => limit.min(state.vals.len() / CAP),
         None => state.vals.len() / CAP,
     };
