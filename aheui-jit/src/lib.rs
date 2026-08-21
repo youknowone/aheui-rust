@@ -639,7 +639,11 @@ fn walk_band_values(visit: &mut dyn FnMut(&mut Val)) {
         return;
     }
     let state = unsafe { &mut *(state_addr as *mut AheuiState) };
-    let bands = state.vals.len() / CAP;
+    // The armed count, not `vals.len() / CAP`: a pool at or above it never
+    // takes a band arm, so its slots hold whatever an earlier arming left
+    // there while its words are all in the chain, which the collector walks
+    // on its own.
+    let bands = BAND_COUNT.load(std::sync::atomic::Ordering::Relaxed);
     for pool in 0..bands {
         if pool == VAL_QUEUE || pool == VAL_PORT {
             continue;
@@ -840,6 +844,33 @@ impl AheuiState {
         dump
     }
 
+    /// Disagreement between a banded pool's depth and the chain under it.
+    ///
+    /// A band holds a pool's top `CAP` words, so its chain holds exactly the
+    /// rest: `depth - CAP` of them, or none while the band is not yet full.
+    /// [`Storage::check_chains`] cannot see a break in that split, because
+    /// each chain stays internally consistent across it; the program only
+    /// notices opcodes later, when a refill pops a chain the depth said was
+    /// not empty.
+    fn check_bands(&self) -> Option<String> {
+        let bands = BAND_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        for pool in 0..bands {
+            let depth = if pool == self.selected {
+                self.stacksize
+            } else {
+                self.depths[pool]
+            };
+            let want = (depth - CAP as i64).max(0);
+            let have = self.storage.len_at(pool) as i64;
+            if want != have {
+                return Some(format!(
+                    "pool {pool} depth {depth} leaves {want} below the band, chain holds {have}"
+                ));
+            }
+        }
+        None
+    }
+
     fn refresh_state_from_storage(&mut self) {
         if spdiag_enabled() {
             eprintln!(
@@ -868,6 +899,9 @@ impl AheuiState {
         if cfg!(debug_assertions) || check_chains_enabled() {
             if let Some(err) = self.storage.check_chains() {
                 panic!("check_chains: {err}\n{}", self.dump_chain_addrs());
+            }
+            if let Some(err) = self.check_bands() {
+                panic!("check_bands: {err}\n{}", self.dump_chain_addrs());
             }
         }
         // `len_at` counts the node chain, which is the pool's whole content
