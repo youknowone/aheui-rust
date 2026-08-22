@@ -8,7 +8,9 @@ use clap::{Args, ValueEnum};
 pub enum Emit {
     /// 바이너리로 컴파일 (기본값)
     Link,
-    /// 생성된 소스를 stdout으로 출력
+    /// 백엔드가 생성한 소스를 stdout으로 출력
+    Source,
+    /// 앟셈블리를 stdout으로 출력
     Asm,
 }
 
@@ -77,7 +79,7 @@ pub fn run_build(args: &BuildArgs) {
     });
 
     let output_path = match args.emit {
-        Emit::Asm => None,
+        Emit::Asm | Emit::Source => None,
         Emit::Link => Some(args.output_path().unwrap_or_else(|e| {
             eprintln!("error: cannot determine output path: {e}");
             std::process::exit(1);
@@ -85,23 +87,33 @@ pub fn run_build(args: &BuildArgs) {
     };
 
     match (args.codegen, args.emit) {
-        (Codegen::Rust, Emit::Asm) => {
+        // Ahsembly sits upstream of code generation, so it does not depend
+        // on `--codegen`.
+        (_, Emit::Asm) => {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            ahsembler::assemble(&source, args.opt_level, &mut out).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+        }
+        (Codegen::Rust, Emit::Source) => {
             print!("{}", generate_rs(&source, args.opt_level));
         }
-        (Codegen::C, Emit::Asm) => {
+        (Codegen::C, Emit::Source) => {
             print!("{}", generate_c(&source, args.opt_level));
         }
-        (Codegen::Cranelift, Emit::Asm) => {
-            eprintln!("error: --codegen cranelift does not support --emit asm");
+        (Codegen::Cranelift, Emit::Source) => {
+            eprintln!("error: --codegen cranelift does not support --emit source");
             std::process::exit(1);
         }
-        (Codegen::Wasm32Wasi, Emit::Asm) => {
+        (Codegen::Wasm32Wasi, Emit::Source) => {
             print!(
                 "{}",
                 crate::compile_to_wat_wasi_opt(&source, args.opt_level)
             );
         }
-        (Codegen::Wasm32Web, Emit::Asm) => {
+        (Codegen::Wasm32Web, Emit::Source) => {
             print!("{}", crate::compile_to_wat_opt(&source, args.opt_level));
         }
         (Codegen::Rust, Emit::Link) => {

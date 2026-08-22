@@ -28,7 +28,7 @@ fn emit(codegen: &str, program: &str) -> Vec<u8> {
         path.display()
     );
     let out = Command::new(env!("CARGO_BIN_EXE_aheui"))
-        .args(["build", "-O3", "--codegen", codegen, "--emit", "asm"])
+        .args(["build", "-O3", "--codegen", codegen, "--emit", "source"])
         .arg(&path)
         .output()
         .expect("could not run the aheui binary");
