@@ -570,9 +570,6 @@ pub const CAP_MASK: usize = CAP - 1;
 /// registers it, which is also when the first band slot can hold a value.
 static BAND_STATE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// TEMPORARY DIAGNOSTIC — the running `Program`, for `report_out_of_range_op`.
-static DIAG_PROGRAM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
 /// Visit every operand word a band currently holds.
 ///
 /// Registered as `storage::BAND_ROOT_WALK_HOOK`, so it runs as part of the one
@@ -1131,90 +1128,11 @@ fn jit_op_gated_on_stackok(op: usize) -> bool {
 }
 
 fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
-    if op >= OP_STACKDEL.len() {
-        report_out_of_range_op(op, stackok);
-    }
     if stackok != 0 || !jit_op_gated_on_stackok(op) {
         jit_stacksize_delta(op)
     } else {
         0
     }
-}
-
-/// TEMPORARY DIAGNOSTIC — remove once the linux-x86_64 argument corruption is
-/// identified.
-///
-/// On linux-x86_64 the `op` slot arrives holding a brk-heap address while
-/// `stackok`, the green beside it, arrives correct. The first round ruled out
-/// this crate's statics and helpers, the `AheuiState` and its storages, and the
-/// nursery nodes: those sit in the image or in the mmap region, and the value
-/// is ~626 MB above the image. What is left in the brk heap and reachable from
-/// here is the `Program`'s two buffers and the two `VirtArray` blocks the bands
-/// live in, so this names those, then reads the words at the address itself.
-#[cold]
-#[inline(never)]
-fn report_out_of_range_op(op: usize, stackok: i64) -> ! {
-    eprintln!(
-        "@@@BADOP2 op={op:#018x} page_off={:#05x} stackok={stackok:#x}",
-        op & 0xfff
-    );
-    let program_ptr = DIAG_PROGRAM.load(std::sync::atomic::Ordering::Relaxed);
-    if program_ptr != 0 {
-        // SAFETY: `DIAG_PROGRAM` is the `&Program` this mainloop was called
-        // with, borrowed for the whole call.
-        let program = unsafe { &*(program_ptr as *const Program) };
-        for (name, addr) in [
-            ("&Program", program_ptr),
-            ("Program.opcodes.as_ptr", program.opcodes.as_ptr() as usize),
-            ("Program.values.as_ptr", program.values.as_ptr() as usize),
-        ] {
-            eprintln!(
-                "@@@BADOP2   {name:26} {addr:#018x} delta={}",
-                op as i64 - addr as i64,
-            );
-        }
-        eprintln!(
-            "@@@BADOP2   size={} opcodes.len={} values.len={} labels.len={}",
-            program.size,
-            program.opcodes.len(),
-            program.values.len(),
-            program.labels.len(),
-        );
-    }
-    let state_ptr = BAND_STATE.load(std::sync::atomic::Ordering::Relaxed);
-    if state_ptr != 0 {
-        // SAFETY: `BAND_STATE` is the mainloop's own `state`, live for the
-        // whole call this helper is reached from.
-        let state = unsafe { &*(state_ptr as *const AheuiState) };
-        // `VirtArray` keeps its heap block private and it is the leading
-        // field; this only needs the address.
-        let block = |a: &majit_metainterp::virt_array::VirtArray<i64>| unsafe {
-            *(a as *const _ as *const usize)
-        };
-        for (name, addr) in [
-            ("state.vals block", block(&state.vals)),
-            ("state.depths block", block(&state.depths)),
-        ] {
-            eprintln!(
-                "@@@BADOP2   {name:26} {addr:#018x} delta={}",
-                op as i64 - addr as i64,
-            );
-        }
-        eprintln!(
-            "@@@BADOP2   selected={} stacksize={} sp={}",
-            state.selected, state.stacksize, state.sp,
-        );
-    }
-    // Last, because an unmapped address ends the process here and everything
-    // above has already been written. A fault is itself an answer: the slot
-    // held an address nothing backs.
-    eprintln!("@@@BADOP2   words at op:");
-    for i in 0..4usize {
-        // SAFETY: none. See above.
-        let w = unsafe { *((op as *const u64).add(i)) };
-        eprintln!("@@@BADOP2     [{i}] {w:#018x}");
-    }
-    panic!("jit_effective_stacksize_delta: op {op:#x} is not an opcode");
 }
 
 // Guard failure resume: handled by the RPython-standard JIT framework.
@@ -1582,10 +1500,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     };
     BAND_STATE.store(
         &mut state as *mut AheuiState as usize,
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    DIAG_PROGRAM.store(
-        program as *const Program as usize,
         std::sync::atomic::Ordering::Relaxed,
     );
     aheui_runtime::storage::BAND_ROOT_WALK_HOOK.store(
