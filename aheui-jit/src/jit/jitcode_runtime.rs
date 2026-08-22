@@ -88,10 +88,11 @@ extern "C" fn linked_list_free_node(node: usize) {
     aheui_runtime::storage::free_node(node as *mut Node);
 }
 
-// Integer division and remainder are the only primitives the graph pipeline
-// leaves as host calls — every other arithmetic operator it lowers to an IR op.
-// A pipeline helper that divides therefore needs these bound, or its call site
-// keeps the symbolic placeholder and jumps into it.
+// A signed division reaches the trace as the canonical truncating helper, the
+// same rewrite every other arithmetic operator gets, so the binding is to that
+// name. The two `core::num` spellings stay bound for the widths and the
+// unsigned bank the rewrite declines, where the pipeline still leaves a host
+// call and its site would otherwise keep the symbolic placeholder.
 extern "C" fn wrapping_div_i64(numerator: i64, denominator: i64) -> i64 {
     numerator.wrapping_div(denominator)
 }
@@ -131,7 +132,7 @@ extern "C" fn band_compare_ge(r2: i64, r1: i64) -> i64 {
     val_as_raw_i64(val_from_i32(ge as i32))
 }
 
-fn runtime_fnaddr_bindings() -> [(&'static str, i64); 14] {
+fn runtime_fnaddr_bindings() -> [(&'static str, i64); 16] {
     [
         (
             "LinkedList::head",
@@ -152,6 +153,14 @@ fn runtime_fnaddr_bindings() -> [(&'static str, i64); 14] {
         (
             "aheui_runtime::storage::free_node",
             linked_list_free_node as *const () as usize as i64,
+        ),
+        (
+            "_ll_2_int_floordiv",
+            majit_metainterp::blackhole::_ll_2_int_floordiv as *const () as usize as i64,
+        ),
+        (
+            "_ll_2_int_mod",
+            majit_metainterp::blackhole::_ll_2_int_mod as *const () as usize as i64,
         ),
         (
             "core::num::<Impl>::wrapping_div",
