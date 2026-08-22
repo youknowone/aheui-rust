@@ -1128,11 +1128,71 @@ fn jit_op_gated_on_stackok(op: usize) -> bool {
 }
 
 fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
+    if op >= OP_STACKDEL.len() {
+        report_out_of_range_op(op, stackok);
+    }
     if stackok != 0 || !jit_op_gated_on_stackok(op) {
         jit_stacksize_delta(op)
     } else {
         0
     }
+}
+
+/// TEMPORARY DIAGNOSTIC — remove once the linux-x86_64 argument corruption is
+/// identified.
+///
+/// On linux-x86_64 only, this helper is reached through
+/// `majit_backend::call_stub::bh_call_i_by_classes` with a host address in the
+/// `op` slot instead of an opcode. The value is stable across a process's
+/// retries and varies per process, so it is a live address rather than a
+/// build-time constant. Naming which address it is says whether the wrong
+/// register was read or the right register held the wrong thing.
+#[cold]
+#[inline(never)]
+fn report_out_of_range_op(op: usize, stackok: i64) -> ! {
+    let f = |p: *const ()| p as usize;
+    eprintln!(
+        "@@@BADOP op={op:#018x} page_off={:#05x} stackok={stackok:#x}",
+        op & 0xfff
+    );
+    for (name, addr) in [
+        ("OP_STACKDEL", OP_STACKDEL.as_ptr() as usize),
+        ("OP_STACKADD", OP_STACKADD.as_ptr() as usize),
+        ("BAND_COUNT", &raw const BAND_COUNT as usize),
+        ("BAND_STATE", &raw const BAND_STATE as usize),
+        ("SPDIAG_TRACE_OPS", &raw const SPDIAG_TRACE_OPS as usize),
+        ("fn jit_stacksize_delta", f(jit_stacksize_delta as *const ())),
+        (
+            "fn jit_effective_stacksize_delta",
+            f(jit_effective_stacksize_delta as *const ()),
+        ),
+        ("fn jit_sel_get_ref", f(jit_sel_get_ref as *const ())),
+        ("fn jit_band_count", f(jit_band_count as *const ())),
+        ("fn jit_alloc_node", f(jit_alloc_node as *const ())),
+        ("fn jit_storage_push", f(jit_storage_push as *const ())),
+    ] {
+        eprintln!(
+            "@@@BADOP   {name:34} {addr:#018x} page_off={:#05x} delta={}",
+            addr & 0xfff,
+            op as i64 - addr as i64,
+        );
+    }
+    // The storages' own addresses. A match here means the register held a
+    // `ListBase`/`Storage` handle — i.e. the call reached the wrong target or
+    // read the wrong register, not that an opcode was miscomputed.
+    let state_ptr = BAND_STATE.load(std::sync::atomic::Ordering::Relaxed);
+    if state_ptr != 0 {
+        eprintln!("@@@BADOP   live AheuiState                   {state_ptr:#018x}");
+        // SAFETY: `BAND_STATE` is the mainloop's own `state`, live for the
+        // whole call this helper is reached from.
+        let state = unsafe { &*(state_ptr as *const AheuiState) };
+        eprintln!(
+            "@@@BADOP   storage_ref={:#018x} selected_ref={:#018x} selected={}",
+            state.storage_ref as usize, state.selected_ref as usize, state.selected,
+        );
+        eprint!("@@@BADOP   {}", state.dump_chain_addrs());
+    }
+    panic!("jit_effective_stacksize_delta: op {op:#x} is not an opcode");
 }
 
 // Guard failure resume: handled by the RPython-standard JIT framework.
