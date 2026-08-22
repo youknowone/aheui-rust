@@ -5,11 +5,19 @@ edition = "2024"
 
 [features]
 default = ["malachite-bigint"]
-num-bigint = ["dep:num-bigint", "dep:num-traits"]
-malachite-bigint = ["dep:malachite-bigint", "dep:num-traits"]
+jit = ["dep:majit-ir", "dep:majit-macros", "dep:majit-metainterp"]
+# Set by the three backend features; means a big-integer backend is selected. Nothing enables it directly.
+bigint-backend = []
+num-bigint = ["dep:num-bigint", "dep:num-traits", "bigint-backend"]
+malachite-bigint = ["dep:malachite-bigint", "dep:num-traits", "bigint-backend"]
+runtime-rbigint = ["dep:majit-rlib", "bigint-backend"]
 
 [dependencies]
 ahsembler = { path = "../ahsembler" }
+majit-ir = { workspace = true, optional = true }
+majit-macros = { workspace = true, optional = true }
+majit-metainterp = { workspace = true, features = ["dynasm"], optional = true }
+majit-rlib = { workspace = true, optional = true }
 num-bigint = { version = "0.4", optional = true }
 malachite-bigint = { version = "0.9.1", optional = true }
 num-traits = { version = "0.2", optional = true }

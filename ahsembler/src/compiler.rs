@@ -29,7 +29,7 @@ impl Program {
         OP_REQSIZE[self.opcodes[pc] as usize]
     }
 
-    /// rpaheui/aheui/aheui.py:175-189 `Program.get_label` resolves a label
+    /// rpaheui/aheui/aheui.py `Program.get_label` resolves a label
     /// id through the `labels` dict on every jump.  After
     /// `resolve_jump_targets` rewrites `values[pc]` for jump ops to point
     /// at the target PC directly the lookup collapses to a single array

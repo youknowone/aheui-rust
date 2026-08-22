@@ -16,14 +16,11 @@ use crate::consts::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
 ///
 /// `Depth::AtLeast(i32)` under `meet = min` has an unbounded descending chain,
 /// so a loop that drains a deep stack one element per trip costs one whole
-/// round per unit of depth. Round counts measured over the snippets corpus:
-/// quine.puzzlet 587, pi.puzzlet 180, logo 54, vowel-advanced 14, everything
-/// else <= 11. The two outliers are small CFGs draining a deep stack (46 and
-/// 14 blocks), where the extra rounds buy at most one guard.
+/// round per unit of depth.
 ///
-/// 64 clears logo, the largest round count that still pays for itself, and cuts
-/// quine's analysis 9x and pi.puzzlet's 3x. Both come out faster end to end even
-/// though pi.puzzlet retains one more `BRPOP2` as a result.
+/// 64 clears every program in the snippet corpus but two, and those two are
+/// small CFGs draining a deep stack, where running to their several-hundred
+/// rounds buys at most one guard and costs multiples of the analysis time.
 ///
 /// Widening is sound in one direction only, which is why it is safe here: the
 /// result feeds `eliminate_guards` via [`Depth::is_at_least`], and `AtLeast(0)`
@@ -138,14 +135,14 @@ pub fn transfer_inst(inst: &Inst, state: &mut AbstractState) {
         }
         Inst::GuardDepth { min_depth, .. } => {
             // After passing GuardDepth, depth >= min_depth is guaranteed (ok path).
-            if let Some(sel) = state.selected {
-                if sel < STORAGE_COUNT {
-                    let min = *min_depth as i32;
-                    state.depths[sel] = match state.depths[sel] {
-                        Depth::Bottom => Depth::Bottom,
-                        Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
-                    };
-                }
+            if let Some(sel) = state.selected
+                && sel < STORAGE_COUNT
+            {
+                let min = *min_depth as i32;
+                state.depths[sel] = match state.depths[sel] {
+                    Depth::Bottom => Depth::Bottom,
+                    Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
+                };
             }
         }
         other => {
@@ -196,14 +193,14 @@ fn successor_states(
             fail,
         } => {
             let mut ok_state = exit_state.clone();
-            if let Some(sel) = ok_state.selected {
-                if sel < STORAGE_COUNT {
-                    let min = *min_depth as i32;
-                    ok_state.depths[sel] = match ok_state.depths[sel] {
-                        Depth::Bottom => Depth::Bottom,
-                        Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
-                    };
-                }
+            if let Some(sel) = ok_state.selected
+                && sel < STORAGE_COUNT
+            {
+                let min = *min_depth as i32;
+                ok_state.depths[sel] = match ok_state.depths[sel] {
+                    Depth::Bottom => Depth::Bottom,
+                    Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
+                };
             }
             let fail_state = exit_state.clone();
             result.push((*ok, ok_state));
@@ -405,10 +402,10 @@ pub fn merge_guard_ok(cfg: &mut Cfg) -> usize {
             }
         }
         for inst in &ok_insts {
-            if let Inst::GuardDepth { fail: gf, .. } = inst {
-                if (*gf as usize) < pred_count.len() {
-                    pred_count[*gf as usize] += 1;
-                }
+            if let Inst::GuardDepth { fail: gf, .. } = inst
+                && (*gf as usize) < pred_count.len()
+            {
+                pred_count[*gf as usize] += 1;
             }
         }
 
@@ -487,10 +484,10 @@ fn is_queue_block(block: &CfgBlock, entry: &AbstractState) -> bool {
         if let Inst::Sel(s) = inst {
             selected = Some(*s);
         }
-        if let Some(sel) = selected {
-            if sel == VAL_QUEUE || sel == VAL_PORT {
-                return true;
-            }
+        if let Some(sel) = selected
+            && (sel == VAL_QUEUE || sel == VAL_PORT)
+        {
+            return true;
         }
     }
     false
@@ -510,15 +507,14 @@ fn fold_block_constants(block: &mut CfgBlock, width: ConstWidth) -> usize {
                 block.instructions[i],
                 block.instructions[i + 1],
                 block.instructions[i + 2],
-            ) {
-                if let Some(result) = eval_binop(kind, a, b).filter(|r| width.holds(*r)) {
-                    block.instructions[i] = Inst::Push(result);
-                    block.instructions.remove(i + 2);
-                    block.instructions.remove(i + 1);
-                    folds += 1;
-                    changed = true;
-                    continue; // Re-check at same position
-                }
+            ) && let Some(result) = eval_binop(kind, a, b).filter(|r| width.holds(*r))
+            {
+                block.instructions[i] = Inst::Push(result);
+                block.instructions.remove(i + 2);
+                block.instructions.remove(i + 1);
+                folds += 1;
+                changed = true;
+                continue; // Re-check at same position
             }
             i += 1;
         }
@@ -530,15 +526,14 @@ fn fold_block_constants(block: &mut CfgBlock, width: ConstWidth) -> usize {
                 block.instructions[i],
                 block.instructions[i + 1],
                 block.instructions[i + 2],
-            ) {
-                if let Some(result) = eval_binop(kind, v, v).filter(|r| width.holds(*r)) {
-                    block.instructions[i] = Inst::Push(result);
-                    block.instructions.remove(i + 2);
-                    block.instructions.remove(i + 1);
-                    folds += 1;
-                    changed = true;
-                    continue;
-                }
+            ) && let Some(result) = eval_binop(kind, v, v).filter(|r| width.holds(*r))
+            {
+                block.instructions[i] = Inst::Push(result);
+                block.instructions.remove(i + 2);
+                block.instructions.remove(i + 1);
+                folds += 1;
+                changed = true;
+                continue;
             }
             i += 1;
         }
@@ -566,20 +561,19 @@ fn fold_constant_branch(block: &mut CfgBlock, folds: &mut usize) {
         return;
     }
     let last_idx = block.instructions.len() - 1;
-    if let Inst::Push(v) = block.instructions[last_idx] {
-        if let Terminator::BranchZero {
+    if let Inst::Push(v) = block.instructions[last_idx]
+        && let Terminator::BranchZero {
             on_zero,
             on_nonzero,
         } = block.terminator
-        {
-            block.instructions.pop();
-            block.terminator = if v == 0 {
-                Terminator::Goto(on_zero)
-            } else {
-                Terminator::Goto(on_nonzero)
-            };
-            *folds += 1;
-        }
+    {
+        block.instructions.pop();
+        block.terminator = if v == 0 {
+            Terminator::Goto(on_zero)
+        } else {
+            Terminator::Goto(on_nonzero)
+        };
+        *folds += 1;
     }
 }
 
@@ -769,13 +763,12 @@ pub fn thread_jumps(cfg: &mut Cfg) -> usize {
         changed = false;
         for i in 0..n {
             let block = cfg.block(i as BlockId);
-            if block.instructions.is_empty() {
-                if let Terminator::Goto(target) = block.terminator {
-                    if forward[i] != forward[target as usize] {
-                        forward[i] = forward[target as usize];
-                        changed = true;
-                    }
-                }
+            if block.instructions.is_empty()
+                && let Terminator::Goto(target) = block.terminator
+                && forward[i] != forward[target as usize]
+            {
+                forward[i] = forward[target as usize];
+                changed = true;
             }
         }
     }
@@ -849,10 +842,10 @@ pub fn eliminate_loop_guards(cfg: &mut Cfg) -> usize {
         std::collections::BTreeMap::new();
     for (idx, &bid) in rpo.iter().enumerate() {
         for &succ in &cfg.blocks[bid as usize].all_successors() {
-            if let Some(succ_pos) = rpo_pos[succ as usize] {
-                if succ_pos <= idx {
-                    loop_headers.entry(succ).or_default().push(bid);
-                }
+            if let Some(succ_pos) = rpo_pos[succ as usize]
+                && succ_pos <= idx
+            {
+                loop_headers.entry(succ).or_default().push(bid);
             }
         }
     }
@@ -939,10 +932,10 @@ pub fn eliminate_loop_guards(cfg: &mut Cfg) -> usize {
         for &bid in &loop_blocks {
             let mut st = states[bid as usize].clone();
             for inst in &cfg.block(bid).instructions {
-                if let Inst::GuardDepth { .. } = inst {
-                    if let Some(sel) = st.selected {
-                        guarded_storages.insert(sel);
-                    }
+                if let Inst::GuardDepth { .. } = inst
+                    && let Some(sel) = st.selected
+                {
+                    guarded_storages.insert(sel);
                 }
                 transfer_inst(inst, &mut st);
             }
@@ -1364,10 +1357,10 @@ fn check_loop_consistent(
             }
             transfer_inst(inst, &mut state);
         }
-        if let Terminator::StackGuard { min_depth, .. } = &cfg.block(bid).terminator {
-            if !depth_sufficient(&state, *min_depth as i32) {
-                return false;
-            }
+        if let Terminator::StackGuard { min_depth, .. } = &cfg.block(bid).terminator
+            && !depth_sufficient(&state, *min_depth as i32)
+        {
+            return false;
         }
     }
 
@@ -1420,14 +1413,14 @@ fn optimistic_successor_states(
             fail,
         } => {
             let mut ok_state = exit_state.clone();
-            if let Some(sel) = ok_state.selected {
-                if sel < STORAGE_COUNT {
-                    let min = *min_depth as i32;
-                    ok_state.depths[sel] = match ok_state.depths[sel] {
-                        Depth::Bottom => Depth::Bottom,
-                        Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
-                    };
-                }
+            if let Some(sel) = ok_state.selected
+                && sel < STORAGE_COUNT
+            {
+                let min = *min_depth as i32;
+                ok_state.depths[sel] = match ok_state.depths[sel] {
+                    Depth::Bottom => Depth::Bottom,
+                    Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
+                };
             }
             // Emit both ok and fail for StackGuard (it's a terminator, not GuardDepth)
             result.push((*ok, ok_state));

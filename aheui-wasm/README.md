@@ -124,7 +124,7 @@ wasmtime run --dir .::/d \
 # WAT 생성 (wasm-in-wasm 컴파일)
 wasmtime run --dir .::/d \
     target/wasm32-wasip1/release/aheui.wasm \
-    build --codegen wasm32-web --emit asm /d/hello.aheui
+    build --codegen wasm32-web --emit source /d/hello.aheui
 ```
 
 브라우저에서 WASI 로 돌리려면 `@bjorn3/browser_wasi_shim` 같은 shim 을

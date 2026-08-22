@@ -7,6 +7,7 @@ edition = "2024"
 default = ["malachite-bigint"]
 num-bigint = ["aheui-runtime/num-bigint"]
 malachite-bigint = ["aheui-runtime/malachite-bigint"]
+runtime-rbigint = ["aheui-runtime/runtime-rbigint"]
 
 [dependencies]
-aheui-runtime = { path = "../aheui-runtime" }
+aheui-runtime = { path = "../aheui-runtime", default-features = false }

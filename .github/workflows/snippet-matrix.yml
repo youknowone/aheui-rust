@@ -1,0 +1,185 @@
+name: Snippet backend matrix
+
+on:
+  pull_request:
+    paths:
+      - "ahsembler/src/**"
+      - "ahsembler/tests/**"
+      - "ahsembler/Cargo.toml"
+      - "aheui-runtime/src/**"
+      - "aheui-runtime/tests/**"
+      - "aheui-runtime/Cargo.toml"
+      - "aheui-jit/src/**"
+      - "aheui-jit/tests/**"
+      - "aheui-jit/build.rs"
+      - "aheui-jit/Cargo.toml"
+      - "aheuinterpreter/src/**"
+      - "aheuinterpreter/tests/**"
+      - "aheuinterpreter/examples/**"
+      - "aheuinterpreter/Cargo.toml"
+      - "compaheuiler/src/**"
+      - "compaheuiler/tests/**"
+      - "compaheuiler/examples/**"
+      - "compaheuiler/Cargo.toml"
+      - "scripts/snippet_matrix.py"
+      - "scripts/extract-llbc.sh"
+      - "snippets"
+      - ".github/majit-ci-config.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/snippet-matrix.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: snippet-matrix-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  jit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      # The JIT changes span aheui and majit. Keep the checkout in pyre/aheui so
+      # extract-llbc.sh sees the same sibling layout as a local pyre worktree;
+      # Cargo's checked-in CI patch redirects every pinned majit dependency to
+      # that checkout.
+      #
+      # `ref` is a commit id, not a branch: the patch makes this checkout the
+      # majit every job below compiles, so a branch here would grade each run
+      # against whatever pyre had moved to rather than against the revision
+      # Cargo.toml records. It moves with the `rev` in Cargo.toml.
+      - name: Check out the pinned majit revision
+        uses: actions/checkout@v4
+        with:
+          repository: youknowone/pyre
+          ref: 1ce3528a387694e546c85a84ed6516a0bbfe487e
+          path: pyre
+
+      - name: Check out this aheui revision
+        uses: actions/checkout@v4
+        with:
+          path: pyre/aheui
+          submodules: true
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Cargo, Charon, LLBC, and build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .pyre-build/charon
+            pyre/aheui/build/llbc
+            pyre/aheui/target
+          key: ${{ runner.os }}-aheui-jit-${{ hashFiles('pyre/Cargo.lock', 'pyre/majit/**/Cargo.toml', 'pyre/aheui/Cargo.toml', 'pyre/aheui/**/Cargo.toml', 'pyre/aheui/aheui-runtime/src/**', 'pyre/aheui/aheuinterpreter/src/**') }}
+          restore-keys: |
+            ${{ runner.os }}-aheui-jit-
+
+      - name: Install Charon and extract the JIT inputs
+        working-directory: pyre
+        run: |
+          python3 scripts/install-charon.py
+          AHEUI_CARGO_CONFIG="$GITHUB_WORKSPACE/pyre/aheui/.github/majit-ci-config.toml" \
+            aheui/scripts/extract-llbc.sh
+
+      # `--no-fail-fast` so one failing binary does not hide the rest, and
+      # RUST_BACKTRACE because a panic raised while the metainterp is tracing
+      # is reported as an abort with no frame to name it.
+      - name: Check and test the dynasm JIT
+        working-directory: pyre/aheui
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          mkdir -p .cargo
+          cp .github/majit-ci-config.toml .cargo/config.toml
+          cargo check --workspace --features dynasm
+          cargo test --workspace --features dynasm --no-fail-fast
+
+  snippets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Cargo inputs and shared build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-snippet-matrix-${{ hashFiles('Cargo.lock', 'Cargo.toml', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-snippet-matrix-
+
+      - name: Build, verify, and time all six backends
+        id: matrix
+        continue-on-error: true
+        run: python3 scripts/snippet_matrix.py --report target/snippet-matrix/report.md
+
+      - name: Add report to the job summary
+        if: always() && hashFiles('target/snippet-matrix/report.md') != ''
+        run: cat target/snippet-matrix/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update the pull request report
+        if: >-
+          always() &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          hashFiles('target/snippet-matrix/report.md') != ''
+        uses: actions/github-script@v7
+        env:
+          REPORT_PATH: target/snippet-matrix/report.md
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- aheui-snippet-matrix -->';
+            const body = fs.readFileSync(process.env.REPORT_PATH, 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const previous = comments.find(comment =>
+              comment.user.type === 'Bot' && comment.body.includes(marker)
+            );
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: previous.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Upload the report
+        if: always() && hashFiles('target/snippet-matrix/report.md') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: snippet-backend-matrix
+          path: target/snippet-matrix/report.md
+
+      - name: Fail when a backend or snippet failed
+        if: steps.matrix.outcome == 'failure'
+        run: exit 1

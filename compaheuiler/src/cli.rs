@@ -8,7 +8,9 @@ use clap::{Args, ValueEnum};
 pub enum Emit {
     /// 바이너리로 컴파일 (기본값)
     Link,
-    /// 생성된 소스를 stdout으로 출력
+    /// 백엔드가 생성한 소스를 stdout으로 출력
+    Source,
+    /// 앟셈블리를 stdout으로 출력
     Asm,
 }
 
@@ -65,7 +67,7 @@ impl BuildArgs {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        stem = stem.replace('.', "_").replace('-', "_");
+        stem = stem.replace(['.', '-'], "_");
         Ok(std::env::current_dir()?.join(stem))
     }
 }
@@ -77,7 +79,7 @@ pub fn run_build(args: &BuildArgs) {
     });
 
     let output_path = match args.emit {
-        Emit::Asm => None,
+        Emit::Asm | Emit::Source => None,
         Emit::Link => Some(args.output_path().unwrap_or_else(|e| {
             eprintln!("error: cannot determine output path: {e}");
             std::process::exit(1);
@@ -85,23 +87,33 @@ pub fn run_build(args: &BuildArgs) {
     };
 
     match (args.codegen, args.emit) {
-        (Codegen::Rust, Emit::Asm) => {
+        // Ahsembly sits upstream of code generation, so it does not depend
+        // on `--codegen`.
+        (_, Emit::Asm) => {
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            ahsembler::assemble(&source, args.opt_level, &mut out).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+        }
+        (Codegen::Rust, Emit::Source) => {
             print!("{}", generate_rs(&source, args.opt_level));
         }
-        (Codegen::C, Emit::Asm) => {
+        (Codegen::C, Emit::Source) => {
             print!("{}", generate_c(&source, args.opt_level));
         }
-        (Codegen::Cranelift, Emit::Asm) => {
-            eprintln!("error: --codegen cranelift does not support --emit asm");
+        (Codegen::Cranelift, Emit::Source) => {
+            eprintln!("error: --codegen cranelift does not support --emit source");
             std::process::exit(1);
         }
-        (Codegen::Wasm32Wasi, Emit::Asm) => {
+        (Codegen::Wasm32Wasi, Emit::Source) => {
             print!(
                 "{}",
                 crate::compile_to_wat_wasi_opt(&source, args.opt_level)
             );
         }
-        (Codegen::Wasm32Web, Emit::Asm) => {
+        (Codegen::Wasm32Web, Emit::Source) => {
             print!("{}", crate::compile_to_wat_opt(&source, args.opt_level));
         }
         (Codegen::Rust, Emit::Link) => {
@@ -186,6 +198,25 @@ fn scratch_dir_or_exit(label: &str) -> ScratchDir {
     })
 }
 
+/// Cargo target directory for generated bigint executables.
+///
+/// A caller compiling a corpus can set one directory for every generated
+/// crate. Cargo then builds the bigint dependency once while each snippet's
+/// tiny root crate is still compiled and linked independently. Ordinary CLI
+/// use keeps the scratch-local target and leaves no persistent artefacts.
+fn generated_target_dir(scratch: &Path) -> PathBuf {
+    std::env::var_os("COMPAHEUILER_GENERATED_TARGET_DIR")
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir().unwrap_or_default().join(path)
+            }
+        })
+        .unwrap_or_else(|| scratch.join("target"))
+}
+
 fn generate_rs(source: &str, opt: ahsembler::OptimizationLevel) -> String {
     #[cfg(feature = "bigint")]
     {
@@ -240,15 +271,14 @@ fn remap_path_prefixes(generated_dir: &Path) -> Vec<String> {
         ));
     }
 
-    if let Ok(out) = Command::new("rustc").args(["--print", "sysroot"]).output() {
-        if out.status.success() {
-            if let Ok(sysroot) = String::from_utf8(out.stdout) {
-                flags.push(format!(
-                    "--remap-path-prefix={}=/rust",
-                    sysroot.trim_end_matches('\n')
-                ));
-            }
-        }
+    if let Ok(out) = Command::new("rustc").args(["--print", "sysroot"]).output()
+        && out.status.success()
+        && let Ok(sysroot) = String::from_utf8(out.stdout)
+    {
+        flags.push(format!(
+            "--remap-path-prefix={}=/rust",
+            sysroot.trim_end_matches('\n')
+        ));
     }
     flags
 }
@@ -283,24 +313,14 @@ lto = "fat"
         )
         .unwrap();
 
-        // `.cargo/config.toml` beside the generated crate rather than
-        // `RUSTFLAGS`, so an existing `RUSTFLAGS` in the caller's environment
-        // still wins instead of being silently replaced.
-        std::fs::create_dir(dir.join(".cargo")).unwrap();
-        let rustflags = remap_path_prefixes(dir)
-            .iter()
-            .map(|f| format!("{:?}", f))
-            .collect::<Vec<_>>()
-            .join(", ");
-        std::fs::write(
-            dir.join(".cargo/config.toml"),
-            format!("[build]\nrustflags = [{rustflags}]\n"),
-        )
-        .unwrap();
+        let target_dir = generated_target_dir(dir);
 
         let status = Command::new("cargo")
-            .args(["build", "--release", "--quiet"])
+            .args(["rustc", "--release", "--quiet"])
             .current_dir(dir)
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .arg("--")
+            .args(remap_path_prefixes(dir))
             .status()
             .unwrap_or_else(|e| {
                 eprintln!("error: cargo: {e}");
@@ -309,7 +329,7 @@ lto = "fat"
         if !status.success() {
             std::process::exit(1);
         }
-        std::fs::copy(dir.join("target/release/compaheuiler-output"), bin_path).unwrap();
+        std::fs::copy(target_dir.join("release/compaheuiler-output"), bin_path).unwrap();
     }
 
     #[cfg(not(feature = "bigint"))]
@@ -397,7 +417,7 @@ fn compile_c_bigint(code: &str, bin_path: &Path) {
     let package = format!("compaheuiler-c-output-{suffix}");
     let scratch = scratch_dir_or_exit("c_bigint");
     let dir = scratch.path();
-    let target_dir = dir.join("target");
+    let target_dir = generated_target_dir(dir);
     std::fs::create_dir(dir.join("src")).unwrap();
     let c_path = dir.join("program.c");
     let object_path = dir.join("program.o");

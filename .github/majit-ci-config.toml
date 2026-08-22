@@ -1,0 +1,10 @@
+[patch."https://github.com/youknowone/pyre"]
+majit-ir = { path = "../majit/majit-ir" }
+majit-macros = { path = "../majit/majit-macros" }
+majit-metainterp = { path = "../majit/majit-metainterp" }
+majit-rlib = { path = "../majit/majit-rlib" }
+majit-gc = { path = "../majit/majit-gc" }
+majit-translate = { path = "../majit/majit-translate" }
+majit-backend = { path = "../majit/majit-backend" }
+majit-backend-cranelift = { path = "../majit/majit-backend-cranelift" }
+majit-backend-dynasm = { path = "../majit/majit-backend-dynasm" }

@@ -48,11 +48,11 @@ pub fn compute_scopes(cfg: &Cfg, rpo: &[BlockId]) -> Vec<Scope> {
     let mut loop_extent: HashMap<BlockId, usize> = HashMap::new();
     for (idx, &bid) in rpo.iter().enumerate() {
         for &succ in &cfg.block(bid).all_successors() {
-            if let Some(&succ_pos) = rpo_pos.get(&succ) {
-                if succ_pos <= idx {
-                    let e = loop_extent.entry(succ).or_insert(idx);
-                    *e = (*e).max(idx);
-                }
+            if let Some(&succ_pos) = rpo_pos.get(&succ)
+                && succ_pos <= idx
+            {
+                let e = loop_extent.entry(succ).or_insert(idx);
+                *e = (*e).max(idx);
             }
         }
     }
@@ -103,11 +103,13 @@ pub fn compute_scopes(cfg: &Cfg, rpo: &[BlockId]) -> Vec<Scope> {
             None
         };
         for &succ in &cfg.block(bid).all_successors() {
-            if let Some(&succ_pos) = rpo_pos.get(&succ) {
-                if succ_pos > idx && Some(succ) != next_rpo && succ_pos > idx + 1 {
-                    let e = fwd_sources.entry(succ).or_insert(idx);
-                    *e = (*e).min(idx);
-                }
+            if let Some(&succ_pos) = rpo_pos.get(&succ)
+                && succ_pos > idx
+                && Some(succ) != next_rpo
+                && succ_pos > idx + 1
+            {
+                let e = fwd_sources.entry(succ).or_insert(idx);
+                *e = (*e).min(idx);
             }
         }
     }

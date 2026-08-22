@@ -6,20 +6,53 @@ edition = "2024"
 [workspace]
 members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler", "aheui-wasm"]
 
+# majit lives in the `pyre` repository, which this one does not vendor or
+# submodule.  Pinning a revision here rather than a path makes a checkout of
+# this repo alone buildable, and makes which majit a given aheui build was
+# compiled against a recorded fact instead of whatever happened to be in a
+# sibling directory.
+#
+# The revision is declared ONCE, for every majit crate.  Two members resolving
+# different revisions would each get their own clone, and the same type from
+# the two clones (`majit_ir::DescrRef`, say) would not unify — the failure
+# reads as an unrelated type error deep in a generic.
+#
+# To work on majit and aheui together, override the whole origin locally
+# without touching these lines:
+#
+#     [patch."https://github.com/youknowone/pyre"]
+#     majit-ir = { path = "../pyre/majit/majit-ir" }
+#     # ... one line per crate used below
+[workspace.dependencies]
+majit-ir = { git = "https://github.com/youknowone/pyre", rev = "1ce3528a387694e546c85a84ed6516a0bbfe487e" }
+majit-macros = { git = "https://github.com/youknowone/pyre", rev = "1ce3528a387694e546c85a84ed6516a0bbfe487e" }
+majit-metainterp = { git = "https://github.com/youknowone/pyre", rev = "1ce3528a387694e546c85a84ed6516a0bbfe487e" }
+majit-rlib = { git = "https://github.com/youknowone/pyre", rev = "1ce3528a387694e546c85a84ed6516a0bbfe487e" }
+majit-gc = { git = "https://github.com/youknowone/pyre", rev = "1ce3528a387694e546c85a84ed6516a0bbfe487e" }
+majit-translate = { git = "https://github.com/youknowone/pyre", rev = "1ce3528a387694e546c85a84ed6516a0bbfe487e" }
+majit-backend = { git = "https://github.com/youknowone/pyre", rev = "1ce3528a387694e546c85a84ed6516a0bbfe487e" }
+majit-backend-cranelift = { git = "https://github.com/youknowone/pyre", rev = "1ce3528a387694e546c85a84ed6516a0bbfe487e" }
+majit-backend-dynasm = { git = "https://github.com/youknowone/pyre", rev = "1ce3528a387694e546c85a84ed6516a0bbfe487e" }
+
 [features]
-default = ["jit", "malachite-bigint"]
+default = ["jit", "dynasm", "malachite-bigint"]
 naive = ["dep:aheuinterpreter"]
 jit = ["dep:aheui-jit"]
+# The JIT dependency has no default backend; exactly one root feature selects it.
+dynasm = ["aheui-jit?/dynasm"]
+cranelift = ["aheui-jit?/cranelift"]
 # `build --codegen cranelift`, compaheuiler's AOT backend. Separate from the JIT
 # selector above — they share a name and nothing else, and enabling `cranelift`
 # to reach this one would drag the JIT onto a second backend.
 aot-cranelift = ["compaheuiler/cranelift"]
 num-bigint = ["aheuinterpreter?/num-bigint", "aheui-jit?/num-bigint", "compaheuiler/num-bigint"]
 malachite-bigint = ["aheuinterpreter?/malachite-bigint", "aheui-jit?/malachite-bigint", "compaheuiler/malachite-bigint"]
+# compaheuiler is deliberately absent because its bigint features select AOT-generated arithmetic, not the interpreter runtime.
+runtime-rbigint = ["aheuinterpreter?/runtime-rbigint", "aheui-jit?/runtime-rbigint"]
 
 [dependencies]
-aheuinterpreter = { path = "aheuinterpreter", optional = true }
-aheui-jit = { path = "aheui-jit", optional = true }
+aheuinterpreter = { path = "aheuinterpreter", optional = true, default-features = false }
+aheui-jit = { path = "aheui-jit", optional = true, default-features = false }
 ahsembler = { path = "ahsembler" }
 compaheuiler = { path = "compaheuiler", default-features = false }
 clap = { version = "4.5.32", features = ["derive"] }

@@ -9,9 +9,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// `logo` is the program whose loop-guard elimination used to vary, which moved
-/// whole blocks in and out of the emitted source; `99bottles` keeps enough live
-/// registers at an overflow-capable binop to expose the emitters' own ordering.
+/// `logo`'s loop-guard elimination moves whole blocks in and out of the emitted
+/// source, so it is sensitive to any pass whose result varies; `99bottles`
+/// keeps enough live registers at an overflow-capable binop to expose the
+/// emitters' own ordering.
 const PROGRAMS: [&str; 2] = [
     "snippets/logo/logo.aheui",
     "snippets/99bottles/99bottles.aheui",
@@ -27,7 +28,7 @@ fn emit(codegen: &str, program: &str) -> Vec<u8> {
         path.display()
     );
     let out = Command::new(env!("CARGO_BIN_EXE_aheui"))
-        .args(["build", "-O3", "--codegen", codegen, "--emit", "asm"])
+        .args(["build", "-O3", "--codegen", codegen, "--emit", "source"])
         .arg(&path)
         .output()
         .expect("could not run the aheui binary");

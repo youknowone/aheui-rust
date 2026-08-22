@@ -55,7 +55,7 @@ fn output_write_all(bytes: &[u8]) {
     wasm_buf::write_all(bytes);
 }
 
-// Mirrors rpaheui/aheui/aheui.py:196-220 OutputBuffer. Each thread buffers
+// Mirrors rpaheui/aheui/aheui.py OutputBuffer. Each thread buffers
 // only pending output bytes, not interpreter state, and drains them at the
 // threshold or `output_flush` to avoid locking stdout for every small write.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -78,8 +78,16 @@ fn output_buffer_drain(buf: &mut Vec<u8>) {
     buf.clear();
 }
 
+pub static OUTPUT_TOTAL_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Diagnostic: total bytes handed to the output path so far.
+pub fn output_total_bytes() -> u64 {
+    OUTPUT_TOTAL_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 fn output_write_all(bytes: &[u8]) {
+    OUTPUT_TOTAL_BYTES.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
     OUTPUT_BUFFER.with(|cell| {
         let mut buf = cell.borrow_mut();
         buf.extend_from_slice(bytes);
@@ -116,40 +124,18 @@ fn output_write_number_i64(value: i64) {
     output_write_all(encode_decimal_i64(value, &mut buf));
 }
 
-#[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+#[cfg(not(feature = "bigint-backend"))]
 pub fn output_write_number(value: &Val) {
     output_write_number_i64(*value);
 }
 
-#[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+#[cfg(feature = "bigint-backend")]
 pub fn output_write_number(value: &Val) {
     if let Some(v) = value.try_to_i64() {
         output_write_number_i64(v);
     } else {
         let text = value.to_string();
         output_write_all(text.as_bytes());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::encode_decimal_i64;
-
-    #[test]
-    fn encode_decimal_i64_handles_full_range_and_common_values() {
-        let cases = [
-            (i64::MIN, "-9223372036854775808"),
-            (i64::MAX, "9223372036854775807"),
-            (0, "0"),
-            (-1, "-1"),
-            (1, "1"),
-            (-10, "-10"),
-        ];
-
-        for (value, expected) in cases {
-            let mut buf = [0u8; 20];
-            assert_eq!(encode_decimal_i64(value, &mut buf), expected.as_bytes());
-        }
     }
 }
 
@@ -184,12 +170,12 @@ pub fn output_flush() {
 // Generated and JIT-compiled code writes through caller-provided buffers.
 
 pub fn write_number(value: &Val, writer: &mut impl Write) {
-    #[cfg(not(any(feature = "num-bigint", feature = "malachite-bigint")))]
+    #[cfg(not(feature = "bigint-backend"))]
     {
         let mut buf = [0u8; 20];
         let _ = writer.write_all(encode_decimal_i64(*value, &mut buf));
     }
-    #[cfg(any(feature = "num-bigint", feature = "malachite-bigint"))]
+    #[cfg(feature = "bigint-backend")]
     {
         if value.is_small() {
             let mut buf = [0u8; 20];
@@ -214,6 +200,12 @@ pub fn write_utf8(value: &Val, writer: &mut impl Write) {
 pub struct InputBuffer {
     buffer: Vec<u8>,
     pos: usize,
+}
+
+impl Default for InputBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InputBuffer {
@@ -282,6 +274,28 @@ impl InputBuffer {
         } else {
             self.pos += 1;
             -1
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_decimal_i64;
+
+    #[test]
+    fn encode_decimal_i64_handles_full_range_and_common_values() {
+        let cases = [
+            (i64::MIN, "-9223372036854775808"),
+            (i64::MAX, "9223372036854775807"),
+            (0, "0"),
+            (-1, "-1"),
+            (1, "1"),
+            (-10, "-10"),
+        ];
+
+        for (value, expected) in cases {
+            let mut buf = [0u8; 20];
+            assert_eq!(encode_decimal_i64(value, &mut buf), expected.as_bytes());
         }
     }
 }

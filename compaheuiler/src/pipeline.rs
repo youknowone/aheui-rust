@@ -1,8 +1,8 @@
 //! The CFG optimization pipeline the AOT backends run.
 //!
-//! One copy, because the backends used to carry one each and they drifted: the C
-//! and WebAssembly generators ran every pass unconditionally, so `-O` never
-//! reached them and `-O0` emitted what `-O3` emitted.
+//! One copy, so every backend honours `level` from the same place. A pipeline
+//! per backend drifts, and a generator that runs every pass unconditionally
+//! makes `-O0` emit what `-O3` emits.
 
 use ahsembler::OptimizationLevel;
 use ahsembler::cfg::Cfg;

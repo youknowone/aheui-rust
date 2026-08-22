@@ -9,11 +9,60 @@ fn fixture_stdin(scratch: &std::path::Path, input: &[u8]) -> std::process::Stdio
     std::fs::File::open(input_path).unwrap().into()
 }
 
+/// The reference interpreter, built once for this whole test binary.
+///
+/// Building it per snippet through `cargo run` hides its own failures: a
+/// build that fails exits with a status this harness cannot tell apart from
+/// a program that halted with that value, so the reference contributes no
+/// output and every snippet reports an output mismatch against a
+/// compilation that was in fact correct. Build it once, and let a failure
+/// to build say so.
+///
+/// The crate under test may be built against a patched dependency set
+/// (`cargo --config …`) and cargo passes no such flag down to a test
+/// process. A reference built against a different dependency set is not a
+/// reference, so it travels in `AHEUI_CARGO_CONFIG` — the same variable
+/// `scripts/extract-llbc.sh` reads for the same reason.
+fn reference_interpreter() -> &'static std::path::Path {
+    static BIN: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        let mut cargo = Command::new("cargo");
+        cargo.args(["build", "--release", "-p", "aheui"]);
+        if let Ok(config) = std::env::var("AHEUI_CARGO_CONFIG") {
+            cargo.args(["--config", &config]);
+        }
+        let out = cargo.output().expect("cargo build");
+        assert!(
+            out.status.success(),
+            "the reference interpreter did not build, so every comparison below \
+             would be against no output at all. When the workspace is built \
+             against a patched dependency set, pass the same one here in \
+             AHEUI_CARGO_CONFIG.\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("this crate is a workspace member")
+                    .join("target")
+            });
+        let bin = target.join("release").join("aheui");
+        assert!(
+            bin.is_file(),
+            "the reference interpreter built but is not at {}",
+            bin.display()
+        );
+        bin
+    })
+    .as_path()
+}
+
 fn run_interpreter(source: &str, input: &[u8], scratch: &std::path::Path) -> (String, i32) {
     let source_path = scratch.join("snippet.aheui");
     std::fs::write(&source_path, source).unwrap();
-    let out = Command::new("cargo")
-        .args(["run", "--release", "-p", "aheui", "--"])
+    let out = Command::new(reference_interpreter())
         .arg(&source_path)
         .stdin(fixture_stdin(scratch, input))
         .stdout(std::process::Stdio::piped())

@@ -136,7 +136,67 @@ fn exit_code_to_i32(exit_code: aheuinterpreter::Val) -> i32 {
     aheuinterpreter::value::val_to_i32_saturating(&exit_code)
 }
 
+/// Print the one-line JIT statistics summary to stderr when `MAJIT_STATS` is
+/// set, in the same `[jit-stats]` shape `pyre/pyrex` emits so one recorder and
+/// one regression floor can read both.
+///
+/// `internal_compile_panics > 0` means an internal JIT bug silently disabled
+/// compilation for some traces (graceful degradation in release). Must be
+/// called before any `process::exit`, since exits skip destructors.
+///
+/// The descr-universe lines pyre also prints have no aheui counterpart — they
+/// read the pyre descr tables — and a baseline simply carries no entry for
+/// them, which the floor reads as 0 on both sides.
+#[cfg(feature = "jit")]
+fn maybe_print_jit_stats() {
+    if std::env::var_os("MAJIT_STATS").is_none() {
+        return;
+    }
+    let Some(stats) = aheui_jit::last_jit_stats() else {
+        return;
+    };
+    eprintln!(
+        "[jit-stats] mc_diag {}",
+        aheui_jit::majit_metainterp::mc_diag_summary()
+    );
+    // `guard_failures` is one total, and a total cannot tell one guard failing
+    // tens of thousands of times from tens of thousands of guards failing once.
+    // Those want opposite fixes, so print the distribution the counter is a sum
+    // of. Empty unless `MAJIT_GUARD_CENSUS` armed the recording.
+    eprintln!(
+        "[jit-stats] {}",
+        aheui_jit::majit_metainterp::guard_census_summary(8)
+    );
+    eprintln!(
+        "[jit-stats] loops_compiled={} bridges_compiled={} loops_aborted={} \
+         guard_failures={} internal_compile_panics={}",
+        stats.loops_compiled,
+        stats.bridges_compiled,
+        stats.loops_aborted,
+        stats.guard_failures,
+        stats.internal_compile_panics,
+    );
+    // Why those traces were given up. `JitStats` carries only the total, and
+    // the profiler's own `print_stats` is behind `MAJIT_LOG`, which is far too
+    // slow to enable on a workload big enough to abort interestingly.
+    if let Some(p) = aheui_jit::last_abort_reasons() {
+        eprintln!(
+            "[jit-stats] abort_too_long={} abort_bridge={} abort_bad_loop={} \
+             abort_escape={} abort_force_quasiimmut={} abort_segmented_trace={}",
+            p.abort_too_long,
+            p.abort_bridge,
+            p.abort_bad_loop,
+            p.abort_escape,
+            p.abort_force_quasiimmut,
+            p.abort_segmented_trace,
+        );
+    }
+}
+
 fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
+    #[cfg(feature = "jit")]
+    aheui_jit::init_gc_subsystem();
+
     let contents = args.input()?;
     let program = compile_program(&contents, args.opt_level);
 
@@ -158,10 +218,11 @@ fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
             let program_jit = compile_program(&contents, ahsembler::OptimizationLevel::O2);
             eprintln!("\n--- JIT ---");
             let start = Instant::now();
-            let result = aheui_jit::mainloop(&program_jit, aheui_jit::JIT_THRESHOLD);
+            let result = aheui_jit::mainloop(&program_jit, aheui_jit::jit_threshold());
             let elapsed = start.elapsed();
             eprintln!("result = {result}");
             eprintln!("time   = {elapsed:?}");
+            maybe_print_jit_stats();
         }
 
         return Ok(());
@@ -169,7 +230,8 @@ fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
 
     #[cfg(feature = "jit")]
     if args.use_jit() {
-        let exitcode = aheui_jit::mainloop(&program, aheui_jit::JIT_THRESHOLD);
+        let exitcode = aheui_jit::mainloop(&program, aheui_jit::jit_threshold());
+        maybe_print_jit_stats();
         std::process::exit(exit_code_to_i32(exitcode));
     }
 
