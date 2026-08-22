@@ -1250,17 +1250,13 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_read_number => residual_int,
         jit_output_flush => residual_void_cannot_raise,
         jit_tag_val => elidable_int_cannot_raise,
-        jit_tag_val_raw => elidable_int_cannot_raise,
-        jit_win_store => elidable_int_cannot_raise,
         jit_tag_word => elidable_int_cannot_raise,
-        jit_tag_word_raw => elidable_int_cannot_raise,
         // The band arms hold the value as its word, which is what the output
         // shims already take, so they name the shim rather than going back
         // through a `Val` to reach it.
         jit_write_number => residual_void,
         jit_write_utf8 => residual_void,
         jit_val_ge_i => elidable_int_cannot_raise,
-        jit_retag_small => elidable_int_cannot_raise,
         jit_bigint_mode => elidable_int_cannot_raise,
         jit_band_count => elidable_int_cannot_raise,
         // Method-call results consumed as values are lowered through

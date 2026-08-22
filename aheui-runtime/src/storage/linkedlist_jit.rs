@@ -69,7 +69,6 @@ pub fn pop_base_known_nonempty(list: usize) -> Val {
     calls = {
         free_node_jit => concrete_only_void,
         val_add => elidable_int,
-        val_retag_small => elidable_int_cannot_raise,
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
@@ -143,7 +142,6 @@ pub fn stack_add(stack: usize) {
     calls = {
         free_node_jit => concrete_only_void,
         val_sub => elidable_int,
-        val_retag_small => elidable_int_cannot_raise,
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
@@ -217,7 +215,6 @@ pub fn stack_sub(stack: usize) {
     calls = {
         free_node_jit => concrete_only_void,
         val_mul => elidable_int,
-        val_retag_small => elidable_int_cannot_raise,
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
@@ -350,7 +347,6 @@ pub fn swap_base_known_two(list: usize) {
     calls = {
         free_node_jit => concrete_only_void,
         val_ge_jit => elidable_int,
-        val_retag_small => elidable_int_cannot_raise,
     },
     native_tag_small = { val_retag_small },
     headerless_structs = { super::linkedlist::Node, },
@@ -504,7 +500,6 @@ pub fn queue_push(queue: usize, value: Val) {
     calls = {
         free_node_jit => concrete_only_void,
         val_add => elidable_int,
-        val_retag_small => elidable_int_cannot_raise,
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
@@ -606,7 +601,6 @@ pub fn queue_add(queue: usize) {
     calls = {
         free_node_jit => concrete_only_void,
         val_sub => elidable_int,
-        val_retag_small => elidable_int_cannot_raise,
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
@@ -708,7 +702,6 @@ pub fn queue_sub(queue: usize) {
     calls = {
         free_node_jit => concrete_only_void,
         val_mul => elidable_int,
-        val_retag_small => elidable_int_cannot_raise,
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
@@ -857,7 +850,6 @@ pub fn queue_dup(queue: usize) {
     calls = {
         free_node_jit => concrete_only_void,
         val_ge_jit => elidable_int,
-        val_retag_small => elidable_int_cannot_raise,
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
@@ -1086,7 +1078,6 @@ pub fn stack_mul_raw(stack: usize) {
     },
     calls = {
         free_node_jit => concrete_only_void,
-        val_ge_raw => elidable_int_cannot_raise,
     },
     native_int_binops = { val_ge_raw => IntGe },
     headerless_structs = { super::linkedlist::Node, },
@@ -1348,7 +1339,6 @@ pub fn queue_mul_raw(queue: usize) {
     },
     calls = {
         free_node_jit => concrete_only_void,
-        val_ge_raw => elidable_int_cannot_raise,
         val_from_i32 => elidable_int_cannot_raise,
         alloc_node_jit => nursery_alloc_ref,
     },
