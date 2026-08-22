@@ -14,10 +14,8 @@
 //
 // stackok is a green (rpaheui parity): specialising the trace on it lets
 // `jit_effective_stacksize_delta(op, stackok)` fold to a constant, so the
-// per-op stacksize update carries no residual call. The green-key-explosion
-// concern (each stackok flip generating a separate compiled loop) does not
-// reproduce on logo.aheui — the distinct (pc, stackok) merge points that
-// occur are few, so logo compiles a single bounded loop.
+// per-op stacksize update carries no residual call. It costs a green key per
+// flip, but the distinct (pc, stackok) merge points a program reaches are few.
 
 extern crate majit_ir;
 extern crate majit_metainterp as majit_meta;
@@ -35,7 +33,7 @@ pub mod jit;
 
 /// Default JIT threshold, taken from the parameter table rather than
 /// restated: a jitdriver that does not set the value gets `PARAMETERS`'
-/// default (`rlib/jit.py:588`), so the number has one home.
+/// default (`rlib/jit.py`), so the number has one home.
 pub const JIT_THRESHOLD: u32 = majit_metainterp::jit::PARAMETERS.threshold;
 
 /// JIT threshold honoring the `MAJIT_THRESHOLD` env override (for testing
@@ -49,36 +47,16 @@ pub fn jit_threshold() -> u32 {
         .unwrap_or(JIT_THRESHOLD)
 }
 
-/// The JIT trace budget, chosen by measurement.
+/// The JIT trace budget, in recorded ops.
 ///
-/// rpaheui does not set one: `option.py:186` defaults `--trace-limit` /
-/// `RPAHEUI_TRACE_LIMIT` to `-1`, and `aheui.py:360` calls
-/// `jit.set_param(driver, 'trace_limit', ...)` only when it is `>= 0`, so the
-/// RPython default is what runs. Its `jit-summary` on logo with no override is
-/// identical to `RPAHEUI_TRACE_LIMIT=6000` (1 loop, 6 bridges, 2 too-long and 5
-/// segmenting aborts, 37839 recorded ops) and differs from 30000 (1 loop, 1
-/// bridge, no aborts, 25713 ops) — so the limit in force there is 6000, the
-/// same default majit carries in `trace_ctx.rs` `DEFAULT_TRACE_LIMIT`.
+/// Well above majit's `DEFAULT_TRACE_LIMIT`, and above what the corpus's
+/// largest whole-program trace records, so those programs compile one loop
+/// with no abort. It is not the fastest setting — a trace that large costs
+/// more to optimize and assemble than the run earns back — but it is the one
+/// the committed `jitstats` baselines were recorded under, and lowering it
+/// moves their `loops_aborted` and `guard_failures` floors.
 ///
-/// 70000 keeps logo's whole-program trace — 33177 recorded ops — under the
-/// budget, so it compiles one loop with no abort. That is not the fastest
-/// setting. logo, min of 9 interleaved runs, CPU time, via the
-/// `MAJIT_TRACE_LIMIT` override:
-///
-/// | limit  | CPU     | bridges | aborts | guard failures |
-/// |--------|---------|---------|--------|----------------|
-/// |   6000 | 0.430 s |       7 |      8 |           1601 |
-/// |  10000 | 0.410 s |       5 |      6 |           1201 |
-/// |  20000 | 0.410 s |       2 |      2 |            401 |
-/// |  30000 | 0.390 s |       2 |      2 |            401 |
-/// |  70000 | 0.470 s |       1 |      0 |            201 |
-///
-/// The single 33177-op loop costs 172ms to optimize plus 26ms to assemble,
-/// which the run does not earn back; at 30000 that drops to 42ms plus 10ms and
-/// the sampled terminating programs stay byte-identical. The default remains
-/// 70000 because lowering it changes the committed `jitstats` floor: logo's
-/// `loops_aborted` moves from 0 to 2 and `guard_failures` from 201 to 401.
-/// [`trace_limit`] exposes an override for performance experiments.
+/// [`trace_limit`] exposes an override for sweeping it.
 pub const TRACE_LIMIT: u32 = 70000;
 
 /// [`TRACE_LIMIT`] honoring a `MAJIT_TRACE_LIMIT` override. `trace_limit` is a
@@ -343,18 +321,16 @@ fn bh_debug_enabled() -> bool {
     *FLAG.get_or_init(|| std::env::var_os("MAJIT_BH_DEBUG").is_some())
 }
 
-/// GC allocator for JIT-compiled New() ops.
-/// Delegates to the global nursery so alloc/free share the same pool
-/// as the interpreter path.
+/// Cumulative ceiling on the oversized `alloc_zeroed` fallback.
 ///
-/// Node-sized allocations (`size <= NODE_SIZE`) go to the nursery, which
-/// self-bounds via its own chunk cap (`grow()` exits at 64 chunks). The
-/// cumulative 256 MB limit applies only to the oversized `alloc_zeroed`
-/// fallback, which has no other bound — a running program allocates far
-/// more than 256 MB of *nodes* over its lifetime (each freed and reused),
-/// so a cumulative cap on the node path would spuriously fail.
+/// It applies only there. Node-sized allocations go to the nursery, which
+/// self-bounds through its own chunk cap, and a running program allocates far
+/// more than this in nodes over its lifetime — each freed and reused — so a
+/// cumulative cap on the node path would fail spuriously.
 const JIT_ALLOC_LIMIT: usize = 256 * 1024 * 1024;
 
+/// GC allocator for JIT-compiled `New()` ops, delegating to the global nursery
+/// so alloc and free share the pool the interpreter path uses.
 struct AheuiBlackholeAllocator;
 
 impl majit_metainterp::resume::BlackholeAllocator for AheuiBlackholeAllocator {
@@ -371,7 +347,7 @@ impl majit_metainterp::resume::BlackholeAllocator for AheuiBlackholeAllocator {
         }
     }
 
-    /// `llmodel.py:717-721 bh_setfield_gc_i` — the store takes the field's
+    /// `llmodel.py bh_setfield_gc_i` — the store takes the field's
     /// width from its descriptor. A field narrower than a word is a real
     /// field here: `size` on the list base is a `u32` followed by another
     /// member, so a store that assumed a word would write over its
@@ -390,7 +366,7 @@ impl majit_metainterp::resume::BlackholeAllocator for AheuiBlackholeAllocator {
         };
     }
 
-    /// `llmodel.py:723-727 bh_setfield_gc_r` — pointer width, no size.
+    /// `llmodel.py bh_setfield_gc_r` — pointer width, no size.
     ///
     /// `write_ref_at_mem` documents that its caller owes the barrier
     /// upstream's `llop.raw_store` rewrite would have carried. This
@@ -407,7 +383,7 @@ impl majit_metainterp::resume::BlackholeAllocator for AheuiBlackholeAllocator {
         };
     }
 
-    /// `llmodel.py:730-734 bh_setfield_gc_f` — storage width, no size.
+    /// `llmodel.py bh_setfield_gc_f` — storage width, no size.
     /// `value` carries the float's storage bits, the deadframe's untyped
     /// form.
     fn bh_setfield_gc_f(&self, struct_ptr: i64, value: i64, descr_info: &majit_ir::FieldDescrInfo) {
@@ -562,31 +538,6 @@ fn walk_aheui_jit_node_roots(
     // Aheui bignums held by majit's extra-root set separately.
 }
 
-/// Trace-time state for the Aheui JIT.
-///
-/// rpaheui/aheui/aheui.py:228-234 stores the reds as:
-///   stacksize = 0
-///   storage   = Storage()
-///   selected  = storage[0]         # object reference
-///
-/// Rust represents the red state differently where required by the borrow
-/// checker and the JIT raw-pointer ABI:
-///
-/// * `selected: usize` — RPython captures the polymorphic storage object
-///   directly. Rust cannot hold a mutable borrow into `self.storage`
-///   across subsequent `self.storage` mutations, so the index is kept
-///   and the object is re-fetched via [`Storage::dispatch_mut`] on every
-///   use. This is semantically identical to rpaheui's reference form.
-///
-/// * `selected_ref: GcRef` — The JIT backend reads `head` / `size` at
-///   fixed byte offsets through a raw pointer. This mirrors rpaheui's
-///   `selected` object reference at the machine level: `GcRef` is
-///   literally the raw pointer to the base the selected storage embeds,
-///   which is where those two words are declared. We keep it next
-///   to `selected: usize` because `refresh_selected_ref` has to run any
-///   time `selected` changes; treating them as a single logical field
-///   avoided plumbing a dedicated getter through the `#[jit_interp]`
-///   macro.
 static SPDIAG_TRACE_OPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 thread_local! {
@@ -597,13 +548,6 @@ thread_local! {
         const { std::cell::RefCell::new(String::new()) };
 }
 
-/// Operand words each stack pool keeps out of its node chain.
-///
-/// A power of two: the slot for absolute height `h` is `h & (CAP - 1)`, so the
-/// window slides without moving anything. 64 covers every depth logo reaches
-/// (its deepest pool rests at 55 inside one straight-line body), and the two
-/// arrays together declare 1820 elements, well inside the resume numbering's
-/// live-box ceiling.
 /// Operand words each banded stack pool keeps out of its node chain.
 ///
 /// A pool's band is a ring holding its **top** `CAP` elements: element at
@@ -692,13 +636,10 @@ extern "C" fn jit_band_count() -> i64 {
 /// band, and capping below them lets one comparison answer both questions.
 /// Pools above the queue trade their band for that single comparison.
 fn banded_pool_count(program: &Program) -> usize {
-    // One band. Over logo that arm spends 146ms against the node chain's 421ms,
-    // a second band 157ms and a fifth 200ms: a declared slot is paid for in
-    // compile time and in per-iteration work whether or not the program ever
-    // selects its pool, so reaching past the first pool loses more than the band
-    // there wins.
-    // `AHEUI_BANDS` selects the arm, which is also what an A/B needs — both arms
-    // then come from one binary.
+    // One band by default: a declared slot is paid for in compile time and in
+    // per-iteration work whether or not the program ever selects its pool, so
+    // banding past the first pool costs more than it wins. `AHEUI_BANDS`
+    // overrides the count, so both arms come from one binary.
     let Ok(text) = std::env::var("AHEUI_BANDS") else {
         return 1;
     };
@@ -725,6 +666,22 @@ fn banded_pool_count(program: &Program) -> usize {
     if count > VAL_QUEUE { VAL_QUEUE } else { count }
 }
 
+/// Trace-time state for the Aheui JIT: the reds `mainloop` carries.
+///
+/// `aheui.py` keeps them as `stacksize`, `storage` and `selected`, where
+/// `selected` is the polymorphic storage object itself. Two of the three are
+/// spelled differently here:
+///
+/// * `selected: usize` is the index, not the object. Rust cannot hold a
+///   mutable borrow into `self.storage` across subsequent `self.storage`
+///   mutations, so the object is re-fetched through [`Storage::dispatch_mut`]
+///   on every use.
+///
+/// * `selected_ref` is that object at the machine level: the raw pointer to
+///   the base the selected storage embeds, which is where `head` and `size`
+///   are declared and where the backend reads them at fixed byte offsets. It
+///   sits beside `selected` because `refresh_selected_ref` has to run whenever
+///   `selected` changes.
 struct AheuiState {
     storage: Storage,
     /// The top operand words of every pool, `STORAGE_COUNT * CAP` of them.
@@ -748,31 +705,19 @@ struct AheuiState {
     /// this is the depth the pool will have *after* the op; each arm reaches
     /// its operands at a fixed literal offset from it.
     sp: usize,
-    /// `state.storage.pools[selected]` packed as `usize`. Tracked as
-    /// `ref(ListBase)` in `state_fields` so it is carried in the ref register
-    /// bank as a genuine `InputArgRef`: promoted with `ref_guard_value` and
-    /// passed to the monomorphic storage helpers as a ref-kind arg. The
-    /// `usize` carrier round-trips the raw pointer bits.
+    /// `state.storage.pools[selected]` packed as `usize`; the `state_fields`
+    /// block below tracks it as `ref(ListBase)`.
     selected_ref: usize,
     /// `&mut state.storage as *mut Storage` packed as `usize` — the base the
-    /// contiguous `pools: [*mut ListBase; N]` array is read off.
-    /// Tracked as `ref(Storage)` and declared a `pool_arrays` base so the
-    /// OP_SEL `selected_ref = pools[selected]` read lowers to a re-producible
-    /// `getarrayitem_gc_r` on this base instead of an opaque residual call;
-    /// the loaded list ref then re-derives from `selected` each loop entry
-    /// rather than being carried as an independent, divergence-prone red.
-    /// The sole carrier of the storage pointer: `aheui.py:27` carries
-    /// `storage` as one red, so the residual storage helpers take this same
-    /// ref-kind field rather than an aliased `int` copy (an int/ref pair for
-    /// one value makes the resume box kind of every `pools[N]` list ref
-    /// ambiguous, seeding Ref-typed loop-header slots with Int boxes).
+    /// contiguous `pools: [*mut ListBase; N]` array is read off, and the sole
+    /// carrier of the storage pointer.
     storage_ref: usize,
 }
 
 impl AheuiState {
     #[inline(always)]
     fn refresh_selected_ref(&mut self) {
-        // rpaheui/aheui/aheui.py:233,282: selected = storage[idx].
+        // rpaheui/aheui/aheui.py: selected = storage[idx].
         // `pools[idx]` already holds the address of the base the storage at
         // that index embeds, so the JIT reads `head` and `size` straight off
         // it without a further step.
@@ -945,19 +890,13 @@ fn dump_storage_ptr(ptr: usize) -> String {
     dump
 }
 
-/// io-shim targets for `aheui_io::output_write_*(&r)`: the recorded call
-/// carries the raw `Val` word (tagged smallint or boxed-bigint pointer),
-/// so reconstruct the `Val` and route through the interpreter's own
-/// decode + output buffer. Writing the raw word through majit's
-/// `jit_write_number_i64` printed tagged payloads (289 for 144) into a
-/// second buffer that interleaved wrongly with interpreter output.
 /// The `out` byte range `@@@WALKEMIT` reports, from `MAJIT_SPDIAG_FROM` /
 /// `MAJIT_SPDIAG_TO`.
 ///
 /// A window rather than the whole run, because a program emitting hundreds of
-/// kilobytes buries the one write being chased. Which window is interesting is
-/// a property of the failure — the byte offset at which an A/B says the two
-/// runs first differed — so it is a knob rather than a constant.
+/// kilobytes buries the one write being chased. Which window is interesting
+/// depends on where the run being diagnosed first diverged, so it is a knob
+/// rather than a constant.
 fn spdiag_window() -> (u64, u64) {
     static WINDOW: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
     *WINDOW.get_or_init(|| {
@@ -995,6 +934,13 @@ fn walk_emit_log(kind: &str, value: i64) {
     );
 }
 
+/// io-shim target for `aheui_io::output_write_number(&r)`.
+///
+/// The recorded call carries the raw `Val` word — a tagged smallint or a
+/// boxed-bigint pointer — so reconstruct the `Val` and route it through the
+/// interpreter's own decode and output buffer. Writing the raw word through
+/// majit's own writer would print the tagged payload into a second buffer that
+/// interleaves wrongly with interpreter output.
 extern "C" fn jit_write_number(value: i64) {
     let v: Val = unsafe { std::mem::transmute(value) };
     if bh_debug_enabled() {
@@ -1004,6 +950,8 @@ extern "C" fn jit_write_number(value: i64) {
     aheui_io::output_write_number(&v);
 }
 
+/// io-shim target for `aheui_io::output_write_utf8(&r)`. Same reconstruction
+/// as [`jit_write_number`].
 extern "C" fn jit_write_utf8(value: i64) {
     let v: Val = unsafe { std::mem::transmute(value) };
     walk_emit_log("utf8", value);
@@ -1073,7 +1021,7 @@ extern "C" fn jit_win_store(v: Val) -> i64 {
     aheui_runtime::value::val_as_raw_i64(v)
 }
 
-/// `val_ge` as the 1-or-0 int `cmp` pushes (linkedlist.py:60-64).
+/// `val_ge` as the 1-or-0 int `cmp` pushes (linkedlist.py).
 ///
 /// The comparison itself is a value operation; taking it as an int here keeps
 /// the arm's result a plain word that goes straight into a band slot.
@@ -1133,7 +1081,7 @@ fn __majit_pipeline_liveness_prebuild(assembler: &mut majit_metainterp::Assemble
 }
 
 // Index-keyed dynamic storage dispatch — rpaheui parity for
-// `selected.METHOD()` (aheui.py:260-389). The target index is a per-opcode
+// `selected.METHOD()` (aheui.py). The target index is a per-opcode
 // operand rather than the promoted `selected_ref`, so the polymorphic
 // `dispatch_mut(target)` is bundled into one residual call that dispatches on
 // the live index at run time (Stack / Queue / Port) instead of a JIT-green
@@ -1143,7 +1091,7 @@ fn __majit_pipeline_liveness_prebuild(assembler: &mut majit_metainterp::Assemble
 // closes through the real back-edge.
 //
 // Only push and dup survive, and for two independent reasons. OP_MOV names its
-// target with a per-opcode operand rather than `selected` (aheui.py:277-279
+// target with a per-opcode operand rather than `selected` (aheui.py
 // `storage[val].push(r)`), so nothing has resolved it to a concrete list. And
 // `Port::push`/`Port::dup` are the only two storage methods Port does not
 // share with the `LinkedList` implementation (`last_push`), so the port takes
@@ -1159,7 +1107,7 @@ extern "C" fn jit_storage_dup(pool_ptr: usize, target: usize) {
 }
 
 /// OP_SEL helper: return the raw pointer to the selected linked-list as
-/// the new `selected_ref`. `storage[idx]` (aheui.py:280-284) is a list
+/// the new `selected_ref`. `storage[idx]` (aheui.py) is a list
 /// getitem returning the Stack/Queue/Port object reference; the result is
 /// carried in the ref register bank, so the call is recorded ref-returning
 /// (`residual_ref_cannot_raise_wrapped`). `#[dont_look_inside_cannot_raise]`
@@ -1201,7 +1149,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
 #[majit_macros::jit_interp(
     state = AheuiState,
     env = Program,
-    // RPython parity: rpaheui/aheui/aheui.py:30 reds=['stacksize','storage','selected'].
+    // RPython parity: rpaheui/aheui/aheui.py reds=['stacksize','storage','selected'].
     // Storage is the polymorphic 28-slot pool that cannot be flattened
     // as ints — declared `opaque(Storage)` so the macro carries it on
     // the state struct without enumerating any inputarg/fail_arg/Sym slot
@@ -1213,7 +1161,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     state_fields = {
         storage: opaque(aheui_runtime::storage::Storage),
         // The operand words and depths, as virtualizable arrays.
-        // `pyjitpl.py:1201-1216 _get_arrayitem_vable_index` promotes the index
+        // `pyjitpl.py _get_arrayitem_vable_index` promotes the index
         // of a virtualizable array access and then answers from
         // `virtualizable_boxes`, so an element access indexed by a running
         // depth still lowers to boxes rather than to memory. Declared before
@@ -1230,23 +1178,20 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         selected: int(usize),
         stacksize: int(i64),
         sp: int(usize),
-        // The selected list's object reference (aheui.py:256
-        // `selected = jit.promote(selected)`). Carried in the ref register
+        // The selected list's object reference. Carried in the ref register
         // bank as a genuine `InputArgRef` so it can be promoted with
         // `ref_guard_value` and passed to the monomorphic storage helpers as a
-        // ref-kind arg (`JitCallArg::reference`). The `usize` carrier
-        // round-trips the raw pointer bits.
+        // ref-kind arg (`JitCallArg::reference`).
         //
-        // The type is the base every storage embeds, matching
-        // `aheui.py:251 selected = storage[value]`, where the list holds a
-        // Stack, a Queue or a Port and the binding's type is what they have in
-        // common. Naming one of the three here instead would make every access
-        // through this field a reinterpretation of one storage as another.
+        // The type is the base every storage embeds — what a Stack, a Queue
+        // and a Port have in common. Naming one of the three instead would
+        // make every access through this field a reinterpretation of one
+        // storage as another.
         selected_ref: ref(aheui_runtime::storage::linkedlist::ListBase),
         // Base the `pools: [*mut ListBase; N]` array is read off.
         // Declared `ref(Storage)` + listed in `pool_arrays` so OP_SEL's
         // `selected_ref = jit_sel_get_ref(storage_ref, selected)` lowers to a
-        // re-producible `getarrayitem_gc_r` on this base. aheui.py:27 carries
+        // re-producible `getarrayitem_gc_r` on this base. aheui.py carries
         // `storage` as ONE red, so this ref is also the storage argument of the
         // residual `jit_storage_*` helpers: an aliased `int` copy of the same
         // pointer would leave the resume box kind of every `pools[N]` stack ref
@@ -1402,16 +1347,17 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_sel_get_ref => elidable_ref_cannot_raise_wrapped,
         jit_stacksize_delta => elidable_int_cannot_raise,
         jit_effective_stacksize_delta => elidable_int_cannot_raise,
-        // Register node frees and value arithmetic so field-level Stack
-        // operations emit concrete IR instead of
-        // silent-skipping unregistered calls. Node allocation now goes through
-        // `struct_allocs` makes concrete execution call `jit_alloc_node`, while
-        // tracing emits a headerless `New(Node)` plus field stores with the
-        // descriptor identity used by graph-pipeline storage helpers.
-        // jit_free_node is `concrete_only_void` — the free runs on the
-        // concrete path only; the JIT trace omits it. The GNE after the
-        // call is a store-scheduling fence for the preceding
-        // setfield_gc_r(selected_ref.head) lazy set.
+        // Node frees and value arithmetic are registered so field-level Stack
+        // operations emit concrete IR instead of silently skipping an
+        // unregistered call. Allocation is not here: it goes through
+        // `struct_allocs`, so concrete execution calls `jit_alloc_node` while
+        // tracing emits a headerless `New(Node)` plus field stores under the
+        // descriptor identity the graph-pipeline storage helpers use.
+        //
+        // `jit_free_node` is `concrete_only_void` — the free runs on the
+        // concrete path only, and the trace omits it. The GNE after the call
+        // is a store-scheduling fence for the preceding
+        // `setfield_gc_r(selected_ref.head)` lazy set.
         jit_free_node => concrete_only_void,
         val_add => elidable_int,
         val_sub => elidable_int,
@@ -1420,24 +1366,17 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         val_mod => elidable_int,
         val_from_i32 => elidable_int_cannot_raise,
     },
-    // Residual storage mutators that change `Stack.size` or its `head` chain
-    // pointer.  Traced push/pop methods emit in-trace `setfield_gc` stores,
-    // which invalidate the matching heapcache entries directly.
-    // The macro-inlined Stack helpers and graph-pipeline pop/swap jitcodes
-    // splice that `self.size` setfield into the trace directly, so they
-    // reproduce the barrier and need no entry here. The same holds for pops
-    // that arithmetic arms inline as head/next/size stores.
-    // The remaining ops lower to opaque residual calls, which carry an empty
-    // write-set by default. A size-only declaration can leave a stale head
-    // cached after a residual pop, while a head-only declaration can leave a
-    // stale size. Declaring both fields restores the invalidation performed by
-    // traced setfield barriers. The lists are
-    // conservative supersets because an extra reload is harmless while a
-    // missing invalidation is not.
-    // The `@ Struct` alias groups this used to carry are gone: `head` and
-    // `size` are declared once, on the type that owns them, so there is one
-    // descriptor per word to invalidate rather than one per nominal struct
-    // an access might be spelled through.
+    // Residual storage mutators that change `size` or the `head` chain pointer.
+    //
+    // A helper whose stores reach the trace needs no entry: the in-trace
+    // `setfield_gc` invalidates the matching heapcache entry itself, which
+    // covers the macro-inlined Stack helpers, the graph-pipeline pop/swap
+    // jitcodes, and the pops the arithmetic arms inline as head/next/size
+    // stores. The rest lower to opaque residual calls, which carry an empty
+    // write-set by default: a size-only declaration can leave a stale head
+    // cached after a residual pop, and a head-only declaration a stale size,
+    // so both fields are declared. The lists are conservative supersets —
+    // an extra reload is harmless, a missing invalidation is not.
     residual_writes = {
         selected_ref.size => [
             lj::queue_push, lj::queue_add, lj::queue_sub,
@@ -1463,7 +1402,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
             jit_storage_push, jit_storage_dup,
         ],
     },
-    // rpaheui/aheui/aheui.py:29: greens=['pc','stackok','is_queue','program'].
+    // rpaheui/aheui/aheui.py: greens=['pc','stackok','is_queue','program'].
     //
     // `bind_pre_merge_point_stmts` registers body-local bindings before green
     // resolution. Therefore a synthesized
@@ -1484,16 +1423,13 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     native_tag_small = { jit_retag_small },
 )]
 // This body is the `jit_interp` macro's INPUT, so its control flow is lowered,
-// not merely read. Both of these lints are about the shape of a conditional and
-// applying either one changed what came out: `cargo clippy --fix` rewrote
-// `stackok == false` to `!stackok` and folded a nested `if let` into a let
-// chain, and the emitted jitcode came out with a label that no block ever
-// marked — every program then panicked at trace-install time. The crate still
-// compiled cleanly; only running a program showed it.
+// not merely read: a style fix to a conditional here is a change to the
+// generated code. Both suppressed lints are about conditional shape, and
+// applying either one emitted a jitcode with a label no block marked, which
+// panics at trace-install time while the crate still compiles cleanly.
 //
-// Do not apply a style fix inside this function without re-running a real
-// program end to end. Anything the lints suggest here is a change to the
-// generated code.
+// Do not apply a style fix inside this function without running a real program
+// end to end.
 #[allow(clippy::bool_comparison, clippy::collapsible_if)]
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
     init_gc_subsystem();
@@ -1514,27 +1450,20 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     let gc = Box::new(NurseryGcAllocator::new());
     driver.meta_interp_mut().backend_mut().set_gc_allocator(gc);
     driver.meta_interp_mut().backend_mut().set_new_via_gc(true);
-    // `resume.py:1367` materializes virtual headerless `Node` values during
+    // `resume.py` materializes virtual headerless `Node` values during
     // guard-failure deoptimization. The blackhole allocator must do the same or
     // a virtual node becomes a null head while the recorded size stays nonzero.
     driver.register_blackhole_allocator(AheuiBlackholeAllocator);
 
-    // rpaheui/aheui/aheui.py:325 `jit.set_param(driver, 'trace_limit', 30000)`
-    // — see [`TRACE_LIMIT`] for the scaling.
     driver.set_param("trace_limit", trace_limit() as i64);
 
-    // `ALL_OPTS` minus `unroll` (warmspot.py:73 passes the list per driver).
-    // rpaheui leaves the default, so this is a pyre-side choice for this
-    // frontend only; nothing else on the process is affected.
-    //
-    // Peeling the preamble costs this driver more than it returns. On logo it
-    // spends ~68ms of the ~108ms warmup, and the peeled body is no faster:
-    // wall 271ms -> 209ms with the steady-state phase moving 163.5ms ->
-    // 169.0ms, i.e. within noise. The aheui loop body carries almost nothing
-    // loop-invariant to hoist — every operation reads or writes the mutable
-    // selected stack — so the second copy buys the optimizer no new facts.
-    // `AHEUI_ENABLE_OPTS` overrides the list, which is how a suspect pass gets
-    // taken out of one arm without a second binary.
+    // `ALL_OPTS` minus `unroll`, a per-driver choice that affects nothing else
+    // on the process. Peeling the preamble costs this driver more than it
+    // returns: the aheui loop body carries almost nothing loop-invariant to
+    // hoist — every operation reads or writes the mutable selected stack — so
+    // the second copy buys the optimizer no new facts while the peel dominates
+    // warmup. `AHEUI_ENABLE_OPTS` overrides the list, which is how a suspect
+    // pass is taken out of one arm without a second binary.
     const ENABLE_OPTS: &str = "intbounds:rewrite:virtualize:string:pure:earlyforce:heap";
     match std::env::var("AHEUI_ENABLE_OPTS") {
         Ok(text) => driver.set_param_enable_opts(&text),
@@ -1542,14 +1471,22 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     }
 
     let mut pc: usize = 0;
-    // rpaheui/aheui/aheui.py:30: reds=['stacksize','storage','selected']
+    // rpaheui/aheui/aheui.py: reds=['stacksize','storage','selected']
     let mut state = AheuiState {
         storage: Storage::new(),
         vals: majit_metainterp::virt_array::VirtArray::filled(
             0i64,
             banded_pool_count(program) * CAP,
         ),
-        depths: majit_metainterp::virt_array::VirtArray::filled(0i64, STORAGE_COUNT),
+        // Sized like `vals`, not `STORAGE_COUNT`: every read and write of a
+        // depth is gated on `< bands`, and `bands` never exceeds the banded
+        // pool count, so a slot past it is unreachable. A declared slot is a
+        // loop-carried value the optimizer carries and the trace prologue
+        // reloads whether or not any opcode can index it.
+        depths: majit_metainterp::virt_array::VirtArray::filled(
+            0i64,
+            banded_pool_count(program),
+        ),
         selected: 0,
         stacksize: 0,
         sp: 0,
@@ -1588,7 +1525,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     aheui_runtime::storage::set_gc_roots(&mut state.storage as *mut Storage);
     register_aheui_copying_gc_jit_roots();
 
-    // RPython `warmspot.py:281-289` `make_jitcodes() →
+    // RPython `warmspot.py` `make_jitcodes() →
     // finish_setup(codewriter)` parity for state-field JIT: register the
     // canonical `(live_i, live_r, live_f)` liveness slots and seed
     // `MetaInterpStaticData` so blackhole resume's
@@ -1672,9 +1609,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 }
             }
         }
-        // rpaheui/aheui/aheui.py:252
         let mut stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-        // rpaheui/aheui/aheui.py:284 sets `is_queue = (value == VAL_QUEUE)`
+        // rpaheui/aheui/aheui.py sets `is_queue = (value == VAL_QUEUE)`
         // inside OP_SEL; pyre recomputes it pre-merge-point from the
         // canonical source (`state.selected == VAL_QUEUE`) so the body-local
         // binding pass can expose it to `resolve_greens` as a green.
@@ -1688,7 +1624,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         let bands = jit_band_count() as usize;
 
         WALK_STORAGE_PTR.with(|c| c.set(&state.storage as *const Storage as usize));
-        // rpaheui/aheui/aheui.py:253-255: jit_merge_point
+        // rpaheui/aheui/aheui.py: jit_merge_point
         // `; state` selects the single-pass close: the walk's final state is
         // transferred into `state` here (via the hook's `recover`) instead of
         // being replayed. Byte-identical to `jit_merge_point!()` until the walk
@@ -1748,7 +1684,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // (op_pc) so the back-edge check stays semantic.
         pc += 1;
 
-        // rpaheui/aheui/aheui.py:294-311: branch ops at dispatch level.
+        // rpaheui/aheui/aheui.py: branch ops at dispatch level.
         // lower_match_stmt lowers this into chained guards in the dispatch
         // JitCode. pc = target + continue update the JitCode pc register
         // and BC_GOTO loop_start.
@@ -1803,15 +1739,19 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         }
 
         match op {
-            // rpaheui/aheui/aheui.py:260-389: `selected.<op>()`.
-            // Branch on the `is_queue` green. The trace specializes per value
-            // so only one branch
-            // survives in compiled code: concrete `stack_*` or
-            // `queue_*` (Port falls through to polymorphic dispatch).
-            // `selected_ref` is the `ref(Stack)` state scalar, which
-            // points at the currently selected storage; `is_queue`
-            // (= `selected == VAL_QUEUE`) is a green, so the branch
-            // folds to a constant and the dead arm is eliminated.
+            // `selected.<op>()`, branched on the `is_queue` green. The trace
+            // specializes per value, so only one branch survives in compiled
+            // code: a concrete `stack_*` or `queue_*` helper reached through
+            // `selected_ref`, the `ref(Stack)` state scalar pointing at the
+            // selected storage. Port falls through to polymorphic dispatch.
+            //
+            // The banded arm — `selected < bands` — runs the same binary op
+            // over the ring instead of the chain. `sp` is the depth after the
+            // op, so the operands sit at `sp` and `sp - 1` and the result takes
+            // the lower slot, the shape `linkedlist.py` has over the chain. At
+            // `sp >= CAP` the pop dropped the band's bottom element out of
+            // range, so the chain hands the next one back — into the slot the
+            // popped operand just vacated, which is the same ring slot.
             OP_ADD => {
                 if stackok {
                     if is_queue {
@@ -1821,10 +1761,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_add_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        // `sp` is the depth after the op, so the two operands
-                        // are at `sp` and `sp - 1` and the result takes the
-                        // lower slot — the shape linkedlist.py:35-38 has over
-                        // the chain, over the band instead.
                         let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
                         let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
                         let r1 = state.vals[r1_slot];
@@ -1836,10 +1772,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         };
                         state.vals[r2_slot] = __band_word;
                         if state.sp >= CAP {
-                            // The pop dropped the band's bottom element out of
-                            // range, so the chain hands the next one back — into
-                            // the slot the popped operand just vacated, which is
-                            // the same ring slot.
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -1859,10 +1791,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_sub_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        // `sp` is the depth after the op, so the two operands
-                        // are at `sp` and `sp - 1` and the result takes the
-                        // lower slot — the shape linkedlist.py:35-38 has over
-                        // the chain, over the band instead.
                         let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
                         let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
                         let r1 = state.vals[r1_slot];
@@ -1874,10 +1802,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         };
                         state.vals[r2_slot] = __band_word;
                         if state.sp >= CAP {
-                            // The pop dropped the band's bottom element out of
-                            // range, so the chain hands the next one back — into
-                            // the slot the popped operand just vacated, which is
-                            // the same ring slot.
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -1897,10 +1821,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_mul_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        // `sp` is the depth after the op, so the two operands
-                        // are at `sp` and `sp - 1` and the result takes the
-                        // lower slot — the shape linkedlist.py:35-38 has over
-                        // the chain, over the band instead.
                         let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
                         let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
                         let r1 = state.vals[r1_slot];
@@ -1912,10 +1832,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         };
                         state.vals[r2_slot] = __band_word;
                         if state.sp >= CAP {
-                            // The pop dropped the band's bottom element out of
-                            // range, so the chain hands the next one back — into
-                            // the slot the popped operand just vacated, which is
-                            // the same ring slot.
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -1935,10 +1851,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_div_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        // `sp` is the depth after the op, so the two operands
-                        // are at `sp` and `sp - 1` and the result takes the
-                        // lower slot — the shape linkedlist.py:35-38 has over
-                        // the chain, over the band instead.
                         let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
                         let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
                         let r1 = state.vals[r1_slot];
@@ -1950,10 +1862,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         };
                         state.vals[r2_slot] = __band_word;
                         if state.sp >= CAP {
-                            // The pop dropped the band's bottom element out of
-                            // range, so the chain hands the next one back — into
-                            // the slot the popped operand just vacated, which is
-                            // the same ring slot.
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -1980,10 +1888,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_mod_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        // `sp` is the depth after the op, so the two operands
-                        // are at `sp` and `sp - 1` and the result takes the
-                        // lower slot — the shape linkedlist.py:35-38 has over
-                        // the chain, over the band instead.
                         let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
                         let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
                         let r1 = state.vals[r1_slot];
@@ -1995,10 +1899,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         };
                         state.vals[r2_slot] = __band_word;
                         if state.sp >= CAP {
-                            // The pop dropped the band's bottom element out of
-                            // range, so the chain hands the next one back — into
-                            // the slot the popped operand just vacated, which is
-                            // the same ring slot.
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2034,7 +1934,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 }
             }
             OP_PUSH => {
-                // rpaheui/aheui/aheui.py:272-275.
+                // rpaheui/aheui/aheui.py.
                 let value = program.get_operand(pc - 1) as i64;
                 let v = if bm != 0 {
                     jit_tag_val(value)
@@ -2044,13 +1944,13 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if is_queue {
                     lj::queue_push(state.selected_ref, v);
                 } else if state.selected == VAL_PORT {
-                    // linkedlist.py:134-139 `Port.push` also records
-                    // `last_push`, and linkedlist.py:141-142 `Port.dup`
+                    // linkedlist.py `Port.push` also records
+                    // `last_push`, and linkedlist.py `Port.dup`
                     // pushes that instead of the head value. `selected_ref`
                     // is typed `Stack`, so the inline push/dup below write
                     // head/size only and a `push; pop; dup` on the port
                     // duplicates the wrong value. The port takes the
-                    // polymorphic residual, matching aheui.py:260-389
+                    // polymorphic residual, matching aheui.py
                     // `selected.METHOD()`. Only push and dup diverge —
                     // `pop`, `swap`, `_get_2_values` and `_put_value` are
                     // the shared `LinkedList` implementations.
@@ -2098,12 +1998,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_SWAP => {
                 if stackok {
-                    // linkedlist.py:30-33: one `swap` on `LinkedList`, which
-                    // every storage inherits unchanged. The split this replaces
-                    // was not dispatch -- the two helpers were identical -- it
-                    // was what kept a queue-specialized trace touching `head`
-                    // only under descriptors minted for `Queue`. `head` is
-                    // declared once now, so the arm can say what rpaheui says.
+                    // One `swap`, on `LinkedList`, which every storage
+                    // inherits unchanged: `head` is declared once, on the base
+                    // they embed, so there is no per-storage helper to pick
+                    // between.
                     if state.selected < bands {
                         let top_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
                         let second_slot = state.selected * CAP + ((state.sp - 2) & CAP_MASK);
@@ -2116,7 +2014,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 }
             }
             OP_SEL => {
-                // rpaheui/aheui/aheui.py:280-284: `selected = storage[value];
+                // rpaheui/aheui/aheui.py: `selected = storage[value];
                 // stacksize = len(selected)`. `len(selected)` is a getfield on
                 // the selected list's mutable `.size` field — re-read each loop
                 // entry and invalidated by stack mutation, so `stacksize` never
@@ -2211,10 +2109,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_cmp_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        // `sp` is the depth after the op, so the two operands
-                        // are at `sp` and `sp - 1` and the result takes the
-                        // lower slot — the shape linkedlist.py:35-38 has over
-                        // the chain, over the band instead.
                         let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
                         let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
                         let r1 = state.vals[r1_slot];
@@ -2226,10 +2120,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         };
                         state.vals[r2_slot] = __band_word;
                         if state.sp >= CAP {
-                            // The pop dropped the band's bottom element out of
-                            // range, so the chain hands the next one back — into
-                            // the slot the popped operand just vacated, which is
-                            // the same ring slot.
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2274,7 +2164,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 }
             }
             OP_PUSHNUM => {
-                // rpaheui/aheui/aheui.py:318-321
                 jit_output_flush();
                 let num = jit_read_number();
                 let v = if bm != 0 {
@@ -2302,7 +2191,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 }
             }
             OP_PUSHCHAR => {
-                // rpaheui/aheui/aheui.py:322-325
                 jit_output_flush();
                 let ch = jit_read_utf8();
                 let v = if bm != 0 {
@@ -2349,7 +2237,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         driver.meta_interp().staticdata.profiler.snapshot(),
     );
 
-    // rpaheui/aheui/aheui.py:363-366
     // The armed count for the same reason `walk_band_values` takes it: a pool
     // at or above it holds every word in its chain, and its band slots are
     // whatever an earlier arming left there.

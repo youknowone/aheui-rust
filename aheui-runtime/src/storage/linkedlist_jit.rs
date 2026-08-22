@@ -312,7 +312,7 @@ pub fn stack_mod(stack: usize) {
     },
 )]
 pub fn stack_dup(stack: usize) {
-    // linkedlist.py:82-83 Stack.dup -- `self.push(self.head.value)`, flattened
+    // linkedlist.py Stack.dup -- `self.push(self.head.value)`, flattened
     // here into the three statements that push expands to.  The queue's `dup`
     // is a separate definition (:112-116) that happens to expand the same way;
     // they are two implementations of a method every storage overrides, not one
@@ -461,7 +461,7 @@ pub fn val_ge_jit(a: Val, b: Val) -> Val {
     },
 )]
 pub fn queue_push(queue: usize, value: Val) {
-    // linkedlist.py:103-110 Queue.push — write the value into the current tail
+    // linkedlist.py Queue.push — write the value into the current tail
     // (dummy) node and append a fresh null-next sentinel as the new tail.
     // Allocate the sentinel FIRST and read `tail` only AFTER, so no Node ref is
     // held across the collecting alloc: `alloc_node_jit` can collect on the
@@ -480,7 +480,7 @@ pub fn queue_push(queue: usize, value: Val) {
     queue.size = queue.size + 1u32;
 }
 
-// Queue arithmetic (linkedlist.py:99-127): _get_2_values pops two front values,
+// Queue arithmetic (linkedlist.py): _get_2_values pops two front values,
 // _put_value pushes the result at the tail. Inlined as queue_pop x2 + the native
 // smallint fast path (mirroring stack_add/sub/mul) + the queue_push tail-sentinel
 // append. The result Val is not a Node, so holding it across the sentinel alloc's
@@ -826,7 +826,7 @@ pub fn queue_mod(queue: usize) {
     },
 )]
 pub fn queue_dup(queue: usize) {
-    // linkedlist.py:112-116 Queue.dup — duplicate the head node (front). Same
+    // linkedlist.py Queue.dup — duplicate the head node (front). Same
     // shape as `stack_dup`; the queue's `tail` is untouched. Inlined (not a
     // residual call) so the head/size mutation is tracked by the optimizer and
     // a following pop reads the post-dup values instead of a stale cache.

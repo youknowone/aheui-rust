@@ -1,19 +1,15 @@
 //! Storage system for Aheui: 28 storage spaces (Stacks, Queue, Port).
 //!
-//! Directory layout mirrors `rpaheui/aheui/storage/`:
-//!   * [`linkedlist`] — `linkedlist.py` (Node / LinkedList / Stack / Queue / Port).
-//!   * [`array`] — parity stub for `array.py` (CPython-only backend).
+//! Two backends implement the same three pools, and `backend_equivalence`
+//! pins them to each other:
 //!
-//! The aggregate [`Storage`] below mirrors `rpaheui/aheui/aheui.py::class Storage`.
-//! RPython relies on Python duck typing and the GC to carry Stack/Queue/
-//! Port references inside `pools`, where the element type is the common
-//! base. Rust can not store mixed subclass instances in a flat array, so we
-//! split them: a per-index `Stack` array plus a dedicated `Queue` (slot
-//! `VAL_QUEUE`) and `Port` (slot `VAL_PORT`). The `pools` indirection array
-//! restores the flat list by holding the address of the [`ListBase`] each
-//! storage embeds, which is that same element type; polymorphic dispatch for
-//! push / dup / _get_2_values / _put_value still goes through the
-//! [`LinkedList`] trait via [`Storage::dispatch_mut`].
+//!   * [`linkedlist`] — a line-by-line port of `linkedlist.py`, and the live
+//!     representation the corpus baselines were recorded against.
+//!   * [`array`] — the same semantics over a flat buffer. No consumer selects
+//!     it yet.
+//!
+//! [`Storage`] below is the aggregate the interpreter selects out of, and the
+//! nursery the linked-list backend allocates its nodes from lives here too.
 
 pub mod array;
 #[cfg(feature = "jit")]
@@ -351,7 +347,7 @@ impl Nursery {
     /// Runs from `alloc` when the interpreter's eager-free list is empty and
     /// the current bump chunk is exhausted. The collector follows RPython
     /// incminimark's nursery evacuation shape, anchored at
-    /// `rpython/memory/gc/incminimark.py:2108`
+    /// `rpython/memory/gc/incminimark.py`
     /// `trace_and_drag_out_of_nursery`: copy a nursery object, install a
     /// forwarding pointer in from-space, then trace copied objects until the
     /// worklist is drained. `Node` is headerless (`value,next`), so the
@@ -851,8 +847,9 @@ pub fn nursery_bump_addrs() -> (usize, usize) {
 }
 
 /// Allocate a zeroed `Node` without initializing fields.
-/// Used by JIT's GcAllocator to get a node from the shared nursery.
-
+///
+/// Serves the JIT's `GcAllocator`, so its nodes come from the same nursery the
+/// interpreter path allocates from.
 #[inline(always)]
 pub fn alloc_node_raw() -> *mut linkedlist::Node {
     alloc_node(val_from_i32(0), std::ptr::null_mut())
@@ -890,7 +887,6 @@ fn init_nursery() {
     }
 }
 
-// rpaheui/aheui/aheui.py:37-53
 // class Storage(object):
 //     _immutable_fields_ = ['pools']
 //     def __init__(self):
@@ -944,7 +940,6 @@ impl Default for Storage {
 }
 
 impl Storage {
-    // aheui.py:40-49
     pub fn new() -> Self {
         init_nursery();
 
@@ -963,7 +958,7 @@ impl Storage {
     /// `queue` / `port`. Must be called after `Storage` is moved, because
     /// the pointers are self-referencing.
     ///
-    /// Every slot `aheui.py:40-49` fills with a non-`Stack` instance has to
+    /// Every slot `aheui.py` fills with a non-`Stack` instance has to
     /// be aliased here, or `get_stack_ptr` hands the JIT a decoy
     /// `stacks[idx]` that no other path ever writes: `dispatch_mut` reaches
     /// the real object, so the two views of one storage index drift apart
@@ -981,7 +976,7 @@ impl Storage {
     /// recorded `size`, returning a description of the first storage that
     /// disagrees.
     ///
-    /// `linkedlist.py:98-110` keeps the queue exactly one node longer than
+    /// `linkedlist.py` keeps the queue exactly one node longer than
     /// `size`: `__init__` seeds a dummy `tail` node and `push` appends a fresh
     /// one, so `size` counts real elements and the chain ends at `tail`.
     /// Stacks and the port hold exactly `size` nodes.
@@ -1073,7 +1068,6 @@ impl Storage {
         out
     }
 
-    // aheui.py:51-53
     // @jit.elidable
     // def __getitem__(self, idx):
     //     return self.pools[idx]

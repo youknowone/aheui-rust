@@ -5,13 +5,12 @@
 //!   * greens — `pc`, `stackok`, `is_queue`, `program`
 //!   * reds   — `stacksize`, `storage`, `selected`
 //!
-//! In RPython `selected = storage[value]` captures a direct reference to
-//! the polymorphic `Stack` / `Queue` / `Port` object (aheui.py:233,282).
-//! Rust cannot hold a mutable borrow into `storage` across subsequent
-//! storage mutations, so `selected` is kept as an `usize` index and the
-//! polymorphic object is re-fetched via [`Storage::dispatch_mut`] on
-//! every use. This is the minimum adaptation needed for the borrow
-//! checker; the semantic result is identical.
+//! In RPython `selected = storage[value]` captures a direct reference to the
+//! polymorphic `Stack` / `Queue` / `Port` object. Rust cannot hold a mutable
+//! borrow into `storage` across subsequent storage mutations, so `selected` is
+//! kept as a `usize` index and the object is re-fetched through
+//! [`Storage::dispatch_mut`] on every use — the minimum adaptation the borrow
+//! checker needs, with an identical semantic result.
 use crate::aheui::Program;
 
 use crate::aheui::*;
@@ -29,7 +28,6 @@ pub fn mainloop(program: &Program) -> Val {
     // and the flip walks it, so it has to be built in the mode it is read in.
     start_in_raw_mode();
 
-    // rpaheui/aheui/aheui.py:228-234
     let mut pc: usize = 0;
     let mut stacksize: i32 = 0;
     let mut is_queue: bool = false;
@@ -42,7 +40,6 @@ pub fn mainloop(program: &Program) -> Val {
 
     let mut input = aheui_io::InputBuffer::new();
     while pc < program.size {
-        // rpaheui/aheui/aheui.py:252
         let stackok = program.get_req_size(pc) as i32 <= stacksize;
         let op = program.get_op(pc);
         stacksize += -OP_STACKDEL[op as usize] + OP_STACKADD[op as usize];
@@ -63,7 +60,6 @@ pub fn mainloop(program: &Program) -> Val {
             OP_DUP => storage.dispatch_mut(selected).dup(),
             OP_SWAP => storage.dispatch_mut(selected).swap(),
             OP_SEL => {
-                // rpaheui/aheui/aheui.py:280-284
                 let value = program.get_operand(pc) as usize;
                 selected = value;
                 stacksize = storage.len_at(selected) as i32;
@@ -120,7 +116,6 @@ pub fn mainloop(program: &Program) -> Val {
 
     aheui_io::output_flush();
 
-    // rpaheui/aheui/aheui.py:363-366
     if storage.len_at(selected) > 0 {
         storage.dispatch_mut(selected).pop()
     } else {

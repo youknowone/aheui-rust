@@ -55,7 +55,7 @@ fn output_write_all(bytes: &[u8]) {
     wasm_buf::write_all(bytes);
 }
 
-// Mirrors rpaheui/aheui/aheui.py:196-220 OutputBuffer. Each thread buffers
+// Mirrors rpaheui/aheui/aheui.py OutputBuffer. Each thread buffers
 // only pending output bytes, not interpreter state, and drains them at the
 // threshold or `output_flush` to avoid locking stdout for every small write.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]

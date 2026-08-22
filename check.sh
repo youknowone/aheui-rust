@@ -197,11 +197,10 @@ else
 
     # Both axes above count events — loops compiled, guards failed, traces
     # aborted. A codegen change moves none of them: the same loop compiles,
-    # the same guards fail, the same bytes come out, and the trace is a
-    # different size. logo optimizes 24893 ops down to 3289, so that is a
-    # factor of seven no counter here would notice. The op census is the
-    # field that notices, and it is a count rather than a wall time because
-    # this host runs sibling builds and logo's wall time swings with them.
+    # the same guards fail, the same bytes come out, and only the size of the
+    # trace differs, by as much as a factor of seven. The op census is the
+    # field that notices, and it counts ops rather than timing the run because
+    # this host builds siblings concurrently and wall time swings with them.
     if python3 scripts/opcensus.py check; then
         pass "backend op census"
     else

@@ -16,14 +16,11 @@ use crate::consts::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
 ///
 /// `Depth::AtLeast(i32)` under `meet = min` has an unbounded descending chain,
 /// so a loop that drains a deep stack one element per trip costs one whole
-/// round per unit of depth. Round counts measured over the snippets corpus:
-/// quine.puzzlet 587, pi.puzzlet 180, logo 54, vowel-advanced 14, everything
-/// else <= 11. The two outliers are small CFGs draining a deep stack (46 and
-/// 14 blocks), where the extra rounds buy at most one guard.
+/// round per unit of depth.
 ///
-/// 64 clears logo, the largest round count that still pays for itself, and cuts
-/// quine's analysis 9x and pi.puzzlet's 3x. Both come out faster end to end even
-/// though pi.puzzlet retains one more `BRPOP2` as a result.
+/// 64 clears every program in the snippet corpus but two, and those two are
+/// small CFGs draining a deep stack, where running to their several-hundred
+/// rounds buys at most one guard and costs multiples of the analysis time.
 ///
 /// Widening is sound in one direction only, which is why it is safe here: the
 /// result feeds `eliminate_guards` via [`Depth::is_at_least`], and `AtLeast(0)`

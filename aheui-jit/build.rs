@@ -1,7 +1,6 @@
-/// Build script for aheui-jit: analyzes the Aheui interpreter via the
-/// majit-translate graph pipeline and emits the generated trace code.
-///
-/// This uses the same graph-based analysis path as pyre-jit.
+//! Build script for aheui-jit: analyzes the Aheui interpreter through the
+//! majit-translate graph pipeline — the same path pyre-jit takes — and emits
+//! the generated trace code.
 
 #[path = "src/jit/call_spec.rs"]
 mod call_spec;
@@ -108,7 +107,6 @@ fn main() {
                     ],
                     ..Default::default()
                 },
-                // rpaheui/aheui/aheui.py:28-31
                 //   driver = jit.JitDriver(
                 //       greens=['pc','stackok','is_queue','program'],
                 //       reds=['stacksize','storage','selected'])
@@ -167,8 +165,8 @@ fn main() {
     let jitcodes_bin = bincode::serialize(&pipeline.jitcodes).unwrap();
     std::fs::write(format!("{out_dir}/opcode_jitcodes.bin"), &jitcodes_bin).unwrap();
 
-    // Persist the shared descr pool (`Assembler.descrs`, assembler.py:23 /
-    // blackhole.py:59 `setup_descrs`). Each 'd'/'j' argcode in a
+    // Persist the shared descr pool (`Assembler.descrs`, assembler.py /
+    // blackhole.py `setup_descrs`). Each 'd'/'j' argcode in a
     // `JitCode.code` byte stream is a 2-byte index into this pool; the 'j'
     // (BC_INLINE_CALL) entries carry the inter-jitcode links. Same as
     // `pyre-jit-trace/build.rs` `opcode_descrs.bin`.

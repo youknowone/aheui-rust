@@ -11,7 +11,6 @@
 use super::{alloc_node, free_node};
 use crate::value::*;
 
-// linkedlist.py:4-11
 // class Node(object):
 //     """Element unit for stack and queue."""
 //     __slots__ = ('value', 'next')
@@ -60,7 +59,6 @@ pub const NODE_SIZE: usize = std::mem::size_of::<Node>();
 pub const NODE_VALUE_OFFSET: usize = 0;
 pub const NODE_NEXT_OFFSET: usize = 8;
 
-// linkedlist.py:14-64
 // class LinkedList(object):
 //     """Common linked list for storages"""
 //     __slots__ = ('head', 'size')
@@ -71,12 +69,12 @@ pub const NODE_NEXT_OFFSET: usize = 8;
 // `__len__` follow the Python default implementations.
 /// The fields `LinkedList` declares, as a struct the subclasses embed.
 ///
-/// `linkedlist.py:15-17` puts `head` and `size` on `LinkedList` itself, and
-/// `rclass.py:548` lays a subclass out as `MkStruct(name, ('super',
+/// `linkedlist.py` puts `head` and `size` on `LinkedList` itself, and
+/// `rclass.py` lays a subclass out as `MkStruct(name, ('super',
 /// rbase.object_type), *own_fields)` — the base is a real type inlined as the
 /// leading field, not a layout the subclasses each happen to repeat.  Spelling
 /// it that way here is what lets one physical `head` word carry one field
-/// descriptor for all three storages: `rclass.py:987-1001` resolves a field
+/// descriptor for all three storages: `rclass.py` resolves a field
 /// against the struct that DECLARES it, so `Stack`, `Queue` and `Port` accesses
 /// all name this type.
 ///
@@ -139,9 +137,9 @@ impl Default for ListBase {
 }
 
 pub trait LinkedList {
-    /// The inlined base every storage embeds as its leading field.  The
-    /// accessors below are derived from it once, where each subclass used to
-    /// repeat them over its own copies of the two fields.
+    /// The inlined base every storage embeds as its leading field. The
+    /// accessors below derive from it once, so no subclass repeats them over
+    /// its own copy of the two fields.
     fn base(&self) -> &ListBase;
     fn base_mut(&mut self) -> &mut ListBase;
 
@@ -165,13 +163,11 @@ pub trait LinkedList {
     fn _get_2_values(&mut self) -> (Val, Val);
     fn _put_value(&mut self, value: Val);
 
-    // linkedlist.py:19-20
     // def __len__(self): return self.size
     fn __len__(&self) -> usize {
         self.size()
     }
 
-    // linkedlist.py:22-28
     // def pop(self):
     //     node = self.head
     //     self.head = node.next
@@ -183,7 +179,6 @@ pub trait LinkedList {
         pop_base(self.base_mut())
     }
 
-    // linkedlist.py:30-33
     // def swap(self):
     //     node1 = self.head
     //     node2 = node1.next
@@ -192,7 +187,6 @@ pub trait LinkedList {
         swap_base(self.base_mut());
     }
 
-    // linkedlist.py:35-38
     // def add(self): r1, r2 = self._get_2_values(); r = bigint.add(r2, r1); self._put_value(r)
     //
     // The combining half lives in `crate::band`, which is also where a caller
@@ -203,32 +197,27 @@ pub trait LinkedList {
         self._put_value(crate::band::band_val_add(r2, r1));
     }
 
-    // linkedlist.py:40-43
     fn sub(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(crate::band::band_val_sub(r2, r1));
     }
 
-    // linkedlist.py:45-48
     fn mul(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(crate::band::band_val_mul(r2, r1));
     }
 
-    // linkedlist.py:50-53
     fn div(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(crate::band::band_val_div(r2, r1));
     }
 
-    // linkedlist.py:55-58
     // Python name is `mod`; Rust reserves that keyword, so use `modulo`.
     fn modulo(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(crate::band::band_val_mod(r2, r1));
     }
 
-    // linkedlist.py:60-64
     // def cmp(self):
     //     r1, r2 = self._get_2_values()
     //     r = int(bigint.ge(r2, r1))
@@ -240,7 +229,6 @@ pub trait LinkedList {
     }
 }
 
-// linkedlist.py:67-91
 // class Stack(LinkedList):
 //     """Base data storage for Aheui, except for ieung and hieuh."""
 //     __slots__ = ('head', 'size')
@@ -256,7 +244,6 @@ impl Default for Stack {
 }
 
 impl Stack {
-    // linkedlist.py:72-74
     // def __init__(self):
     //     self.head = None
     //     self.size = 0
@@ -275,7 +262,6 @@ impl LinkedList for Stack {
         &mut self.base
     }
 
-    // linkedlist.py:76-80
     // def push(self, value):
     //     node = Node(self.head, value)
     //     self.head = node
@@ -291,7 +277,6 @@ impl LinkedList for Stack {
         });
     }
 
-    // linkedlist.py:82-83
     // def dup(self): self.push(self.head.value)
     fn dup(&mut self) {
         assert!(!self.base.head.is_null(), "dup on empty stack");
@@ -299,7 +284,6 @@ impl LinkedList for Stack {
         self.push(top);
     }
 
-    // linkedlist.py:87-88
     // def _get_2_values(self): return self.pop(), self.head.value
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
@@ -308,7 +292,6 @@ impl LinkedList for Stack {
         (r1, r2)
     }
 
-    // linkedlist.py:90-91
     // def _put_value(self, value): self.head.value = value
     fn _put_value(&mut self, value: Val) {
         let rooted = value;
@@ -322,7 +305,6 @@ impl LinkedList for Stack {
     }
 }
 
-// linkedlist.py:94-122
 // class Queue(LinkedList):
 //     __slots__ = ('head', 'tail', 'size')
 #[repr(C)]
@@ -338,7 +320,6 @@ impl Default for Queue {
 }
 
 impl Queue {
-    // linkedlist.py:98-101
     // def __init__(self):
     //     self.tail = Node(None)
     //     self.head = self.tail
@@ -363,7 +344,6 @@ impl LinkedList for Queue {
         &mut self.base
     }
 
-    // linkedlist.py:103-110
     // def push(self, value):
     //     tail = self.tail
     //     tail.value = value
@@ -394,7 +374,6 @@ impl LinkedList for Queue {
         });
     }
 
-    // linkedlist.py:112-116
     // def dup(self):
     //     head = self.head
     //     node = Node(head, head.value)
@@ -409,7 +388,6 @@ impl LinkedList for Queue {
         self.base.size += 1;
     }
 
-    // linkedlist.py:118-119
     // def _get_2_values(self): return self.pop(), self.pop()
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
@@ -417,14 +395,12 @@ impl LinkedList for Queue {
         (r1, r2)
     }
 
-    // linkedlist.py:121-122
     // def _put_value(self, value): self.push(value)
     fn _put_value(&mut self, value: Val) {
         self.push(value);
     }
 }
 
-// linkedlist.py:125-148
 // class Port(LinkedList):
 //     __slots__ = ('head', 'size', 'last_push')
 #[repr(C)]
@@ -437,12 +413,12 @@ pub struct Port {
 /// depends on it: an access spelled `queue.head` is resolved against the struct
 /// that declares `head`, and the resulting offset is applied to the pointer the
 /// access already had.  That names the right word only if the base starts at
-/// zero.  `lltype.py:296-305` admits an inlined substructure on the same terms.
+/// zero.  `lltype.py` admits an inlined substructure on the same terms.
 ///
-/// Sharing the fields by declaring one type is stronger than the offset and
-/// width asserts this replaced.  Those compared three independently-written
-/// layouts and could only report a drift after the fact; there is now one
-/// declaration of `head` and `size`, so there is nothing left to drift.
+/// Declaring the shared fields once is stronger than asserting three
+/// independently-written layouts agree on their offsets and widths: such an
+/// assert can only report a drift after the fact, whereas one declaration of
+/// `head` and `size` leaves nothing to drift.
 const _: () = assert!(
     core::mem::offset_of!(Stack, base) == 0
         && core::mem::offset_of!(Queue, base) == 0
@@ -456,7 +432,6 @@ impl Default for Port {
 }
 
 impl Port {
-    // linkedlist.py:129-132
     // def __init__(self):
     //     self.head = None
     //     self.size = 0
@@ -477,7 +452,6 @@ impl LinkedList for Port {
         &mut self.base
     }
 
-    // linkedlist.py:134-139
     // def push(self, value):
     //     node = Node(self.head, value)
     //     self.head = node
@@ -495,13 +469,11 @@ impl LinkedList for Port {
         });
     }
 
-    // linkedlist.py:141-142
     // def dup(self): self.push(self.last_push)
     fn dup(&mut self) {
         self.push(self.last_push);
     }
 
-    // linkedlist.py:144-145
     // def _get_2_values(self): return self.pop(), self.head.value
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
@@ -510,7 +482,6 @@ impl LinkedList for Port {
         (r1, r2)
     }
 
-    // linkedlist.py:147-148
     // def _put_value(self, value): self.head.value = value
     fn _put_value(&mut self, value: Val) {
         unsafe {

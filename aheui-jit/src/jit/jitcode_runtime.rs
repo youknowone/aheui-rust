@@ -1,11 +1,11 @@
 //! Runtime access to this crate's build-time jitcode table.
 //!
-//! `MetaInterpStaticData.jitcodes` (warmspot.py:281-282) — the list of
+//! `MetaInterpStaticData.jitcodes` (warmspot.py) — the list of
 //! `JitCode` objects produced by `CodeWriter.make_jitcodes()`
-//! (codewriter.py:89). The build script (`build.rs`) runs the
+//! (codewriter.py). The build script (`build.rs`) runs the
 //! `majit_translate` pipeline over the interpreter sources and writes
 //! `pipeline.jitcodes`, the shared `pipeline.descrs`
-//! (`Assembler.descrs`, assembler.py:23), symbolic function paths, and the
+//! (`Assembler.descrs`, assembler.py), symbolic function paths, and the
 //! shared liveness table into `$OUT_DIR`.
 //!
 //! Only the embedding half lives here: reading those artifacts out of the
@@ -36,8 +36,8 @@ fn load_pipeline_jitcodes() -> Vec<Arc<JitCode>> {
 
 /// Deserialize the build-time shared descr pool (`pipeline.descrs`).
 ///
-/// `Assembler.descrs` (assembler.py:23) handed to
-/// `BlackholeInterpBuilder.setup_descrs` (blackhole.py:59). Each 'd'/'j'
+/// `Assembler.descrs` (assembler.py) handed to
+/// `BlackholeInterpBuilder.setup_descrs` (blackhole.py). Each 'd'/'j'
 /// argcode operand in a `JitCode.code` byte stream is a 2-byte index into
 /// this pool.
 fn load_pipeline_descrs() -> Vec<BhDescr> {
@@ -196,7 +196,7 @@ fn runtime_fnaddr_bindings() -> [(&'static str, i64); 14] {
 ///
 /// Materializing per lookup would hand out a different `Arc` each call for the
 /// same jitcode, which the identity the table exists to keep
-/// (`codewriter.py:80 all_jitcodes[jitcode.index] is jitcode`) does not
+/// (`codewriter.py all_jitcodes[jitcode.index] is jitcode`) does not
 /// survive: two callers naming one callee would inline-call into two objects.
 /// It also re-decodes both blobs every time.
 ///

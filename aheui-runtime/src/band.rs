@@ -118,19 +118,17 @@ pub fn band_cmp(r2: i64, r1: i64) -> i64 {
     }
 }
 
-/// Heap-value escape for [`band_cmp`].
-///
-/// Out of line for the same reason as the `promote_*` escapes, and because a
-/// second branch inside the slow arm would leave the jitcode ending in a join
-/// rather than in the typed return `inline_pipeline_int` reads.
-/// `@jit.dont_look_inside` for [`compare_ge`]: the pipeline must call it, not lower
-/// it. Spelled as the marker const the attribute would emit, so it survives
-/// without the `jit` feature's proc macros in scope.
+/// `@jit.dont_look_inside` for [`compare_ge`].
 #[doc(hidden)]
 #[allow(non_upper_case_globals)]
 #[cfg(feature = "bigint-backend")]
 const _jit_look_inside_compare_ge: bool = false;
 
+/// Heap-value escape for [`band_cmp`].
+///
+/// Out of line for the same reason as the `promote_*` escapes, and because a
+/// second branch inside the slow arm would leave the jitcode ending in a join
+/// rather than in the typed return `inline_pipeline_int` reads.
 #[cfg(feature = "bigint-backend")]
 #[inline(never)]
 fn compare_ge(r2: i64, r1: i64) -> i64 {
@@ -198,84 +196,79 @@ pub fn band_cmp_raw(r2: i64, r1: i64) -> i64 {
     (r2 >= r1) as i64
 }
 
-/// The escapes every band operation leaves through when its fast path does not
-/// apply.
-///
-/// Each is `#[inline(never)]` so the graph pipeline emits a call to it by path
-/// rather than lowering `val_*` — which reaches closures and generic helpers the
-/// pipeline has no address for. A host that names a band helper is therefore
-/// binding exactly these six paths, and nothing below them.
-///
-/// Overflow escape for `add`, in both modes.
-/// `@jit.dont_look_inside` for [`promote_add`]: the pipeline must call it, not lower
-/// it. Spelled as the marker const the attribute would emit, so it survives
-/// without the `jit` feature's proc macros in scope.
+// The escapes every band operation leaves through when its fast path does not
+// apply.
+//
+// Each is `#[inline(never)]` so the graph pipeline emits a call to it by path
+// rather than lowering `val_*` — which reaches closures and generic helpers the
+// pipeline has no address for. A host that names a band helper is therefore
+// binding exactly these six paths, and nothing below them.
+//
+// Each carries a `_jit_look_inside_*` marker const: what `@jit.dont_look_inside`
+// would emit, spelled out so it survives without the `jit` feature's proc macros
+// in scope. It is what tells the pipeline to call the function rather than lower
+// it.
+
+/// `@jit.dont_look_inside` for [`promote_add`].
 #[doc(hidden)]
 #[allow(non_upper_case_globals)]
 #[cfg(feature = "bigint-backend")]
 const _jit_look_inside_promote_add: bool = false;
 
+/// Overflow escape for `add`, in both modes.
 #[cfg(feature = "bigint-backend")]
 #[inline(never)]
 fn promote_add(r2: i64, r1: i64) -> i64 {
     val_as_raw_i64(val_add(val_from_raw_i64(r2), val_from_raw_i64(r1)))
 }
 
-/// Overflow escape for `sub`.
-/// `@jit.dont_look_inside` for [`promote_sub`]: the pipeline must call it, not lower
-/// it. Spelled as the marker const the attribute would emit, so it survives
-/// without the `jit` feature's proc macros in scope.
+/// `@jit.dont_look_inside` for [`promote_sub`].
 #[doc(hidden)]
 #[allow(non_upper_case_globals)]
 #[cfg(feature = "bigint-backend")]
 const _jit_look_inside_promote_sub: bool = false;
 
+/// Overflow escape for `sub`.
 #[cfg(feature = "bigint-backend")]
 #[inline(never)]
 fn promote_sub(r2: i64, r1: i64) -> i64 {
     val_as_raw_i64(val_sub(val_from_raw_i64(r2), val_from_raw_i64(r1)))
 }
 
-/// Overflow escape for `mul`.
-/// `@jit.dont_look_inside` for [`promote_mul`]: the pipeline must call it, not lower
-/// it. Spelled as the marker const the attribute would emit, so it survives
-/// without the `jit` feature's proc macros in scope.
+/// `@jit.dont_look_inside` for [`promote_mul`].
 #[doc(hidden)]
 #[allow(non_upper_case_globals)]
 #[cfg(feature = "bigint-backend")]
 const _jit_look_inside_promote_mul: bool = false;
 
+/// Overflow escape for `mul`.
 #[cfg(feature = "bigint-backend")]
 #[inline(never)]
 fn promote_mul(r2: i64, r1: i64) -> i64 {
     val_as_raw_i64(val_mul(val_from_raw_i64(r2), val_from_raw_i64(r1)))
 }
 
-/// The whole of `div` in mode 1, and in mode 0 the one quotient that does not
-/// fit a word.
-/// `@jit.dont_look_inside` for [`promote_div`]: the pipeline must call it, not lower
-/// it. Spelled as the marker const the attribute would emit, so it survives
-/// without the `jit` feature's proc macros in scope.
+/// `@jit.dont_look_inside` for [`promote_div`].
 #[doc(hidden)]
 #[allow(non_upper_case_globals)]
 #[cfg(feature = "bigint-backend")]
 const _jit_look_inside_promote_div: bool = false;
 
+/// The whole of `div` in mode 1, and in mode 0 the one quotient that does not
+/// fit a word.
 #[cfg(feature = "bigint-backend")]
 #[inline(never)]
 fn promote_div(r2: i64, r1: i64) -> i64 {
     val_as_raw_i64(val_div(val_from_raw_i64(r2), val_from_raw_i64(r1)))
 }
 
-/// The whole of `mod` in mode 1.
-/// `@jit.dont_look_inside` for [`promote_mod`]: the pipeline must call it, not lower
-/// it. Spelled as the marker const the attribute would emit, so it survives
-/// without the `jit` feature's proc macros in scope.
+/// `@jit.dont_look_inside` for [`promote_mod`].
 #[doc(hidden)]
 #[allow(non_upper_case_globals)]
 #[cfg(feature = "bigint-backend")]
 const _jit_look_inside_promote_mod: bool = false;
 
+/// The whole of `mod` in mode 1.
 #[cfg(feature = "bigint-backend")]
 #[inline(never)]
 fn promote_mod(r2: i64, r1: i64) -> i64 {
