@@ -1421,6 +1421,11 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     recover = refresh_state_from_storage,
     switch_dispatch = true,
     native_tag_small = { jit_retag_small },
+    // The band holds a value as its word, and a `Val` IS that word under every
+    // mode, so the two directions of the band boundary are register-level
+    // identities. Left as calls they are three `blr`s an iteration for a
+    // reinterpretation the trace does not need to see.
+    native_identity = { jit_win_store, jit_tag_val_raw, jit_tag_word_raw },
 )]
 // This body is the `jit_interp` macro's INPUT, so its control flow is lowered,
 // not merely read: a style fix to a conditional here is a change to the
