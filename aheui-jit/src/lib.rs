@@ -570,6 +570,9 @@ pub const CAP_MASK: usize = CAP - 1;
 /// registers it, which is also when the first band slot can hold a value.
 static BAND_STATE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// TEMPORARY DIAGNOSTIC — the running `Program`, for `report_out_of_range_op`.
+static DIAG_PROGRAM: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Visit every operand word a band currently holds.
 ///
 /// Registered as `storage::BAND_ROOT_WALK_HOOK`, so it runs as part of the one
@@ -1141,56 +1144,75 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
 /// TEMPORARY DIAGNOSTIC — remove once the linux-x86_64 argument corruption is
 /// identified.
 ///
-/// On linux-x86_64 only, this helper is reached through
-/// `majit_backend::call_stub::bh_call_i_by_classes` with a host address in the
-/// `op` slot instead of an opcode. The value is stable across a process's
-/// retries and varies per process, so it is a live address rather than a
-/// build-time constant. Naming which address it is says whether the wrong
-/// register was read or the right register held the wrong thing.
+/// On linux-x86_64 the `op` slot arrives holding a brk-heap address while
+/// `stackok`, the green beside it, arrives correct. The first round ruled out
+/// this crate's statics and helpers, the `AheuiState` and its storages, and the
+/// nursery nodes: those sit in the image or in the mmap region, and the value
+/// is ~626 MB above the image. What is left in the brk heap and reachable from
+/// here is the `Program`'s two buffers and the two `VirtArray` blocks the bands
+/// live in, so this names those, then reads the words at the address itself.
 #[cold]
 #[inline(never)]
 fn report_out_of_range_op(op: usize, stackok: i64) -> ! {
-    let f = |p: *const ()| p as usize;
     eprintln!(
-        "@@@BADOP op={op:#018x} page_off={:#05x} stackok={stackok:#x}",
+        "@@@BADOP2 op={op:#018x} page_off={:#05x} stackok={stackok:#x}",
         op & 0xfff
     );
-    for (name, addr) in [
-        ("OP_STACKDEL", OP_STACKDEL.as_ptr() as usize),
-        ("OP_STACKADD", OP_STACKADD.as_ptr() as usize),
-        ("BAND_COUNT", &raw const BAND_COUNT as usize),
-        ("BAND_STATE", &raw const BAND_STATE as usize),
-        ("SPDIAG_TRACE_OPS", &raw const SPDIAG_TRACE_OPS as usize),
-        ("fn jit_stacksize_delta", f(jit_stacksize_delta as *const ())),
-        (
-            "fn jit_effective_stacksize_delta",
-            f(jit_effective_stacksize_delta as *const ()),
-        ),
-        ("fn jit_sel_get_ref", f(jit_sel_get_ref as *const ())),
-        ("fn jit_band_count", f(jit_band_count as *const ())),
-        ("fn jit_alloc_node", f(jit_alloc_node as *const ())),
-        ("fn jit_storage_push", f(jit_storage_push as *const ())),
-    ] {
+    let program_ptr = DIAG_PROGRAM.load(std::sync::atomic::Ordering::Relaxed);
+    if program_ptr != 0 {
+        // SAFETY: `DIAG_PROGRAM` is the `&Program` this mainloop was called
+        // with, borrowed for the whole call.
+        let program = unsafe { &*(program_ptr as *const Program) };
+        for (name, addr) in [
+            ("&Program", program_ptr),
+            ("Program.opcodes.as_ptr", program.opcodes.as_ptr() as usize),
+            ("Program.values.as_ptr", program.values.as_ptr() as usize),
+        ] {
+            eprintln!(
+                "@@@BADOP2   {name:26} {addr:#018x} delta={}",
+                op as i64 - addr as i64,
+            );
+        }
         eprintln!(
-            "@@@BADOP   {name:34} {addr:#018x} page_off={:#05x} delta={}",
-            addr & 0xfff,
-            op as i64 - addr as i64,
+            "@@@BADOP2   size={} opcodes.len={} values.len={} labels.len={}",
+            program.size,
+            program.opcodes.len(),
+            program.values.len(),
+            program.labels.len(),
         );
     }
-    // The storages' own addresses. A match here means the register held a
-    // `ListBase`/`Storage` handle — i.e. the call reached the wrong target or
-    // read the wrong register, not that an opcode was miscomputed.
     let state_ptr = BAND_STATE.load(std::sync::atomic::Ordering::Relaxed);
     if state_ptr != 0 {
-        eprintln!("@@@BADOP   live AheuiState                   {state_ptr:#018x}");
         // SAFETY: `BAND_STATE` is the mainloop's own `state`, live for the
         // whole call this helper is reached from.
         let state = unsafe { &*(state_ptr as *const AheuiState) };
+        // `VirtArray` keeps its heap block private and it is the leading
+        // field; this only needs the address.
+        let block = |a: &majit_metainterp::virt_array::VirtArray<i64>| unsafe {
+            *(a as *const _ as *const usize)
+        };
+        for (name, addr) in [
+            ("state.vals block", block(&state.vals)),
+            ("state.depths block", block(&state.depths)),
+        ] {
+            eprintln!(
+                "@@@BADOP2   {name:26} {addr:#018x} delta={}",
+                op as i64 - addr as i64,
+            );
+        }
         eprintln!(
-            "@@@BADOP   storage_ref={:#018x} selected_ref={:#018x} selected={}",
-            state.storage_ref as usize, state.selected_ref as usize, state.selected,
+            "@@@BADOP2   selected={} stacksize={} sp={}",
+            state.selected, state.stacksize, state.sp,
         );
-        eprint!("@@@BADOP   {}", state.dump_chain_addrs());
+    }
+    // Last, because an unmapped address ends the process here and everything
+    // above has already been written. A fault is itself an answer: the slot
+    // held an address nothing backs.
+    eprintln!("@@@BADOP2   words at op:");
+    for i in 0..4usize {
+        // SAFETY: none. See above.
+        let w = unsafe { *((op as *const u64).add(i)) };
+        eprintln!("@@@BADOP2     [{i}] {w:#018x}");
     }
     panic!("jit_effective_stacksize_delta: op {op:#x} is not an opcode");
 }
@@ -1560,6 +1582,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     };
     BAND_STATE.store(
         &mut state as *mut AheuiState as usize,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    DIAG_PROGRAM.store(
+        program as *const Program as usize,
         std::sync::atomic::Ordering::Relaxed,
     );
     aheui_runtime::storage::BAND_ROOT_WALK_HOOK.store(
