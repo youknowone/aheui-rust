@@ -91,13 +91,18 @@ jobs:
           AHEUI_CARGO_CONFIG="$GITHUB_WORKSPACE/pyre/aheui/.github/majit-ci-config.toml" \
             aheui/scripts/extract-llbc.sh
 
+      # `--no-fail-fast` so one failing binary does not hide the rest, and
+      # RUST_BACKTRACE because a panic raised while the metainterp is tracing
+      # is reported as an abort with no frame to name it.
       - name: Check and test the dynasm JIT
         working-directory: pyre/aheui
+        env:
+          RUST_BACKTRACE: 1
         run: |
           mkdir -p .cargo
           cp .github/majit-ci-config.toml .cargo/config.toml
           cargo check --workspace --features dynasm
-          cargo test --workspace --features dynasm
+          cargo test --workspace --features dynasm --no-fail-fast
 
   snippets:
     runs-on: ubuntu-latest
