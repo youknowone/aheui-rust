@@ -44,15 +44,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      # The JIT changes span aheui and majit. Keep the integration checkout in
-      # pyre/aheui so extract-llbc.sh sees the same sibling layout as a local
-      # pyre worktree; Cargo's checked-in CI patch redirects every pinned majit
-      # dependency to that checkout.
-      - name: Check out majit integration branch
+      # The JIT changes span aheui and majit. Keep the checkout in pyre/aheui so
+      # extract-llbc.sh sees the same sibling layout as a local pyre worktree;
+      # Cargo's checked-in CI patch redirects every pinned majit dependency to
+      # that checkout.
+      #
+      # `ref` is a commit id, not a branch: the patch makes this checkout the
+      # majit every job below compiles, so a branch here would grade each run
+      # against whatever pyre had moved to rather than against the revision
+      # Cargo.toml records. It moves with the `rev` in Cargo.toml.
+      - name: Check out the pinned majit revision
         uses: actions/checkout@v4
         with:
           repository: youknowone/pyre
-          ref: aheui
+          ref: d6408935b3cafc7a46a21aff80903b5c4f950096
           path: pyre
 
       - name: Check out this aheui revision
