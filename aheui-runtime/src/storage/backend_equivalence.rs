@@ -1,19 +1,16 @@
 //! Differential equivalence between the two storage backends.
 //!
-//! [`linkedlist`](super::linkedlist) is the live representation and the one
-//! the pinned corpus grades; [`array`](super::array) is a second
-//! implementation of the same three pools that no consumer selects yet.
-//! `array.rs` was written against `linkedlist.py`'s *observable* semantics
-//! rather than ported line-by-line from `array.py`, so nothing structural
-//! ties the two together — only behaviour does, and behaviour is what this
-//! module pins.
+//! [`linkedlist`](super::linkedlist) is the reference — the live
+//! representation the corpus grades — and [`array`](super::array) is written
+//! against its *observable* semantics rather than ported from a shared source,
+//! so nothing structural ties the two together. Only behaviour does, and
+//! behaviour is what this module pins.
 //!
 //! Both backends' fields are `pub`, so the comparison is not limited to
-//! return values: after every single operation this walks each pool's whole
-//! contents and requires them equal element-for-element. A backend that
-//! returned the right value while leaving the wrong state behind fails here
-//! on the step that produced it, not later on whichever step happens to
-//! observe the damage.
+//! return values: after every operation this walks each pool's whole contents
+//! and requires them equal element-for-element. A backend that returned the
+//! right value while leaving the wrong state behind fails on the step that
+//! produced it, not later on whichever step happens to observe the damage.
 //!
 //! Canonical order is *the order `pop` would return the elements in*: top
 //! first for `Stack` and `Port`, front first for `Queue`. That is the order
@@ -176,10 +173,10 @@ fn ll_contents<T: LinkedList + ?Sized>(pool: &T) -> Vec<Val> {
 }
 
 /// `data[0..size]` read back-to-front, so the top comes first.
-fn arr_stackish_contents(data: *const Val, size: u32) -> Vec<Val> {
-    (0..size as usize)
+fn arr_stackish_contents(base: &array::ArrayBase) -> Vec<Val> {
+    (0..base.size as usize)
         .rev()
-        .map(|i| unsafe { *data.add(i) })
+        .map(|i| unsafe { *base.data.add(i) })
         .collect()
 }
 
@@ -410,52 +407,59 @@ fn assert_full_coverage(shape: &str, coverage: Coverage) {
 /// Long enough that each shape's guards still let every operation through.
 const STREAM_LEN: usize = 4000;
 
+/// One stream already reaches every operation; the extra seeds vary the depths
+/// the guards see them at, which is what decides whether a growth, a wrap or a
+/// drain-to-empty happens to fall on a given op.
+const SEEDS: [u64; 4] = [0x5EED_0001, 0x5EED_0002, 0x5EED_0003, 0x5EED_0004];
+
 fn stream(seed: u64) -> Vec<Op> {
     let mut lcg = Lcg(seed);
     (0..STREAM_LEN).map(|_| lcg.op()).collect()
 }
 
+/// Run every seed's stream through one shape's pair of pools.
+fn check_shape<L, A>(
+    shape: &str,
+    new_ll: impl Fn() -> L,
+    new_arr: impl Fn() -> A,
+    arr_dump: impl Fn(&A) -> Vec<Val> + Copy,
+) where
+    L: LinkedList,
+    A: ArrayStorage,
+{
+    let _guard = nursery_test_lock();
+    for seed in SEEDS {
+        let ops = stream(seed);
+        let mut ll = new_ll();
+        let mut arr = new_arr();
+        let coverage = drive(&mut ll, &mut arr, arr_dump, &ops)
+            .unwrap_or_else(|e| panic!("{shape} seed {seed:#x}: {e}"));
+        assert_full_coverage(shape, coverage);
+    }
+}
+
 #[test]
 fn stack_backends_agree_step_for_step() {
-    let _guard = nursery_test_lock();
-    let ops = stream(0x5EED_0001);
-    let mut ll = linkedlist::Stack::new();
-    let mut arr = array::Stack::new();
-    let coverage = drive(
-        &mut ll,
-        &mut arr,
-        |a| arr_stackish_contents(a.base.data, a.base.size),
-        &ops,
-    )
-    .unwrap_or_else(|e| panic!("Stack: {e}"));
-    assert_full_coverage("Stack", coverage);
+    check_shape("Stack", linkedlist::Stack::new, array::Stack::new, |a| {
+        arr_stackish_contents(&a.base)
+    });
 }
 
 #[test]
 fn queue_backends_agree_step_for_step() {
-    let _guard = nursery_test_lock();
-    let ops = stream(0x5EED_0002);
-    let mut ll = linkedlist::Queue::new();
-    let mut arr = array::Queue::new();
-    let coverage =
-        drive(&mut ll, &mut arr, arr_queue_contents, &ops).unwrap_or_else(|e| panic!("Queue: {e}"));
-    assert_full_coverage("Queue", coverage);
+    check_shape(
+        "Queue",
+        linkedlist::Queue::new,
+        array::Queue::new,
+        arr_queue_contents,
+    );
 }
 
 #[test]
 fn port_backends_agree_step_for_step() {
-    let _guard = nursery_test_lock();
-    let ops = stream(0x5EED_0003);
-    let mut ll = linkedlist::Port::new();
-    let mut arr = array::Port::new();
-    let coverage = drive(
-        &mut ll,
-        &mut arr,
-        |a| arr_stackish_contents(a.base.data, a.base.size),
-        &ops,
-    )
-    .unwrap_or_else(|e| panic!("Port: {e}"));
-    assert_full_coverage("Port", coverage);
+    check_shape("Port", linkedlist::Port::new, array::Port::new, |a| {
+        arr_stackish_contents(&a.base)
+    });
 }
 
 /// `Port::dup` is the one operation defined on an empty pool, because it
@@ -472,7 +476,7 @@ fn port_dup_from_empty_agrees() {
     compare(
         "empty port dup",
         &ll_contents(&ll),
-        &arr_stackish_contents(arr.base.data, arr.base.size),
+        &arr_stackish_contents(&arr.base),
     )
     .unwrap_or_else(|e| panic!("Port: {e}"));
 
@@ -490,7 +494,7 @@ fn port_dup_from_empty_agrees() {
     compare(
         "port dup after add",
         &reference,
-        &arr_stackish_contents(arr.base.data, arr.base.size),
+        &arr_stackish_contents(&arr.base),
     )
     .unwrap_or_else(|e| panic!("Port: {e}"));
     assert!(
@@ -502,9 +506,9 @@ fn port_dup_from_empty_agrees() {
 
 /// Prove the comparison can fail.
 ///
-/// `array.py:51-52` spells `Queue.dup` as `appendleft(self[0])`, and in its
+/// `array.py` spells `Queue.dup` as `appendleft(self[0])`, and in its
 /// orientation `self[0]` is the BACK — so it duplicates the most recently
-/// pushed element where `linkedlist.py:112-116` duplicates the front. That
+/// pushed element where `linkedlist.py` duplicates the front. That
 /// is the one divergence `array.rs` deliberately does not copy, which makes
 /// it the right thing to invert against: if the oracle above cannot see this
 /// difference it cannot see anything.

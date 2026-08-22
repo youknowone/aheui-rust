@@ -1,23 +1,17 @@
 //! `AHEUI_CALL_OWNER_ROOT` must name a trait that exists.
 //!
-//! `build.rs:183-201` turns every `CallTargetSpec::Method` into
+//! `build.rs` turns every `CallTargetSpec::Method` into
 //! `majit_translate::CallTarget::method(name, Some(receiver_root))`, where
 //! `receiver_root` is the plain string `AHEUI_CALL_OWNER_ROOT`. Nothing links
 //! that string to the trait it names: rename the trait, or point `Storage`'s
-//! dispatch at a different one, and all ten effect overrides go on being
-//! constructed, match nothing, and take no effect. There is no error, and the
-//! only symptom is that ten calls the codewriter should have classified
+//! dispatch at a different one, and every effect override goes on being
+//! constructed, matches nothing, and takes no effect. There is no error, and
+//! the only symptom is that calls the codewriter should have classified
 //! `Elidable`/`Residual` fall back to whatever the analyzer infers.
-//!
-//! That is the failure this test exists to make loud, and it is live work
-//! rather than a hypothetical: the array-backed storage landing replaces
-//! `LinkedList` with `ArrayStorage` as the dispatch trait, which is exactly
-//! the rename that would silently disarm the overrides.
 //!
 //! Checked against the source text rather than the type system because
 //! `call_spec` is a data-only module shared with `build.rs` and cannot depend
-//! on `aheui-runtime`. Same shape, and the same reason, as majit's
-//! `mc_diag_mirror` test over the wasm runner's positional labels.
+//! on `aheui-runtime`.
 
 use std::path::{Path, PathBuf};
 
@@ -87,8 +81,8 @@ fn the_receiver_root_names_a_storage_trait_that_exists() {
 
 /// …and the root has to be the trait `Storage` actually dispatches through,
 /// not merely one that exists. Both storage backends declare a trait, so the
-/// check above stays green through the whole array landing while the overrides
-/// are keyed to the backend that is no longer in use.
+/// check above stays green while the overrides are keyed to whichever backend
+/// is not the one in use.
 #[test]
 fn the_receiver_root_is_the_trait_storage_dispatches_through() {
     let root = aheui_jit::jit::call_spec::AHEUI_CALL_OWNER_ROOT;

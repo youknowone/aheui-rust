@@ -10,21 +10,18 @@
 //! Two places where `array.py` diverges from `linkedlist.py` are not copied,
 //! because `linkedlist.py` is the semantics the corpus pins:
 //!
-//! * `array.py:51-52` `Queue.dup` is `appendleft(self[0])`, and in its
+//! * `array.py`'s `Queue.dup` is `appendleft(self[0])`, and in its
 //!   orientation `self[0]` is the BACK, so it duplicates the most recently
-//!   pushed element. `linkedlist.py:112-116` duplicates the FRONT.
-//! * `array.py:82` makes `Port = Stack`, dropping the `last_push` shadow that
-//!   `linkedlist.py:134-145` keeps and that `Port::dup` reads.
+//!   pushed element. `linkedlist.py` duplicates the FRONT.
+//! * `array.py` makes `Port = Stack`, dropping the `last_push` shadow that
+//!   `linkedlist.py` keeps and that `Port::dup` reads.
 //!
-//! Layout: every pool is `#[repr(C)]` with the buffer base pointer at offset 0
-//! and the element count at offset 8, so one pointer type could address all
-//! three. Reaching a field that way is a reinterpretation of one pool as
-//! another, which is not how the linked-list backend does it: there the two
-//! shared words are declared on a base each storage embeds at offset 0, and an
-//! access resolves against that base. Giving this backend the same treatment
-//! is owed work whenever it acquires a consumer. The buffer is a hand-rolled
-//! allocation rather than a `Vec` field: `Vec`'s field order is unspecified,
-//! and the JIT bakes in `offset_of!` for the base.
+//! Layout: every pool is `#[repr(C)]` and embeds [`ArrayBase`] at offset 0,
+//! so the words they share are declared once and an access resolves against
+//! the struct that declares it — the shape the linked-list backend gets from
+//! `ListBase`. The buffer is a hand-rolled allocation rather than a `Vec`
+//! field: `Vec`'s field order is unspecified, and the JIT bakes in
+//! `offset_of!` for the base.
 //!
 //! Growth may reallocate. Any operation that can push may move the buffer, so a
 //! base pointer read before a push must not be reused after it. The linked
@@ -105,6 +102,11 @@ unsafe fn grow_buffer(data: *mut Val, old_cap: u32, new_cap: u32, live: u32) -> 
 
 /// Release a pool's buffer.
 ///
+/// Each pool calls this from its `Drop`: the buffer is a plain `std::alloc`
+/// allocation, not a GC object and not nursery-managed, so nothing else would
+/// ever reclaim it. `Storage` owns every pool inline, so the drops run when
+/// the storage does.
+///
 /// # Safety
 /// `data` must be null with `cap == 0`, or the live allocation of `cap`
 /// elements.
@@ -124,7 +126,7 @@ unsafe fn free_buffer(data: *mut Val, cap: u32) {
 /// Mirrors the `LinkedList` trait's split: the subclass supplies `push` /
 /// `dup` / `_get_2_values` / `_put_value` and this trait derives the
 /// arithmetic from them, so the two backends compute each opcode through the
-/// same shape (`linkedlist.py:35-64`).
+/// same shape.
 pub trait ArrayStorage {
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool {
@@ -138,37 +140,32 @@ pub trait ArrayStorage {
     fn _get_2_values(&mut self) -> (Val, Val);
     fn _put_value(&mut self, value: Val);
 
-    // linkedlist.py:35-38
     fn add(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(val_add(r2, r1));
     }
 
-    // linkedlist.py:40-43
     fn sub(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(val_sub(r2, r1));
     }
 
-    // linkedlist.py:45-48
     fn mul(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(val_mul(r2, r1));
     }
 
-    // linkedlist.py:50-53
     fn div(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(val_div(r2, r1));
     }
 
-    // linkedlist.py:55-58 — Python spells this `mod`.
+    // Python spells this `mod`.
     fn modulo(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(val_mod(r2, r1));
     }
 
-    // linkedlist.py:60-64
     fn cmp(&mut self) {
         let (r1, r2) = self._get_2_values();
         let r = if val_ge(&r2, &r1) {
@@ -180,20 +177,13 @@ pub trait ArrayStorage {
     }
 }
 
-// Stack layout.
-// Top of stack is `data[size - 1]`, matching `array.py:8-42`'s right end and
-// `linkedlist.py:76-91`'s head.
-
-/// `linkedlist.py:67-91 class Stack` over a flat buffer.
 /// The fields every pool declares, as a struct the pools embed at offset 0.
 ///
-/// The module note above called this owed work: reaching `data`/`size`/`cap`
-/// by reinterpreting one pool's address as another's gives one physical field
-/// a descriptor per nominal pool it can be spelled through, and a per-object
-/// cache keyed on the descriptor then serves one pool's value out of another's
-/// slot. Declaring the shared words once, on a base each pool embeds at offset
-/// 0, is the shape the linked-list backend already uses (`ListBase`), and it is
-/// what lets an access resolve against the struct that declares the field.
+/// Declared once rather than repeated per pool: reaching `data`/`size`/`cap`
+/// by reinterpreting one pool's address as another's would give one physical
+/// field a descriptor per nominal pool it can be spelled through, and a
+/// per-object cache keyed on the descriptor then serves one pool's value out
+/// of another's slot.
 #[repr(C)]
 pub struct ArrayBase {
     /// Base pointer of the element buffer. Null until the first push.
@@ -225,6 +215,10 @@ impl Default for ArrayBase {
     }
 }
 
+/// `linkedlist.py`'s `Stack` over a flat buffer.
+///
+/// The top is `data[size - 1]` — `array.py`'s right end, and the element
+/// `linkedlist.py` keeps at `head`.
 #[repr(C)]
 pub struct Stack {
     pub base: ArrayBase,
@@ -266,9 +260,6 @@ impl Default for Stack {
     }
 }
 
-// The buffer is a plain `std::alloc` allocation, not a GC object and not
-// nursery-managed, so nothing else would ever reclaim it. `Storage` owns every
-// pool inline, so this runs when the storage does.
 impl Drop for Stack {
     fn drop(&mut self) {
         unsafe { free_buffer(self.base.data, self.base.cap) };
@@ -280,7 +271,6 @@ impl ArrayStorage for Stack {
         self.base.size as usize
     }
 
-    // linkedlist.py:76-80
     fn push(&mut self, value: Val) {
         let mut root = value;
         with_bigint_transient_root(&mut root, || {
@@ -293,20 +283,19 @@ impl ArrayStorage for Stack {
         });
     }
 
-    // linkedlist.py:22-28
     fn pop(&mut self) -> Val {
         assert!(self.base.size > 0, "pop from empty stack");
         self.base.size -= 1;
         unsafe { *self.base.data.add(self.base.size as usize) }
     }
 
-    // linkedlist.py:82-83 — `self.push(self.head.value)`.
+    // `self.push(self.head.value)`.
     fn dup(&mut self) {
         let top = self.top();
         self.push(top);
     }
 
-    // linkedlist.py:30-33 — swap the two topmost values in place.
+    // swap the two topmost values in place.
     fn swap(&mut self) {
         assert!(self.base.size >= 2, "swap on <2 elements");
         unsafe {
@@ -316,14 +305,14 @@ impl ArrayStorage for Stack {
         }
     }
 
-    // linkedlist.py:87-88 — `return self.pop(), self.head.value`.
+    // `return self.pop(), self.head.value`.
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
         let r2 = self.top();
         (r1, r2)
     }
 
-    // linkedlist.py:90-91 — `self.head.value = value`, i.e. overwrite the top
+    // `self.head.value = value`, i.e. overwrite the top
     // rather than push.
     fn _put_value(&mut self, value: Val) {
         assert!(self.base.size > 0, "_put_value on empty stack");
@@ -343,11 +332,11 @@ impl ArrayStorage for Stack {
 // moving front index alone would cause in a long-running program.
 //
 // The linked list carries one node MORE than `size` (a tail sentinel,
-// `linkedlist.py:98-101`); that is an artifact of the chain representation and
+// `linkedlist.py`); that is an artifact of the chain representation and
 // has no counterpart here. Any invariant checker that budgets `size + 1` for
 // the queue is checking the chain, not the semantics.
 
-/// `linkedlist.py:94-122 class Queue` over a ring buffer.
+/// `linkedlist.py`'s `Queue` over a ring buffer.
 #[repr(C)]
 pub struct Queue {
     pub base: ArrayBase,
@@ -402,7 +391,7 @@ impl Queue {
         unsafe { *self.slot(0) }
     }
 
-    /// Insert at the FRONT — the shape `dup` needs (`linkedlist.py:112-116`).
+    /// Insert at the FRONT — the shape `dup` needs.
     fn push_front(&mut self, value: Val) {
         let mut root = value;
         with_bigint_transient_root(&mut root, || {
@@ -427,9 +416,6 @@ impl Default for Queue {
     }
 }
 
-// The buffer is a plain `std::alloc` allocation, not a GC object and not
-// nursery-managed, so nothing else would ever reclaim it. `Storage` owns every
-// pool inline, so this runs when the storage does.
 impl Drop for Queue {
     fn drop(&mut self) {
         unsafe { free_buffer(self.base.data, self.base.cap) };
@@ -441,7 +427,7 @@ impl ArrayStorage for Queue {
         self.base.size as usize
     }
 
-    // linkedlist.py:103-110 — append at the back.
+    // append at the back.
     fn push(&mut self, value: Val) {
         let mut root = value;
         with_bigint_transient_root(&mut root, || {
@@ -455,7 +441,7 @@ impl ArrayStorage for Queue {
         });
     }
 
-    // linkedlist.py:22-28 — take from the front.
+    // take from the front.
     fn pop(&mut self) -> Val {
         assert!(self.base.size > 0, "pop from empty queue");
         let value = unsafe { *self.slot(0) };
@@ -464,14 +450,14 @@ impl ArrayStorage for Queue {
         value
     }
 
-    // linkedlist.py:112-116 — duplicate the FRONT and insert at the front.
-    // NOT `array.py:51-52`, which duplicates the back.
+    // duplicate the FRONT and insert at the front.
+    // NOT `array.py`, which duplicates the back.
     fn dup(&mut self) {
         let front = self.front_value();
         self.push_front(front);
     }
 
-    // linkedlist.py:30-33 — swap the two frontmost values in place.
+    // swap the two frontmost values in place.
     fn swap(&mut self) {
         assert!(self.base.size >= 2, "swap on <2 elements");
         unsafe {
@@ -479,7 +465,7 @@ impl ArrayStorage for Queue {
         }
     }
 
-    // linkedlist.py:118-119 — `return self.pop(), self.pop()`, both off the
+    // `return self.pop(), self.pop()`, both off the
     // front.
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
@@ -487,7 +473,7 @@ impl ArrayStorage for Queue {
         (r1, r2)
     }
 
-    // linkedlist.py:121-122 — `self.push(value)`, i.e. the arithmetic result
+    // `self.push(value)`, i.e. the arithmetic result
     // lands at the BACK, not where the operands were.
     fn _put_value(&mut self, value: Val) {
         self.push(value);
@@ -496,7 +482,7 @@ impl ArrayStorage for Queue {
 
 // Port layout.
 
-/// `linkedlist.py:125-148 class Port` — a stack plus the `last_push` shadow.
+/// `linkedlist.py`'s `Port` — a stack plus the `last_push` shadow.
 #[repr(C)]
 pub struct Port {
     pub base: ArrayBase,
@@ -536,9 +522,6 @@ impl Default for Port {
     }
 }
 
-// The buffer is a plain `std::alloc` allocation, not a GC object and not
-// nursery-managed, so nothing else would ever reclaim it. `Storage` owns every
-// pool inline, so this runs when the storage does.
 impl Drop for Port {
     fn drop(&mut self) {
         unsafe { free_buffer(self.base.data, self.base.cap) };
@@ -550,7 +533,7 @@ impl ArrayStorage for Port {
         self.base.size as usize
     }
 
-    // linkedlist.py:134-139 — push records `last_push`.
+    // push records `last_push`.
     fn push(&mut self, value: Val) {
         let mut root = value;
         with_bigint_transient_root(&mut root, || {
@@ -564,20 +547,18 @@ impl ArrayStorage for Port {
         });
     }
 
-    // linkedlist.py:22-28
     fn pop(&mut self) -> Val {
         assert!(self.base.size > 0, "pop from empty port");
         self.base.size -= 1;
         unsafe { *self.base.data.add(self.base.size as usize) }
     }
 
-    // linkedlist.py:141-142 — `self.push(self.last_push)`: the SHADOW, not the
+    // `self.push(self.last_push)`: the SHADOW, not the
     // top. After `push 5; push 10; add` the top is 15 but `last_push` is 10.
     fn dup(&mut self) {
         self.push(self.last_push);
     }
 
-    // linkedlist.py:30-33
     fn swap(&mut self) {
         assert!(self.base.size >= 2, "swap on <2 elements");
         unsafe {
@@ -587,14 +568,13 @@ impl ArrayStorage for Port {
         }
     }
 
-    // linkedlist.py:144-145
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
         let r2 = self.top();
         (r1, r2)
     }
 
-    // linkedlist.py:147-148 — overwrites the top and deliberately leaves
+    // overwrites the top and deliberately leaves
     // `last_push` alone, which is what makes `dup` observably differ from
     // duplicating the top.
     fn _put_value(&mut self, value: Val) {
@@ -609,17 +589,16 @@ impl ArrayStorage for Port {
 mod tests {
     use super::*;
 
-    // The six cases below mirror `linkedlist.rs`'s tests one-for-one, so the
-    // two backends are pinned to the same observable behaviour.
+    // Behaviour shared with the linked list is pinned by
+    // `backend_equivalence`, which drives both backends through the same
+    // operation streams. What is left here is what only the array can get
+    // wrong: the buffer, the ring, and the release path.
 
-    /// The freed-buffer sentinel must actually land on every element.
+    /// The freed-buffer sentinel must land on every element.
     ///
-    /// This is the only diagnostic that can see a stale array-element read:
-    /// without it a base pointer cached across a realloc reads recycled malloc
-    /// memory that still holds the copied-out bytes, so the wrong read returns
-    /// the right value and no stdout oracle can fail. An unstamped element is
-    /// a silent hole in that coverage, so assert the stamp rather than assume
-    /// it.
+    /// It is the only way a stale array-element read becomes visible: a base
+    /// pointer cached across a realloc reads recycled memory that still holds
+    /// the copied-out bytes, so the wrong read returns the right value.
     #[test]
     fn poison_buffer_stamps_every_element() {
         let cap = 4u32;
@@ -641,72 +620,6 @@ mod tests {
             std::alloc::dealloc(data as *mut u8, layout);
         }
     }
-
-    #[test]
-    fn test_stack_basic() {
-        let mut s = Stack::new();
-        s.push(val_from_i32(10));
-        s.push(val_from_i32(20));
-        assert_eq!(val_to_i64(&s.pop()), 20);
-        assert_eq!(val_to_i64(&s.pop()), 10);
-    }
-
-    #[test]
-    fn test_stack_add() {
-        let mut s = Stack::new();
-        s.push(val_from_i32(10));
-        s.push(val_from_i32(3));
-        // r1=3, r2=10, result=13 replaces the top.
-        s.add();
-        assert_eq!(s.base.size, 1);
-        assert_eq!(val_to_i64(&s.pop()), 13);
-    }
-
-    #[test]
-    fn test_stack_dup_swap() {
-        let mut s = Stack::new();
-        s.push(val_from_i32(5));
-        s.dup();
-        assert_eq!(s.base.size, 2);
-        s.push(val_from_i32(7));
-        s.swap();
-        assert_eq!(val_to_i64(&s.pop()), 5);
-        assert_eq!(val_to_i64(&s.pop()), 7);
-    }
-
-    #[test]
-    fn test_queue_basic() {
-        let mut q = Queue::new();
-        q.push(val_from_i32(1));
-        q.push(val_from_i32(2));
-        q.push(val_from_i32(3));
-        assert_eq!(val_to_i64(&q.pop()), 1);
-        assert_eq!(val_to_i64(&q.pop()), 2);
-    }
-
-    #[test]
-    fn test_queue_add() {
-        let mut q = Queue::new();
-        q.push(val_from_i32(10));
-        q.push(val_from_i32(3));
-        // r1=10 and r2=3 both come off the FRONT; 13 goes to the BACK.
-        q.add();
-        assert_eq!(q.base.size, 1);
-        assert_eq!(val_to_i64(&q.pop()), 13);
-    }
-
-    #[test]
-    fn test_port_dup() {
-        let mut p = Port::new();
-        p.push(val_from_i32(5));
-        p.push(val_from_i32(10));
-        p.dup(); // duplicates last_push=10
-        assert_eq!(val_to_i64(&p.pop()), 10);
-        assert_eq!(val_to_i64(&p.pop()), 10);
-        assert_eq!(val_to_i64(&p.pop()), 5);
-    }
-
-    // Cases the linked list could not get wrong, but the array can.
 
     #[test]
     fn stack_survives_growth() {
@@ -745,330 +658,6 @@ mod tests {
         }
         assert_eq!(q.base.size, 0);
     }
-
-    #[test]
-    fn port_put_value_leaves_last_push_alone() {
-        // `_put_value` must not touch the shadow: after `5, 10, add` the top
-        // is 15 while `dup` still duplicates 10.
-        let mut p = Port::new();
-        p.push(val_from_i32(5));
-        p.push(val_from_i32(10));
-        p.add();
-        assert_eq!(p.base.size, 1);
-        assert_eq!(val_to_i64(&p.top()), 15);
-        p.dup();
-        assert_eq!(val_to_i64(&p.pop()), 10);
-        assert_eq!(val_to_i64(&p.pop()), 15);
-    }
-
-    #[test]
-    fn queue_dup_duplicates_the_front() {
-        // `linkedlist.py:112-116`, NOT `array.py:51-52` which takes the back.
-        let mut q = Queue::new();
-        q.push(val_from_i32(1));
-        q.push(val_from_i32(2));
-        q.dup();
-        assert_eq!(q.base.size, 3);
-        assert_eq!(val_to_i64(&q.pop()), 1);
-        assert_eq!(val_to_i64(&q.pop()), 1);
-        assert_eq!(val_to_i64(&q.pop()), 2);
-    }
-}
-
-/// Differential tests: the array backend must agree with the linked list on
-/// every operation, since the corpus pins the linked list's behaviour and the
-/// conversion is supposed to be observationally invisible.
-#[cfg(test)]
-mod differential {
-    use super::ArrayStorage;
-    use crate::storage::linkedlist::{self, LinkedList};
-    use crate::value::*;
-
-    /// Bigint-safe equality: `Val` has no `PartialEq`, and `val_to_i64`
-    /// panics once a value promotes past i64 — which repeated `Mul` reaches
-    /// quickly, and which is exactly the dual-mode path worth covering. Two
-    /// values are equal when neither is strictly greater.
-    fn vals_eq(a: &Val, b: &Val) -> bool {
-        val_ge(a, b) && val_ge(b, a)
-    }
-
-    fn opt_vals_eq(a: &Option<Val>, b: &Option<Val>) -> bool {
-        match (a, b) {
-            (None, None) => true,
-            (Some(x), Some(y)) => vals_eq(x, y),
-            _ => false,
-        }
-    }
-
-    fn seq_eq(a: &[Val], b: &[Val]) -> bool {
-        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| vals_eq(x, y))
-    }
-
-    /// For failure messages only — a promoted value renders as `<big>`, so
-    /// never compare on this.
-    fn render(v: &Val) -> String {
-        match v.try_to_i64() {
-            Some(i) => i.to_string(),
-            None => "<big>".to_string(),
-        }
-    }
-
-    fn render_seq(vs: &[Val]) -> Vec<String> {
-        vs.iter().map(render).collect()
-    }
-
-    /// Deterministic LCG so a failure reproduces from its seed alone.
-    struct Rng(u64);
-    impl Rng {
-        fn next(&mut self) -> u64 {
-            self.0 = self
-                .0
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            self.0 >> 33
-        }
-    }
-
-    /// The operations both backends expose, minus `div`/`modulo` (a zero
-    /// divisor traps in both, which would test the panic path rather than
-    /// agreement).
-    #[derive(Clone, Copy, Debug)]
-    enum Op {
-        Push(i32),
-        Pop,
-        Dup,
-        Swap,
-        Add,
-        Sub,
-        Mul,
-        Cmp,
-    }
-
-    fn pick(rng: &mut Rng) -> Op {
-        match rng.next() % 8 {
-            0 | 1 => Op::Push((rng.next() % 1000) as i32),
-            2 => Op::Pop,
-            3 => Op::Dup,
-            4 => Op::Swap,
-            5 => Op::Add,
-            6 => Op::Sub,
-            7 => Op::Mul,
-            _ => Op::Cmp,
-        }
-    }
-
-    /// Minimum depth an op needs, so the same sequence is legal for both
-    /// backends and neither hits its underflow assert. This mirrors the
-    /// `req_size` guard the interpreter applies ahead of every opcode.
-    fn required_depth(op: Op) -> usize {
-        match op {
-            Op::Push(_) => 0,
-            Op::Pop | Op::Dup => 1,
-            Op::Swap | Op::Add | Op::Sub | Op::Mul | Op::Cmp => 2,
-        }
-    }
-
-    fn run_array<S: ArrayStorage>(pool: &mut S, op: Op) -> Option<Val> {
-        match op {
-            Op::Push(v) => {
-                pool.push(val_from_i32(v));
-                None
-            }
-            Op::Pop => Some(pool.pop()),
-            Op::Dup => {
-                pool.dup();
-                None
-            }
-            Op::Swap => {
-                pool.swap();
-                None
-            }
-            Op::Add => {
-                pool.add();
-                None
-            }
-            Op::Sub => {
-                pool.sub();
-                None
-            }
-            Op::Mul => {
-                pool.mul();
-                None
-            }
-            Op::Cmp => {
-                pool.cmp();
-                None
-            }
-        }
-    }
-
-    fn run_list<S: LinkedList>(pool: &mut S, op: Op) -> Option<Val> {
-        match op {
-            Op::Push(v) => {
-                pool.push(val_from_i32(v));
-                None
-            }
-            Op::Pop => Some(pool.pop()),
-            Op::Dup => {
-                pool.dup();
-                None
-            }
-            Op::Swap => {
-                pool.swap();
-                None
-            }
-            Op::Add => {
-                pool.add();
-                None
-            }
-            Op::Sub => {
-                pool.sub();
-                None
-            }
-            Op::Mul => {
-                pool.mul();
-                None
-            }
-            Op::Cmp => {
-                pool.cmp();
-                None
-            }
-        }
-    }
-
-    /// Drain both pools and compare the full remaining contents, so a
-    /// divergence buried below the top is caught rather than only the top.
-    fn drain_array<S: ArrayStorage>(pool: &mut S) -> Vec<Val> {
-        let mut out = Vec::new();
-        while !pool.is_empty() {
-            out.push(pool.pop());
-        }
-        out
-    }
-
-    fn drain_list<S: LinkedList>(pool: &mut S) -> Vec<Val> {
-        let mut out = Vec::new();
-        while pool.__len__() > 0 {
-            out.push(pool.pop());
-        }
-        out
-    }
-
-    #[test]
-    fn stack_matches_linked_list() {
-        let _lock = crate::storage::nursery_test_lock();
-        for seed in 0..64u64 {
-            let mut rng = Rng(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
-            let mut arr = super::Stack::new();
-            let mut list = linkedlist::Stack::new();
-            for step in 0..200 {
-                let op = pick(&mut rng);
-                if arr.len() < required_depth(op) {
-                    continue;
-                }
-                let a = run_array(&mut arr, op);
-                let l = run_list(&mut list, op);
-                assert!(
-                    opt_vals_eq(&a, &l),
-                    "seed {seed} step {step} op {op:?} returned differently: array {:?} vs list {:?}",
-                    a.as_ref().map(render),
-                    l.as_ref().map(render)
-                );
-                assert_eq!(
-                    arr.len(),
-                    list.__len__(),
-                    "seed {seed} step {step} op {op:?} left different depths"
-                );
-            }
-            let arr_rest = drain_array(&mut arr);
-            let list_rest = drain_list(&mut list);
-            assert!(
-                seq_eq(&arr_rest, &list_rest),
-                "seed {seed}: final contents differ: array {:?} vs list {:?}",
-                render_seq(&arr_rest),
-                render_seq(&list_rest)
-            );
-        }
-    }
-
-    #[test]
-    fn queue_matches_linked_list() {
-        let _lock = crate::storage::nursery_test_lock();
-        for seed in 0..64u64 {
-            let mut rng = Rng(seed.wrapping_mul(0xD1B54A32D192ED03) | 1);
-            let mut arr = super::Queue::new();
-            let mut list = linkedlist::Queue::new();
-            for step in 0..200 {
-                let op = pick(&mut rng);
-                if arr.len() < required_depth(op) {
-                    continue;
-                }
-                let a = run_array(&mut arr, op);
-                let l = run_list(&mut list, op);
-                assert!(
-                    opt_vals_eq(&a, &l),
-                    "seed {seed} step {step} op {op:?} returned differently: array {:?} vs list {:?}",
-                    a.as_ref().map(render),
-                    l.as_ref().map(render)
-                );
-                assert_eq!(
-                    arr.len(),
-                    list.__len__(),
-                    "seed {seed} step {step} op {op:?} left different depths"
-                );
-            }
-            let arr_rest = drain_array(&mut arr);
-            let list_rest = drain_list(&mut list);
-            assert!(
-                seq_eq(&arr_rest, &list_rest),
-                "seed {seed}: final contents differ: array {:?} vs list {:?}",
-                render_seq(&arr_rest),
-                render_seq(&list_rest)
-            );
-        }
-    }
-
-    #[test]
-    fn port_matches_linked_list() {
-        let _lock = crate::storage::nursery_test_lock();
-        for seed in 0..64u64 {
-            let mut rng = Rng(seed.wrapping_mul(0xBF58476D1CE4E5B9) | 1);
-            let mut arr = super::Port::new();
-            let mut list = linkedlist::Port::new();
-            for step in 0..200 {
-                let op = pick(&mut rng);
-                if arr.len() < required_depth(op) {
-                    continue;
-                }
-                let a = run_array(&mut arr, op);
-                let l = run_list(&mut list, op);
-                assert!(
-                    opt_vals_eq(&a, &l),
-                    "seed {seed} step {step} op {op:?} returned differently: array {:?} vs list {:?}",
-                    a.as_ref().map(render),
-                    l.as_ref().map(render)
-                );
-                assert_eq!(
-                    arr.len(),
-                    list.__len__(),
-                    "seed {seed} step {step} op {op:?} left different depths"
-                );
-            }
-            let arr_rest = drain_array(&mut arr);
-            let list_rest = drain_list(&mut list);
-            assert!(
-                seq_eq(&arr_rest, &list_rest),
-                "seed {seed}: final contents differ: array {:?} vs list {:?}",
-                render_seq(&arr_rest),
-                render_seq(&list_rest)
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-mod drop_tests {
-    use super::*;
 
     /// Churn many pools through growth and drop. The buffer is a plain
     /// `std::alloc` allocation that nothing else reclaims, so a missing or
