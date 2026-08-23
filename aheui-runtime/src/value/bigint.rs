@@ -34,6 +34,17 @@ thread_local! {
 #[repr(transparent)]
 pub struct Val(i64);
 
+/// A `Val` is its tagged word, so a call returning one already fills the
+/// register the trace reads the result out of, and the widening is the
+/// identity.
+#[cfg(feature = "jit")]
+impl majit_ir::CallResultWord for Val {
+    #[inline(always)]
+    fn into_call_word(self) -> i64 {
+        self.0
+    }
+}
+
 /// Raw tagged-word AND for JIT fast paths.
 ///
 /// This compares/ANDs the packed `i64` representation directly. It is correct
