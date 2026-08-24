@@ -88,19 +88,6 @@ extern "C" fn linked_list_free_node(node: usize) {
     aheui_runtime::storage::free_node(node as *mut Node);
 }
 
-// A signed division reaches the trace as the canonical truncating helper, the
-// same rewrite every other arithmetic operator gets, so the binding is to that
-// name. The two `core::num` spellings stay bound for the widths and the
-// unsigned bank the rewrite declines, where the pipeline still leaves a host
-// call and its site would otherwise keep the symbolic placeholder.
-extern "C" fn wrapping_div_i64(numerator: i64, denominator: i64) -> i64 {
-    numerator.wrapping_div(denominator)
-}
-
-extern "C" fn wrapping_rem_i64(numerator: i64, denominator: i64) -> i64 {
-    numerator.wrapping_rem(denominator)
-}
-
 // The dual-mode flag is a static, and the pipeline spells a read of it as a call
 // to the static's path. The macro-lowered dispatch reads it through its own
 // registered helper; a pipeline helper needs this binding to reach the same bit.
@@ -162,13 +149,21 @@ fn runtime_fnaddr_bindings() -> [(&'static str, i64); 16] {
             "_ll_2_int_mod",
             majit_metainterp::blackhole::_ll_2_int_mod as *const () as usize as i64,
         ),
+        // A signed division reaches the trace as the canonical truncating
+        // helper, the same rewrite every other arithmetic operator gets, so
+        // the binding is to that name. The two `core::num` spellings stay
+        // bound for the widths and the unsigned bank the rewrite declines,
+        // where the pipeline still leaves a host call and its site would
+        // otherwise keep the symbolic placeholder. Both resolve to the two
+        // helpers above: `_ll_2_int_floordiv` and `_ll_2_int_mod` are defined
+        // as `wrapping_div` and `wrapping_rem` on `i64`.
         (
             "core::num::<Impl>::wrapping_div",
-            wrapping_div_i64 as *const () as usize as i64,
+            majit_metainterp::blackhole::_ll_2_int_floordiv as *const () as usize as i64,
         ),
         (
             "core::num::<Impl>::wrapping_rem",
-            wrapping_rem_i64 as *const () as usize as i64,
+            majit_metainterp::blackhole::_ll_2_int_mod as *const () as usize as i64,
         ),
         (
             "aheui_runtime::value::bigint::BIGINT_MODE",

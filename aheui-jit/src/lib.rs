@@ -304,21 +304,13 @@ use ahsembler::compiler::Program;
 
 use aheui_runtime::value::*;
 
-// Diagnostic environment variables, cached outside hot loops.
-
-fn spdiag_enabled() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("MAJIT_SPDIAG").is_some())
-}
+// `MAJIT_SPDIAG` and `MAJIT_BH_DEBUG` are majit's own gates and are read
+// through `majit_meta`, so a run cannot have one half of either enabled.
+// This one is aheui's, cached outside hot loops the same way.
 
 fn check_chains_enabled() -> bool {
     static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *FLAG.get_or_init(|| std::env::var_os("AHEUI_CHECK_CHAINS").is_some())
-}
-
-fn bh_debug_enabled() -> bool {
-    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var_os("MAJIT_BH_DEBUG").is_some())
 }
 
 /// Cumulative ceiling on the oversized `alloc_zeroed` fallback.
@@ -814,7 +806,7 @@ impl AheuiState {
     }
 
     fn refresh_state_from_storage(&mut self) {
-        if spdiag_enabled() {
+        if majit_meta::spdiag_enabled() {
             eprintln!(
                 "@@@SPDIAG recover output_bytes={} selected={} old_stacksize={} new_stacksize={}{}",
                 aheui_io::output_total_bytes(),
@@ -920,7 +912,7 @@ fn spdiag_window() -> (u64, u64) {
 /// appears here was produced by a trace, and one that does not was produced by
 /// the interpreter after a guard sent it back.
 fn walk_emit_log(kind: &str, value: i64) {
-    if !spdiag_enabled() {
+    if !majit_meta::spdiag_enabled() {
         return;
     }
     let out = aheui_io::output_total_bytes();
@@ -943,7 +935,7 @@ fn walk_emit_log(kind: &str, value: i64) {
 /// interleaves wrongly with interpreter output.
 extern "C" fn jit_write_number(value: i64) {
     let v: Val = unsafe { std::mem::transmute(value) };
-    if bh_debug_enabled() {
+    if majit_meta::bh_debug_enabled() {
         eprintln!("[io-debug] jit_write_number raw={value}");
     }
     walk_emit_log("num", value);
@@ -1629,7 +1621,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // `guard_value(selected)` is emitted and the loop closes through the
         // real back-edge instead of being rejected as an invalid loop.
         let op = program.get_op(pc);
-        if spdiag_enabled() {
+        if majit_meta::spdiag_enabled() {
             let out = aheui_io::output_total_bytes();
             if (1240..=1260).contains(&out) {
                 let snap = format!(
