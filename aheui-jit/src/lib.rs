@@ -1021,15 +1021,6 @@ extern "C" fn jit_win_store(v: Val) -> i64 {
     aheui_runtime::value::val_as_raw_i64(v)
 }
 
-/// `val_ge` as the 1-or-0 int `cmp` pushes (linkedlist.py).
-///
-/// The comparison itself is a value operation; taking it as an int here keeps
-/// the arm's result a plain word that goes straight into a band slot.
-#[cfg(feature = "bigint-backend")]
-extern "C" fn jit_val_ge_i(a: Val, b: Val) -> i64 {
-    i64::from(aheui_runtime::value::val_ge(&a, &b))
-}
-
 #[inline(always)]
 #[cfg(feature = "bigint-backend")]
 // Referenced only from the `jit_interp` attribute above (`native_tag_small`)
@@ -1256,7 +1247,6 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // through a `Val` to reach it.
         jit_write_number => residual_void,
         jit_write_utf8 => residual_void,
-        jit_val_ge_i => elidable_int_cannot_raise,
         jit_bigint_mode => elidable_int_cannot_raise,
         jit_band_count => elidable_int_cannot_raise,
         // Method-call results consumed as values are lowered through

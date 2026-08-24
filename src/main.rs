@@ -201,10 +201,9 @@ fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
     let program = compile_program(&contents, args.opt_level);
 
     if args.benchmark {
-        let program_o2 = compile_program(&contents, ahsembler::OptimizationLevel::O2);
-
         #[cfg(feature = "naive")]
         {
+            let program_o2 = compile_program(&contents, ahsembler::OptimizationLevel::O2);
             eprintln!("--- interpreter ---");
             let start = Instant::now();
             let result = aheuinterpreter::interp::mainloop(&program_o2);
