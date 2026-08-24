@@ -24,15 +24,15 @@ members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compah
 #     majit-ir = { path = "../pyre/majit/majit-ir" }
 #     # ... one line per crate used below
 [workspace.dependencies]
-majit-ir = { git = "https://github.com/youknowone/pyre", rev = "ea4e51e4dc3c77b54acb7aedda653256a7e3b25a" }
-majit-macros = { git = "https://github.com/youknowone/pyre", rev = "ea4e51e4dc3c77b54acb7aedda653256a7e3b25a" }
-majit-metainterp = { git = "https://github.com/youknowone/pyre", rev = "ea4e51e4dc3c77b54acb7aedda653256a7e3b25a" }
-majit-rlib = { git = "https://github.com/youknowone/pyre", rev = "ea4e51e4dc3c77b54acb7aedda653256a7e3b25a" }
-majit-gc = { git = "https://github.com/youknowone/pyre", rev = "ea4e51e4dc3c77b54acb7aedda653256a7e3b25a" }
-majit-translate = { git = "https://github.com/youknowone/pyre", rev = "ea4e51e4dc3c77b54acb7aedda653256a7e3b25a" }
-majit-backend = { git = "https://github.com/youknowone/pyre", rev = "ea4e51e4dc3c77b54acb7aedda653256a7e3b25a" }
-majit-backend-cranelift = { git = "https://github.com/youknowone/pyre", rev = "ea4e51e4dc3c77b54acb7aedda653256a7e3b25a" }
-majit-backend-dynasm = { git = "https://github.com/youknowone/pyre", rev = "ea4e51e4dc3c77b54acb7aedda653256a7e3b25a" }
+majit-ir = { git = "https://github.com/youknowone/pyre", rev = "5880caf06d9cecf2d8147e4cc6e3bdfbce714842" }
+majit-macros = { git = "https://github.com/youknowone/pyre", rev = "5880caf06d9cecf2d8147e4cc6e3bdfbce714842" }
+majit-metainterp = { git = "https://github.com/youknowone/pyre", rev = "5880caf06d9cecf2d8147e4cc6e3bdfbce714842" }
+majit-rlib = { git = "https://github.com/youknowone/pyre", rev = "5880caf06d9cecf2d8147e4cc6e3bdfbce714842" }
+majit-gc = { git = "https://github.com/youknowone/pyre", rev = "5880caf06d9cecf2d8147e4cc6e3bdfbce714842" }
+majit-translate = { git = "https://github.com/youknowone/pyre", rev = "5880caf06d9cecf2d8147e4cc6e3bdfbce714842" }
+majit-backend = { git = "https://github.com/youknowone/pyre", rev = "5880caf06d9cecf2d8147e4cc6e3bdfbce714842" }
+majit-backend-cranelift = { git = "https://github.com/youknowone/pyre", rev = "5880caf06d9cecf2d8147e4cc6e3bdfbce714842" }
+majit-backend-dynasm = { git = "https://github.com/youknowone/pyre", rev = "5880caf06d9cecf2d8147e4cc6e3bdfbce714842" }
 
 [features]
 default = ["jit", "dynasm", "malachite-bigint"]
