@@ -94,8 +94,10 @@ impl Asm {
 /// `body` must be stack-neutral apart from the one element the loop is meant
 /// to drain, so the loop terminates on its own count. That matters for bodies
 /// holding an input instruction: `InputBuffer::read_number` returns 0 at EOF
-/// and never halts, and `cargo test` gives the test binary no stdin, so an
-/// aheui program that branched on what it read would never terminate.
+/// and never halts, and the test binary reads whatever stdin the runner hands
+/// it — end-of-file under CI, the terminal when a developer runs the suite —
+/// so an aheui program that branched on what it read would either spin on
+/// zeroes or block, and in neither case terminate.
 pub fn drain_loop(n: i32, body: &[(u8, i32)]) -> Program {
     use ahsembler::consts::{OP_BRPOP1, OP_HALT, OP_JMP, OP_PUSH};
 
