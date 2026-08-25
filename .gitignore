@@ -1,6 +1,11 @@
 target/
 Cargo.lock
 build/
+# The local `[patch."https://github.com/youknowone/pyre"]` override documented
+# in Cargo.toml. It names paths that exist on one machine, so committing it
+# would redirect every other checkout — CI's included — at a directory that is
+# not there.
+.cargo/
 # scripts/jitstats.py's ledger: machine-local timings, appended on every run,
 # and four worktrees of this repo would conflict on it every time.
 bench/history.jsonl
