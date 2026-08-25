@@ -2,7 +2,7 @@
 //!
 //! Runs the production analyze pipeline (`analyze_multiple_pipeline_with_modules`)
 //! over the Charon-extracted aheui LLBC set (`build/llbc/*.ullbc`, produced by
-//! `aheui/scripts/extract-llbc.sh`) and surfaces the two-phase prepass census
+//! `aheui/scripts/extract-llbc.py`) and surfaces the two-phase prepass census
 //! dispositions for whichever portal each probe binds.
 //!
 //! This is a measurement, not an acceptance gate: it prints which functions
@@ -32,7 +32,7 @@ fn llbc_ready(required: &[&str]) -> bool {
         let p = llbc_dir.join(name);
         if !p.exists() {
             eprintln!(
-                "skipping: build/llbc/{name} missing — run `aheui/scripts/extract-llbc.sh`"
+                "skipping: build/llbc/{name} missing — run `aheui/scripts/extract-llbc.py`"
             );
             return false;
         }

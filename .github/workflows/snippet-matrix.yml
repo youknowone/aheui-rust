@@ -22,7 +22,7 @@ on:
       - "compaheuiler/examples/**"
       - "compaheuiler/Cargo.toml"
       - "scripts/snippet_matrix.py"
-      - "scripts/extract-llbc.sh"
+      - "scripts/extract-llbc.py"
       - "snippets"
       - ".github/majit-ci-config.toml"
       - "Cargo.toml"
@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 90
     steps:
       # The JIT changes span aheui and majit. Keep the checkout in pyre/aheui so
-      # extract-llbc.sh sees the same sibling layout as a local pyre worktree;
+      # extract-llbc.py sees the same sibling layout as a local pyre worktree;
       # Cargo's checked-in CI patch redirects every pinned majit dependency to
       # that checkout.
       #
@@ -89,7 +89,7 @@ jobs:
         run: |
           python3 scripts/install-charon.py
           AHEUI_CARGO_CONFIG="$GITHUB_WORKSPACE/pyre/aheui/.github/majit-ci-config.toml" \
-            aheui/scripts/extract-llbc.sh
+            python3 aheui/scripts/extract-llbc.py
 
       # `--no-fail-fast` so one failing binary does not hide the rest, and
       # RUST_BACKTRACE because a panic raised while the metainterp is tracing

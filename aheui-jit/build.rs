@@ -15,7 +15,7 @@ fn main() {
     // (`.ullbc`), not the syn-parsed source strings below. The shared
     // front-end auto-discovers only the parent repo's pyre artefact pair,
     // so point it at aheui's own crate LLBC (extracted by
-    // `scripts/extract-llbc.sh` into `<aheui>/build/llbc/`) via
+    // `scripts/extract-llbc.py` into `<aheui>/build/llbc/`) via
     // `PYRE_MIR_FRONTEND_LLBC`, which the front-end honours ahead of
     // auto-discovery. An explicit env override still wins.
     if std::env::var_os("PYRE_MIR_FRONTEND_LLBC").is_none() {
@@ -31,7 +31,7 @@ fn main() {
         } else {
             panic!(
                 "aheui LLBC missing under {}.\n\
-                 Run `aheui/scripts/extract-llbc.sh` to produce \
+                 Run `aheui/scripts/extract-llbc.py` to produce \
                  `aheui-runtime.ullbc` + `aheuinterpreter.ullbc` \
                  (install with the parent repo's \
                  `python3 scripts/install-charon.py`), or set \

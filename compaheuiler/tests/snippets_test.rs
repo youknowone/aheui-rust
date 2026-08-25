@@ -22,7 +22,7 @@ fn fixture_stdin(scratch: &std::path::Path, input: &[u8]) -> std::process::Stdio
 /// (`cargo --config …`) and cargo passes no such flag down to a test
 /// process. A reference built against a different dependency set is not a
 /// reference, so it travels in `AHEUI_CARGO_CONFIG` — the same variable
-/// `scripts/extract-llbc.sh` reads for the same reason.
+/// `scripts/extract-llbc.py` reads for the same reason.
 fn reference_interpreter() -> &'static std::path::Path {
     static BIN: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     BIN.get_or_init(|| {
