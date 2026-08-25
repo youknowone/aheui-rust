@@ -1450,38 +1450,26 @@ pub fn simplify_branches(cfg: &mut Cfg) -> usize {
     for i in 0..cfg.num_blocks() {
         let block = cfg.block(i as BlockId);
         let new_term = match &block.terminator {
+            // Both edges land in the same block, so what the guard decides
+            // cannot change where control goes. A guard is a reflection test,
+            // not a stack operation, so dropping it here changes nothing.
             Terminator::StackGuard { ok, fail, .. } if ok == fail => Some(Terminator::Goto(*ok)),
-            // Self-referencing guard: fail points to self.
-            // Only safe to eliminate if the block has NO stack-modifying instructions
-            // (otherwise the self-loop builds up depth until the guard passes).
-            Terminator::StackGuard { ok, fail, .. }
-                if *fail == i as BlockId && block.instructions.is_empty() =>
-            {
-                Some(Terminator::Goto(*ok))
-            }
-            // Mutual bounce: two StackGuards with empty fail-blocks pointing at
-            // each other. If neither can make progress, this is a real infinite
-            // loop in the Aheui program. Convert to Goto(ok) to break the cycle.
-            // NOTE: potentially incorrect if the correct escape depends on
-            // cursor direction the CFG doesn't track.
-            Terminator::StackGuard { ok, fail, .. } => {
-                let fail_block = cfg.block(*fail);
-                if fail_block.instructions.is_empty() {
-                    if let Terminator::StackGuard { fail: fail2, .. } = fail_block.terminator {
-                        if fail2 == i as BlockId {
-                            Some(Terminator::Goto(*ok))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-            // BranchZero→StackGuard bounces are broken by converting the
-            // StackGuard side (above). Don't modify BranchZero itself.
+            // A guard whose fail edge cannot make progress is NOT removable,
+            // and two shapes of that used to be rewritten to `Goto(ok)` here:
+            // a guard failing back into its own instruction-free block, and a
+            // pair of instruction-free guard blocks failing into each other.
+            //
+            // Neither reaches `ok`. The depth that failed the test is the
+            // depth the guard sees again, so the program spins on the
+            // reflection forever — which is what the Aheui source says to do.
+            // Sending it to `ok` runs the guarded operation on a storage that
+            // does not hold its operands: `아라희` (없음, 나머지, 끝냄) has to
+            // spin, and instead exited 0 under the JIT and popped from an
+            // empty storage under the interpreter.
+            //
+            // Whether the guard passes is not decidable here anyway. Another
+            // predecessor may enter the same block with enough depth, and then
+            // the guard does pass — so the test has to survive to run time.
             Terminator::BranchZero {
                 on_zero,
                 on_nonzero,
@@ -1543,6 +1531,8 @@ pub fn optimize_cfg_aot(mut cfg: Cfg) -> Cfg {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consts::{OP_BRPOP1, OP_BRPOP2};
+    use crate::{OptimizationLevel, compile};
 
     fn make_push_add_halt() -> Cfg {
         // PUSH 2; PUSH 3 → BRPOP2 (guard) → ADD → HALT
@@ -1875,5 +1865,28 @@ mod tests {
         let eliminated = eliminate_guards(&mut cfg, &states);
         // Can't eliminate: meet of depth=2 (from B1) and depth=0 (from B2) = 0
         assert_eq!(eliminated, 0);
+    }
+
+    /// `아라희` selects the empty default storage and asks 나머지 for two
+    /// operands it can never have: the guard fails back onto itself forever,
+    /// which is the program's entire observable behaviour.
+    ///
+    /// `simplify_branches` used to read that self-loop as a cycle worth
+    /// breaking and route it to the operation instead, so the program exited 0
+    /// under the JIT and popped from an empty storage under the interpreter.
+    #[test]
+    fn unsatisfiable_guard_survives_every_level() {
+        for level in [
+            OptimizationLevel::O0,
+            OptimizationLevel::O1,
+            OptimizationLevel::O2,
+            OptimizationLevel::O3,
+        ] {
+            let program = compile("아라희", level);
+            let kept = program.opcodes[..program.size]
+                .iter()
+                .any(|&op| op == OP_BRPOP1 || op == OP_BRPOP2);
+            assert!(kept, "{level:?} dropped a guard that can never pass");
+        }
     }
 }
