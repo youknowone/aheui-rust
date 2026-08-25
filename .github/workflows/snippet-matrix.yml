@@ -84,12 +84,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-aheui-jit-
 
+      # Every cargo invocation below — the extraction driver's `cargo metadata`,
+      # the build Charon runs inside it, and the check and test steps — has to
+      # resolve the majit crates the same way, so the patch goes in a config
+      # file the whole job reads rather than a `--config` flag one step passes.
+      # `Cargo.lock` is not committed, and the driver fingerprints through
+      # `cargo metadata --locked`, so mint the lock here under that same patch.
+      - name: Point Cargo at the checked-out majit
+        working-directory: pyre/aheui
+        run: |
+          mkdir -p .cargo
+          cp .github/majit-ci-config.toml .cargo/config.toml
+          cargo generate-lockfile
+
       - name: Install Charon and extract the JIT inputs
         working-directory: pyre
         run: |
           python3 scripts/install-charon.py
-          AHEUI_CARGO_CONFIG="$GITHUB_WORKSPACE/pyre/aheui/.github/majit-ci-config.toml" \
-            python3 aheui/scripts/extract-llbc.py
+          python3 aheui/scripts/extract-llbc.py
 
       # `--no-fail-fast` so one failing binary does not hide the rest, and
       # RUST_BACKTRACE because a panic raised while the metainterp is tracing
@@ -99,8 +111,6 @@ jobs:
         env:
           RUST_BACKTRACE: 1
         run: |
-          mkdir -p .cargo
-          cp .github/majit-ci-config.toml .cargo/config.toml
           cargo check --workspace --features dynasm
           cargo test --workspace --features dynasm --no-fail-fast
 
