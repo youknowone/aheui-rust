@@ -636,7 +636,12 @@ fn banded_pool_count(program: &Program) -> usize {
         return 1;
     };
     match text.parse::<usize>() {
-        Ok(count) => return count.min(VAL_QUEUE),
+        // Floored at one for the same reason the derived count below is: pool
+        // 0 is banded whether or not the program names it, and a zero-length
+        // band array trips the metainterp's `vable_size > 0`. The knob that
+        // takes banding out of the picture is `AHEUI_BAND_ARMS`, which leaves
+        // the array declared and every band arm unreachable.
+        Ok(count) => return count.clamp(1, VAL_QUEUE),
         Err(_) => {}
     }
     let mut highest: Option<usize> = None;
