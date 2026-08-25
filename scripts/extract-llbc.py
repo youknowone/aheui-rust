@@ -4,7 +4,7 @@
 Declares the aheui crate table and delegates to the neutral engine in the
 sibling pyre checkout's `scripts/llbc_extract.py`. Artefacts land under
 `<aheui>/build/llbc` and are read by `aheui-jit/build.rs` through
-`PYRE_MIR_FRONTEND_LLBC`.
+`MAJIT_MIR_FRONTEND_LLBC`.
 
 The engine lives in pyre rather than here because it is the half that is not
 aheui's: platform keys, the Charon install layout, the nightly-skew crate

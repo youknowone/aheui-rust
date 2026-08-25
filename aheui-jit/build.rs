@@ -16,9 +16,9 @@ fn main() {
     // front-end auto-discovers only the parent repo's pyre artefact pair,
     // so point it at aheui's own crate LLBC (extracted by
     // `scripts/extract-llbc.py` into `<aheui>/build/llbc/`) via
-    // `PYRE_MIR_FRONTEND_LLBC`, which the front-end honours ahead of
+    // `MAJIT_MIR_FRONTEND_LLBC`, which the front-end honours ahead of
     // auto-discovery. An explicit env override still wins.
-    if std::env::var_os("PYRE_MIR_FRONTEND_LLBC").is_none() {
+    if std::env::var_os("MAJIT_MIR_FRONTEND_LLBC").is_none() {
         let llbc_dir = std::path::Path::new(&base).join("build").join("llbc");
         let rt = llbc_dir.join("aheui-runtime.ullbc");
         let interp = llbc_dir.join("aheuinterpreter.ullbc");
@@ -27,7 +27,7 @@ fn main() {
                 .expect("aheui LLBC paths contain no path separator");
             // SAFETY: build scripts are single-threaded; no other thread
             // observes the environment during this set.
-            unsafe { std::env::set_var("PYRE_MIR_FRONTEND_LLBC", joined) };
+            unsafe { std::env::set_var("MAJIT_MIR_FRONTEND_LLBC", joined) };
         } else {
             panic!(
                 "aheui LLBC missing under {}.\n\
@@ -35,7 +35,7 @@ fn main() {
                  `aheui-runtime.ullbc` + `aheuinterpreter.ullbc` \
                  (install with the parent repo's \
                  `python3 scripts/install-charon.py`), or set \
-                 `PYRE_MIR_FRONTEND_LLBC` explicitly.",
+                 `MAJIT_MIR_FRONTEND_LLBC` explicitly.",
                 llbc_dir.display()
             );
         }
@@ -59,7 +59,7 @@ fn main() {
     );
 
     // The graph surface comes from the Charon-extracted LLBC set
-    // (`PYRE_MIR_FRONTEND_LLBC` above). `module_paths[i]` is the
+    // (`MAJIT_MIR_FRONTEND_LLBC` above). `module_paths[i]` is the
     // crate-stripped module path of the i-th source file, derived by the
     // translator that consumes it — the spelling is its invariant, not a
     // label this build script gets to choose.

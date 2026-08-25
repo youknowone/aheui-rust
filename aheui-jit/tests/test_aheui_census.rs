@@ -9,17 +9,17 @@
 //! the pipeline accepts and where translation stops. Run as
 //!
 //! ```sh
-//! PYRE_RTYPER_VERBOSE=1 cargo test --release -p aheui-jit \
+//! MAJIT_RTYPER_VERBOSE=1 cargo test --release -p aheui-jit \
 //!     --test test_aheui_census -- --nocapture --test-threads=1
 //! ```
 //!
 //! `--test-threads=1` is required: each probe re-exports
-//! `PYRE_MIR_FRONTEND_LLBC` for its own artefact set, and the pipeline re-seeds
+//! `MAJIT_MIR_FRONTEND_LLBC` for its own artefact set, and the pipeline re-seeds
 //! process-global registries (`STRUCT_ORIGIN_REGISTRY`, …) on every invocation.
 
 use majit_translate::{AnalyzeConfig, CallPath, HostStaticAddrs, JitDriverSpec, PipelineConfig};
 
-/// Resolve the named LLBC artefacts and export `PYRE_MIR_FRONTEND_LLBC`.
+/// Resolve the named LLBC artefacts and export `MAJIT_MIR_FRONTEND_LLBC`.
 ///
 /// Returns `false` — skip cleanly, saying so — when any is absent.
 fn llbc_ready(required: &[&str]) -> bool {
@@ -40,7 +40,7 @@ fn llbc_ready(required: &[&str]) -> bool {
     }
     let joined = std::env::join_paths(&paths).expect("join llbc paths");
     // SAFETY: serialized test binary; set before any worker spawns.
-    unsafe { std::env::set_var("PYRE_MIR_FRONTEND_LLBC", joined) };
+    unsafe { std::env::set_var("MAJIT_MIR_FRONTEND_LLBC", joined) };
     true
 }
 
