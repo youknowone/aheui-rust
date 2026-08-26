@@ -1454,22 +1454,18 @@ pub fn simplify_branches(cfg: &mut Cfg) -> usize {
             // cannot change where control goes. A guard is a reflection test,
             // not a stack operation, so dropping it here changes nothing.
             Terminator::StackGuard { ok, fail, .. } if ok == fail => Some(Terminator::Goto(*ok)),
-            // A guard whose fail edge cannot make progress is NOT removable,
-            // and two shapes of that used to be rewritten to `Goto(ok)` here:
-            // a guard failing back into its own instruction-free block, and a
-            // pair of instruction-free guard blocks failing into each other.
+            // No other guard is removable here, and a fail edge that cannot
+            // make progress is the case to be careful about: a guard failing
+            // back into its own instruction-free block, or a pair of
+            // instruction-free guard blocks failing into each other, spins
+            // without ever reaching `ok`. That spin is the reflection the
+            // Aheui source asks for — `아라희` (없음, 나머지, 끝냄) runs
+            // forever — and routing it to `ok` would run the operation on a
+            // storage that does not hold its operands.
             //
-            // Neither reaches `ok`. The depth that failed the test is the
-            // depth the guard sees again, so the program spins on the
-            // reflection forever — which is what the Aheui source says to do.
-            // Sending it to `ok` runs the guarded operation on a storage that
-            // does not hold its operands: `아라희` (없음, 나머지, 끝냄) has to
-            // spin, and instead exited 0 under the JIT and popped from an
-            // empty storage under the interpreter.
-            //
-            // Whether the guard passes is not decidable here anyway. Another
-            // predecessor may enter the same block with enough depth, and then
-            // the guard does pass — so the test has to survive to run time.
+            // Whether such a guard passes is not decidable here in any case.
+            // Another predecessor may enter the same block with enough depth,
+            // so the test belongs at run time.
             Terminator::BranchZero {
                 on_zero,
                 on_nonzero,
@@ -1871,9 +1867,11 @@ mod tests {
     /// operands it can never have: the guard fails back onto itself forever,
     /// which is the program's entire observable behaviour.
     ///
-    /// `simplify_branches` used to read that self-loop as a cycle worth
-    /// breaking and route it to the operation instead, so the program exited 0
-    /// under the JIT and popped from an empty storage under the interpreter.
+    /// A pass that reads that self-loop as a cycle worth breaking, and routes
+    /// it to the operation instead, leaves the program exiting 0 under the JIT
+    /// and popping from an empty storage under the interpreter — both of which
+    /// this catches, at every level, because only `simplify_branches` sees the
+    /// shape but any of the four could grow it.
     #[test]
     fn unsatisfiable_guard_survives_every_level() {
         for level in [
