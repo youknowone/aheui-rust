@@ -1471,10 +1471,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // pool count, so a slot past it is unreachable. A declared slot is a
         // loop-carried value the optimizer carries and the trace prologue
         // reloads whether or not any opcode can index it.
-        depths: majit_metainterp::virt_array::VirtArray::filled(
-            0i64,
-            banded_pool_count(program),
-        ),
+        depths: majit_metainterp::virt_array::VirtArray::filled(0i64, banded_pool_count(program)),
         selected: 0,
         stacksize: 0,
         sp: 0,

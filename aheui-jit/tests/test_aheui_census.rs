@@ -31,9 +31,7 @@ fn llbc_ready(required: &[&str]) -> bool {
     for name in required {
         let p = llbc_dir.join(name);
         if !p.exists() {
-            eprintln!(
-                "skipping: build/llbc/{name} missing — run `aheui/scripts/extract-llbc.py`"
-            );
+            eprintln!("skipping: build/llbc/{name} missing — run `aheui/scripts/extract-llbc.py`");
             return false;
         }
         paths.push(p.to_string_lossy().into_owned());

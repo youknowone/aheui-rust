@@ -18,13 +18,21 @@ fn compile_and_run(source: &str, stdin_data: &[u8]) -> (String, i32) {
         Ok(code) => code,
         Err(_) => return ("CODEGEN_PANIC".into(), -1),
     };
-    let rs_path = "/tmp/aheui_allsnip.rs";
-    let bin_path = "/tmp/aheui_allsnip";
-    // Preserve the generated source for failure diagnosis.
-    std::fs::write("/tmp/aheui_allsnip_debug.rs", &rs_code).ok();
-    std::fs::write(rs_path, &rs_code).unwrap();
+    let scratch = common::scratch_dir("allsnip");
+    let rs_path = scratch.path().join("aheui_allsnip.rs");
+    let bin_path = scratch.path().join("aheui_allsnip");
+    // Preserve the generated source for failure diagnosis. Outlives the run,
+    // so `target/` rather than the scratch directory removed with it.
+    std::fs::write(
+        common::codegen_dir().join("aheui_allsnip_debug.rs"),
+        &rs_code,
+    )
+    .ok();
+    std::fs::write(&rs_path, &rs_code).unwrap();
     let status = Command::new("rustc")
-        .args(["-C", "opt-level=2", "-o", bin_path, rs_path])
+        .args(["-C", "opt-level=2", "-o"])
+        .arg(&bin_path)
+        .arg(&rs_path)
         .stderr(std::process::Stdio::piped())
         .status()
         .unwrap();
@@ -95,12 +103,17 @@ fn compile_and_run_bigint(source: &str, stdin_data: &[u8]) -> (String, i32) {
     // Own scratch project: `bigint_test` builds against a different
     // malachite-bigint version, and sharing one directory would make the two
     // suites rebuild the dependency for each other on every alternation.
-    let dir = "/tmp/aheui_allsnip_bigint_proj";
-    std::fs::create_dir_all(format!("{dir}/src")).ok();
-    std::fs::write(format!("{dir}/src/main.rs"), &rs_code).unwrap();
+    let dir = common::build_dir("allsnip-bigint-proj");
+    std::fs::create_dir_all(dir.join("src")).ok();
+    std::fs::write(dir.join("src/main.rs"), &rs_code).unwrap();
     std::fs::write(
-        format!("{dir}/Cargo.toml"),
+        dir.join("Cargo.toml"),
         r#"
+# Its own workspace root: the project sits under `target/`, inside the aheui
+# workspace directory, and cargo would otherwise refuse to build a package it
+# finds there but no member list names.
+[workspace]
+
 [package]
 name = "aheui-bigint-test"
 version = "0.0.1"
@@ -117,13 +130,13 @@ opt-level = 2
     .unwrap();
     let status = Command::new("cargo")
         .args(["build", "--release", "--quiet"])
-        .current_dir(dir)
+        .current_dir(&dir)
         .status()
         .unwrap();
     if !status.success() {
         return ("COMPILE_ERROR".into(), -1);
     }
-    let bin = format!("{dir}/target/release/aheui-bigint-test");
+    let bin = dir.join("target/release/aheui-bigint-test");
 
     use std::io::Read;
     let mut child = Command::new(&bin)
@@ -197,7 +210,11 @@ fn test_snippet(
         compaheuiler::compile_to_rs(&source)
     })) {
         let safe_name = name.replace('/', "_");
-        std::fs::write(format!("/tmp/snip_{safe_name}.rs"), &rs).ok();
+        std::fs::write(
+            common::codegen_dir().join(format!("snip_{safe_name}.rs")),
+            &rs,
+        )
+        .ok();
     }
     let (got, exit) = if needs_bigint(name) {
         compile_and_run_bigint(&source, &stdin_data)

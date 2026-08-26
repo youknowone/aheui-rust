@@ -23,18 +23,25 @@ fn compile_and_run_bigint_with_opt(
     let _guard = PROJ.lock().unwrap_or_else(|e| e.into_inner());
     let rs = compaheuiler::compile_to_rs_bigint_opt(source, opt);
 
-    // Create temp cargo project
-    let dir = "/tmp/aheui_bigint_proj";
-    std::fs::create_dir_all(format!("{dir}/src")).ok();
-    std::fs::write(format!("{dir}/src/main.rs"), &rs).unwrap();
+    // A cargo project kept between runs: its value is that the bigint
+    // dependency stays built, so it belongs under `target/` and not in a
+    // scratch directory that is removed with the test.
+    let dir = common::build_dir("bigint-proj");
+    std::fs::create_dir_all(dir.join("src")).ok();
+    std::fs::write(dir.join("src/main.rs"), &rs).unwrap();
     #[cfg(feature = "num-bigint")]
     let bigint_dep = r#"num-bigint = "0.4""#;
     #[cfg(not(feature = "num-bigint"))]
     let bigint_dep = r#"malachite-bigint = "0.9""#;
     std::fs::write(
-        format!("{dir}/Cargo.toml"),
+        dir.join("Cargo.toml"),
         format!(
             r#"
+# Its own workspace root: the project sits under `target/`, inside the aheui
+# workspace directory, and cargo would otherwise refuse to build a package it
+# finds there but no member list names.
+[workspace]
+
 [package]
 name = "aheui-bigint-test"
 version = "0.0.1"
@@ -54,13 +61,13 @@ opt-level = 2
     let t = Instant::now();
     let status = Command::new("cargo")
         .args(["build", "--release", "--quiet"])
-        .current_dir(dir)
+        .current_dir(&dir)
         .status()
         .expect("cargo build failed");
     let compile_ms = t.elapsed().as_secs_f64() * 1000.0;
     assert!(status.success(), "bigint compilation failed");
 
-    let bin = format!("{dir}/target/release/aheui-bigint-test");
+    let bin = dir.join("target/release/aheui-bigint-test");
     let t = Instant::now();
     let output = if stdin_data.is_empty() {
         Command::new(&bin).output().expect("execution failed")
@@ -185,8 +192,9 @@ fn test_2e65_noprint_bigint() {
         return;
     };
     let rs = compaheuiler::compile_to_rs_bigint(&src);
-    std::fs::write("/tmp/aheui_2e65_gen.rs", &rs).unwrap();
-    eprintln!("Generated {} bytes to /tmp/aheui_2e65_gen.rs", rs.len());
+    let generated = common::codegen_dir().join("aheui_2e65_gen.rs");
+    std::fs::write(&generated, &rs).unwrap();
+    eprintln!("Generated {} bytes to {}", rs.len(), generated.display());
 
     let (out, exit, compile_ms, run_ms) = compile_and_run_bigint(&src, "");
     eprintln!(

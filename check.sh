@@ -70,7 +70,7 @@ echo "═══ 1. Logo ═══"
 LOGO_REF="$SNIPPETS/logo/logo.out"
 # Generate .rs via cargo test, then recompile with O3
 cargo test -p compaheuiler --release --test rgen_test -- test_logo_rs --test-threads=1 > /tmp/compaheuiler_logo_test.log 2>&1 || true
-rustc $RUSTC_OPT -o /tmp/aheui_logo_o3 /tmp/aheui_logo.rs 2>/dev/null
+rustc $RUSTC_OPT -o /tmp/aheui_logo_o3 target/codegen/aheui_logo.rs 2>/dev/null
 LOGO_BIN="/tmp/aheui_logo_o3"
 
 if [ ! -x "$LOGO_BIN" ]; then
@@ -98,13 +98,14 @@ QUINE40_SRC="$SNIPPETS/quine/quine.puzzlet.40col.aheui"
 QUINE40_REF="$SNIPPETS/quine/quine.puzzlet.40col.out"
 
 cargo test -p compaheuiler --release --test rgen_test -- test_aheui_self_interp --test-threads=1 > /tmp/compaheuiler_aheui_test.log 2>&1 || true
-rustc $RUSTC_OPT -o /tmp/aheui_aheui_o3 /tmp/aheui_aheui_self.rs 2>/dev/null
+rustc $RUSTC_OPT -o /tmp/aheui_aheui_o3 target/codegen/aheui_aheui_self.rs 2>/dev/null
 AHEUI_BIN="/tmp/aheui_aheui_o3"
 
 if [ ! -x "$AHEUI_BIN" ]; then
     # The self-interpreter source is in no snippet corpus; `n` names it and
-    # there is no default, so the rgen test skips too ("aheui.aheui (set n)").
-    skip "aheui.aheui: self-interpreter unavailable (set n)"
+    # there is no default, so the rgen test skips too
+    # ("aheui.aheui (set AHEUI_SELF_INTERP)").
+    skip "aheui.aheui: self-interpreter unavailable (set AHEUI_SELF_INTERP)"
 else
     "$AHEUI_BIN" < "$QUINE40_SRC" > /tmp/quine40_check.txt 2>/dev/null || true
     Q40_BYTES=$(wc -c < /tmp/quine40_check.txt | tr -d ' ')

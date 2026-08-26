@@ -9,13 +9,16 @@ fn compile_and_run_c(name: &str, source: &str) -> (String, i32, f64, f64) {
 }
 
 fn compile_and_run_c_code(name: &str, c_code: &str) -> (String, i32, f64, f64) {
-    let c_path = format!("/tmp/aheui_{name}.c");
-    let bin_path = format!("/tmp/aheui_{name}_c");
+    let out_dir = common::codegen_dir();
+    let c_path = out_dir.join(format!("aheui_{name}.c"));
+    let bin_path = out_dir.join(format!("aheui_{name}_c"));
     std::fs::write(&c_path, c_code).unwrap();
 
     let t = Instant::now();
     let status = Command::new("cc")
-        .args(["-O2", "-std=c99", "-o", &bin_path, &c_path])
+        .args(["-O2", "-std=c99", "-o"])
+        .arg(&bin_path)
+        .arg(&c_path)
         .status()
         .unwrap();
     let compile_ms = t.elapsed().as_secs_f64() * 1000.0;

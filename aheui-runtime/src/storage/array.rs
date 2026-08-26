@@ -243,7 +243,8 @@ impl Stack {
         } else {
             self.base.cap * 2
         };
-        self.base.data = unsafe { grow_buffer(self.base.data, self.base.cap, new_cap, self.base.size) };
+        self.base.data =
+            unsafe { grow_buffer(self.base.data, self.base.cap, new_cap, self.base.size) };
         self.base.cap = new_cap;
     }
 
@@ -376,8 +377,8 @@ impl Queue {
             }
         }
         if !self.base.data.is_null() {
-            let layout =
-                std::alloc::Layout::array::<Val>(self.base.cap as usize).expect("storage buffer layout");
+            let layout = std::alloc::Layout::array::<Val>(self.base.cap as usize)
+                .expect("storage buffer layout");
             unsafe { std::alloc::dealloc(self.base.data as *mut u8, layout) };
         }
         self.base.data = fresh;
@@ -506,7 +507,8 @@ impl Port {
         } else {
             self.base.cap * 2
         };
-        self.base.data = unsafe { grow_buffer(self.base.data, self.base.cap, new_cap, self.base.size) };
+        self.base.data =
+            unsafe { grow_buffer(self.base.data, self.base.cap, new_cap, self.base.size) };
         self.base.cap = new_cap;
     }
 

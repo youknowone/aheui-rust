@@ -411,85 +411,6 @@ impl Compiler {
         min_stacksize_map.iter().map(|&s| s >= 0).collect()
     }
 
-    pub(crate) fn optimize_deadcode2(&self) -> Vec<bool> {
-        let n = self.lines.len();
-        let mut min_map: Vec<[i32; STORAGE_COUNT]> = vec![[-1i32; STORAGE_COUNT]; n];
-        let label_targets: HashSet<usize> = self.label_map.values().copied().collect();
-
-        fn min_merge(a: &[i32; STORAGE_COUNT], b: &[i32; STORAGE_COUNT]) -> [i32; STORAGE_COUNT] {
-            if a[0] == -1 {
-                return *b;
-            }
-            let mut out = [0i32; STORAGE_COUNT];
-            for i in 0..STORAGE_COUNT {
-                out[i] = a[i].min(b[i]);
-            }
-            out
-        }
-
-        let mut job_queue: VecDeque<(usize, usize, [i32; STORAGE_COUNT])> =
-            VecDeque::from([(0, 0, [0i32; STORAGE_COUNT])]);
-
-        while let Some((mut pc, mut selected, mut stacksizes)) = job_queue.pop_front() {
-            while pc < n {
-                let stacksize = stacksizes[selected];
-                debug_assert!(stacksize >= 0);
-                let (op, val) = self.lines[pc];
-                let prev = min_map[pc];
-                if prev[selected] >= 0 {
-                    let min_diff = prev[selected] - stacksizes[selected];
-                    let stack_delta = OP_STACKADD[op as usize] - OP_STACKDEL[op as usize];
-                    let merged = min_merge(&prev, &stacksizes);
-                    if min_diff <= stack_delta && merged == prev {
-                        break;
-                    }
-                }
-                if op == OP_BRPOP1 || op == OP_BRPOP2 {
-                    let reqsize = OP_REQSIZE[op as usize] as i32;
-                    if stacksize >= reqsize && !label_targets.contains(&pc) {
-                        pc += 1;
-                        continue;
-                    } else {
-                        min_map[pc] = min_merge(&prev, &stacksizes);
-                        if let Some(&target) = self.label_map.get(&val) {
-                            job_queue.push_back((target, selected, stacksizes));
-                        }
-                    }
-                } else {
-                    min_map[pc] = min_merge(&prev, &stacksizes);
-                    let mut ss = stacksizes[selected] - OP_STACKDEL[op as usize];
-                    if ss < 0 {
-                        ss = 0;
-                    }
-                    ss += OP_STACKADD[op as usize];
-                    stacksizes[selected] = ss;
-                    if op == OP_BRZ {
-                        if let Some(&target) = self.label_map.get(&val) {
-                            job_queue.push_back((target, selected, stacksizes));
-                        }
-                    } else if op == OP_JMP {
-                        if let Some(&target) = self.label_map.get(&val) {
-                            pc = target;
-                            continue;
-                        } else {
-                            break;
-                        }
-                    } else if op == OP_SEL {
-                        min_map[pc] = min_merge(&min_map[pc], &stacksizes);
-                        selected = val as usize;
-                    } else if op == OP_MOV {
-                        stacksizes[val as usize] += 1;
-                    } else if op == OP_HALT {
-                        break;
-                    }
-                }
-                pc += 1;
-            }
-        }
-
-        min_map.iter().map(|sizes| sizes[0] >= 0).collect()
-    }
-
     pub(crate) fn optimize_adjust(&mut self, reachability: &[bool]) {
         let mut useless_map = vec![0usize; reachability.len()];
         let mut count = 0usize;
@@ -923,25 +844,6 @@ mod tests {
         assert_eq!(program.opcodes, vec![OP_JMP, OP_PUSH, OP_HALT]);
         assert_eq!(program.values, vec![1, 7, -1]);
         assert_eq!(program.labels[&1], 1);
-    }
-
-    #[test]
-    fn test_deadcode2_keeps_block_entry_brpop() {
-        let mut c = Compiler::new();
-        c.lines = vec![
-            (OP_PUSH, 1),
-            (OP_JMP, 10),
-            (OP_BRPOP1, 11),
-            (OP_DUP, -1),
-            (OP_HALT, -1),
-            (OP_HALT, -1),
-        ];
-        c.label_map = HashMap::from([(10, 2), (11, 5)]);
-
-        let reachability = c.optimize_deadcode2();
-        c.optimize_adjust(&reachability);
-
-        assert!(c.lines.iter().any(|&(op, _)| op == OP_BRPOP1));
     }
 
     /// Locate the snippet corpus with the same precedence as `check.sh`:

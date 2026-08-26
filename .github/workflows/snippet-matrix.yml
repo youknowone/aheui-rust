@@ -25,6 +25,7 @@ on:
       - "aheui-wasm/Cargo.toml"
       - "src/**"
       - "tests/**"
+      - "check.sh"
       - "scripts/snippet_matrix.py"
       - "scripts/extract-llbc.py"
       - "snippets"
@@ -43,6 +44,33 @@ permissions:
   pull-requests: write
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Only the two checks that need no majit: `cargo fmt` parses, and clippy
+      # reads the crates that do not depend on the JIT. Everything else in this
+      # workflow compiles against the pinned majit checkout, and neither of
+      # these is worth that build.
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      # `not_unsafe_ptr_arg_deref` and the rest of `clippy::correctness` are
+      # deny-by-default, so this fails the run rather than warning: a public
+      # safe function that dereferences a raw pointer its caller supplied is
+      # the shape it exists to catch.
+      - name: cargo clippy
+        run: |
+          cargo clippy --all-targets \
+            -p ahsembler -p compaheuiler -p aheui-runtime -p aheuinterpreter
+
   jit:
     runs-on: ubuntu-latest
     timeout-minutes: 90

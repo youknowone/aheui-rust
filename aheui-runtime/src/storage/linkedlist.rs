@@ -23,18 +23,11 @@ pub struct Node {
     pub next: *mut Node,
 }
 
-/// Swap the values of the first two nodes in a linked-list chain.
+/// Swap the values of the first two nodes in a chain the storage's length
+/// guard has proved holds them.
 ///
 /// `Stack`, `Queue`, and `Port` share this operation; keeping the pointer
 /// mutation here gives the interpreter and generated JIT one implementation.
-pub fn swap_nodes(node1: *mut Node) {
-    assert!(!node1.is_null(), "swap on empty linked list");
-    let node2 = unsafe { (*node1).next };
-    assert!(!node2.is_null(), "swap on <2 elements");
-    swap_nodes_known_two(node1);
-}
-
-/// Swap two nodes after the storage's length guard has proved they exist.
 pub(super) fn swap_nodes_known_two(node1: *mut Node) {
     let node2 = unsafe { (*node1).next };
     // Read-then-write through the raw pointers rather than `std::mem::swap`,

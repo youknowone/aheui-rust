@@ -38,6 +38,33 @@ impl Drop for ScratchDir {
     }
 }
 
+/// A build directory that outlives the test which fills it.
+///
+/// Two kinds of output need this rather than [`scratch_dir`]: generated Rust
+/// that something else reads afterwards — `check.sh` recompiles what
+/// `rgen_test` leaves at a higher opt level and grades the result — and the
+/// scratch cargo projects the bigint suites build in, whose whole value is
+/// that the dependency stays built between runs.
+///
+/// Under `target/` because a fixed name in the process-wide temp directory is
+/// one that any concurrently running test binary, or any other user of the
+/// machine, can be writing at the same moment. `cargo clean` reaches it.
+pub fn build_dir(label: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target")
+        .join(label);
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|e| panic!("cannot create {}: {e}", dir.display()));
+    dir
+}
+
+/// Generated Rust kept for `check.sh` and for reading after a failure.
+pub fn codegen_dir() -> PathBuf {
+    build_dir("codegen")
+}
+
 /// Creates a process-unique scratch directory and removes it after the test.
 pub fn scratch_dir(label: &str) -> ScratchDir {
     static NEXT: AtomicU64 = AtomicU64::new(0);

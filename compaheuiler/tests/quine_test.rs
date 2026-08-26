@@ -9,23 +9,21 @@ fn test_quine40() {
 
     // Generate Rust code
     let rs_code = compaheuiler::compile_to_rs(&source);
-    let rs_path = "/tmp/aheui_quine40.rs";
-    let bin_path = "/tmp/aheui_quine40";
-    std::fs::write(rs_path, &rs_code).unwrap();
+    // A process-unique directory, not a fixed name under the temp directory:
+    // `cargo test` runs the test binaries concurrently, so a shared path is one
+    // another binary can be writing between this write and the `rustc` below.
+    let scratch = common::scratch_dir("quine40");
+    let rs_path = scratch.path().join("aheui_quine40.rs");
+    let bin_path = scratch.path().join("aheui_quine40");
+    std::fs::write(&rs_path, &rs_code).unwrap();
     eprintln!("Generated {} lines", rs_code.lines().count());
 
     // Compile
     let t = Instant::now();
     let status = Command::new("rustc")
-        .args([
-            "-C",
-            "opt-level=3",
-            "-C",
-            "target-cpu=native",
-            "-o",
-            bin_path,
-            rs_path,
-        ])
+        .args(["-C", "opt-level=3", "-C", "target-cpu=native", "-o"])
+        .arg(&bin_path)
+        .arg(&rs_path)
         .status()
         .unwrap();
     let compile_ms = t.elapsed().as_secs_f64() * 1000.0;
