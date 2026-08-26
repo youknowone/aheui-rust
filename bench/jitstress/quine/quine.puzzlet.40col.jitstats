@@ -1,8 +1,8 @@
-bridges_compiled=2
+bridges_compiled=0
 exit=0
-guard_failures=691
+guard_failures=908
 internal_compile_panics=0
-loops_aborted=0
-loops_compiled=11
+loops_aborted=3
+loops_compiled=12
 out_ok=+nl
 out_sha=20e5c9ca5a5e
