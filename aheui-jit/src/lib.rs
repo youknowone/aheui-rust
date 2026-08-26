@@ -1411,14 +1411,9 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     native_identity = { jit_win_store, jit_tag_val_raw, jit_tag_word_raw },
 )]
 // This body is the `jit_interp` macro's INPUT, so its control flow is lowered,
-// not merely read: a style fix to a conditional here is a change to the
-// generated code. Both suppressed lints are about conditional shape, and
-// applying either one emitted a jitcode with a label no block marked, which
-// panics at trace-install time while the crate still compiles cleanly.
-//
-// Do not apply a style fix inside this function without running a real program
-// end to end.
-#[allow(clippy::bool_comparison, clippy::collapsible_if)]
+// not merely read: a change to a conditional here is a change to the generated
+// code, and the crate still compiles cleanly when the result is a jitcode the
+// trace installer rejects. Run a real program end to end after reshaping one.
 pub fn mainloop(program: &Program, threshold: u32) -> Val {
     init_gc_subsystem();
 
@@ -1675,7 +1670,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // and BC_GOTO loop_start.
         match op {
             OP_BRPOP1 | OP_BRPOP2 => {
-                if stackok == false {
+                if !stackok {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
                     can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, program);
