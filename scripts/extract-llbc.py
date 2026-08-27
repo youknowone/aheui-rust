@@ -59,6 +59,14 @@ SPECS: dict[str, CrateSpec] = {
 
 DEFAULT_CRATES = ["aheui-runtime", "aheuinterpreter"]
 
+# Targets, besides the extraction host, that get a layout sidecar. `build/llbc`
+# is read by every build of `aheui-jit`, including the wasm32 one, and a wasm32
+# pointer is 4 bytes: `ListBase` is `{head: *mut Node, size: u32}`, so `size`
+# sits at offset 4 there and at offset 8 on a 64-bit host. Without its own
+# offsets the descr names the wrong word — past the end of the struct, in that
+# case — and the JIT writes into whatever follows it.
+LAYOUT_TARGETS = ("wasm32-wasip1",)
+
 # Workspace resolution is a compiler input. `Cargo.lock` is not tracked here,
 # so the manifest alone carries it.
 BASE_PATHSPECS = ["Cargo.toml"]
@@ -77,6 +85,7 @@ def main() -> None:
         extraction_abi=EXTRACTION_ABI,
         base_pathspecs=BASE_PATHSPECS,
         charon_root=PYRE_ROOT,
+        layout_targets=LAYOUT_TARGETS,
     )
 
 

@@ -23,8 +23,37 @@ fn main() {
         let rt = llbc_dir.join("aheui-runtime.ullbc");
         let interp = llbc_dir.join("aheuinterpreter.ullbc");
         if rt.exists() && interp.exists() {
-            let joined = std::env::join_paths([rt, interp])
-                .expect("aheui LLBC paths contain no path separator");
+            let mut paths: Vec<std::path::PathBuf> = vec![rt, interp];
+            // Cross-target layout sidecars go LAST. `build/llbc` is one set
+            // shared by every build, and struct layout is not: a pointer is 4
+            // bytes on wasm32, so `ListBase.size` sits at offset 4 there and at
+            // 8 on a 64-bit host, and a descr carrying the host offset names a
+            // word past the end of the struct that the JIT then reads and
+            // writes. The front-end merges exact layouts last-writer-wins and
+            // everything else first-writer-wins, so appending the sidecars puts
+            // their target offsets on top while their body-stripped tables lose
+            // to the host artefacts. A missing sidecar is a hard error rather
+            // than a silent fallback to layouts that do not describe this
+            // target.
+            let target = std::env::var("TARGET").unwrap_or_default();
+            let host = std::env::var("HOST").unwrap_or_default();
+            if majit_translate::layout::is_cross_target(&target, &host) {
+                for stem in ["aheui-runtime", "aheuinterpreter"] {
+                    let name = majit_translate::layout::layout_sidecar_filename(stem, &target);
+                    let sidecar = llbc_dir.join(&name);
+                    assert!(
+                        sidecar.exists(),
+                        "aheui layout sidecar {} is missing under {}.\n\
+                         Re-run `aheui/scripts/extract-llbc.py`, whose \
+                         `LAYOUT_TARGETS` names the cross targets that get one.",
+                        name,
+                        llbc_dir.display()
+                    );
+                    paths.push(sidecar);
+                }
+            }
+            let joined =
+                std::env::join_paths(paths).expect("aheui LLBC paths contain no path separator");
             // SAFETY: build scripts are single-threaded; no other thread
             // observes the environment during this set.
             unsafe { std::env::set_var("MAJIT_MIR_FRONTEND_LLBC", joined) };
