@@ -397,15 +397,65 @@ pub fn init_gc_subsystem() {
     #[cfg(target_arch = "wasm32")]
     {
         // The direct-residual-call lowering picks a callee's wasm type from the
-        // IR: a word-typed argument becomes `i64`. The helpers registered in
-        // `calls` below do not answer to that — they take pool pointers, node
-        // pointers and opcode indices as `usize`, and a `usize` is `i32` on
-        // wasm32. `call_indirect` type-checks its callee, so a call lowered
-        // that way traps before reaching the helper instead of quietly passing
-        // the wrong width. Take the trampoline, which reads each callee's
-        // declared type first, until the helpers themselves are word-wide.
-        majit_backend_wasm::codegen::set_direct_residual_calls(false);
+        // IR: a word-typed argument becomes `i64`. Not every helper registered
+        // in `calls` below answers to that — some still take pool pointers,
+        // node pointers and opcode indices as `usize`, and a `usize` is `i32`
+        // on wasm32. `call_indirect` type-checks its callee, so a call lowered
+        // that way would trap rather than quietly pass the wrong width.
+        //
+        // So name the ones that are word-spelled and let the rest keep the
+        // trampoline, which reads each callee's declared type first. Vouching
+        // for too few costs a host round trip per call; vouching for one that
+        // is not word-spelled costs a trap, so a helper joins the list only
+        // once its own signature says `i64`.
+        majit_backend_wasm::set_faithful_residual_call_addrs(&word_abi_residual_addrs());
+        majit_backend_wasm::codegen::set_residual_call_abi(
+            majit_backend_wasm::codegen::ResidualCallAbi::Vouched,
+        );
     }
+}
+
+/// Residual callees whose parameters and result are every one of them a
+/// machine word spelled `i64`, so a compiled trace can call them directly.
+///
+/// The static assertions below are the check: each names the exact signature
+/// the trace will emit a call for, so a helper that grows a `usize` parameter
+/// stops compiling instead of starting to trap.
+#[cfg(target_arch = "wasm32")]
+fn word_abi_residual_addrs() -> Vec<i64> {
+    const _: extern "C" fn(i64) = jit_write_number;
+    const _: extern "C" fn(i64) = jit_write_utf8;
+    const _: extern "C" fn() -> i64 = jit_read_utf8;
+    const _: extern "C" fn() -> i64 = jit_read_number;
+    const _: fn() = jit_output_flush;
+    const _: extern "C" fn(i64) -> Val = jit_tag_val;
+    const _: extern "C" fn(i64) -> i64 = jit_tag_word;
+    const _: fn() -> i64 = jit_bigint_mode;
+    const _: extern "C" fn() -> i64 = jit_band_count;
+    const _: fn(Val, Val) -> Val = val_add;
+    const _: fn(Val, Val) -> Val = val_sub;
+    const _: fn(Val, Val) -> Val = val_mul;
+    const _: fn(Val, Val) -> Val = val_div;
+    const _: fn(Val, Val) -> Val = val_mod;
+
+    let mut addrs: Vec<i64> = vec![
+        jit_write_number as *const () as usize as i64,
+        jit_write_utf8 as *const () as usize as i64,
+        jit_read_utf8 as *const () as usize as i64,
+        jit_read_number as *const () as usize as i64,
+        jit_output_flush as *const () as usize as i64,
+        jit_tag_val as *const () as usize as i64,
+        jit_tag_word as *const () as usize as i64,
+        jit_bigint_mode as *const () as usize as i64,
+        jit_band_count as *const () as usize as i64,
+        val_add as *const () as usize as i64,
+        val_sub as *const () as usize as i64,
+        val_mul as *const () as usize as i64,
+        val_mod as *const () as usize as i64,
+        val_div as *const () as usize as i64,
+    ];
+    addrs.extend(jit::jitcode_runtime::word_abi_fnaddrs());
+    addrs
 }
 
 include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));

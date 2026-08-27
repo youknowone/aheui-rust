@@ -68,24 +68,31 @@ pub fn prebuild_pipeline_liveness(assembler: &mut majit_metainterp::Assembler) {
 // The graph pipeline lowers the shared LinkedList accessors as host calls, so
 // these shims expose the base every storage embeds through the call-stub C ABI.
 // The pointer they receive is a `pools` element, which already names that base.
-extern "C" fn linked_list_head(storage: usize) -> i64 {
-    unsafe { (*(storage as *const ListBase)).head as i64 }
+//
+// Every shim below takes and returns `i64` and casts at its own boundary, never
+// a pointer or a `usize`. That is the residual-call ABI a compiled trace
+// assumes: it reads the call descr, which says only "a machine word", and emits
+// a call typed `(i64 x n) -> i64`. A pointer parameter is 32 bits wide on a
+// wasm32 target, so a shim spelled with one declares a signature the trace's
+// indirect call does not match, and the call traps the first time it runs.
+extern "C" fn linked_list_head(storage: i64) -> i64 {
+    unsafe { (*(storage as usize as *const ListBase)).head as i64 }
 }
 
-extern "C" fn linked_list_set_head(storage: usize, head: i64) {
-    unsafe { (*(storage as *mut ListBase)).head = head as *mut Node };
+extern "C" fn linked_list_set_head(storage: i64, head: i64) {
+    unsafe { (*(storage as usize as *mut ListBase)).head = head as usize as *mut Node };
 }
 
-extern "C" fn linked_list_size(storage: usize) -> i64 {
-    unsafe { (*(storage as *const ListBase)).size as i64 }
+extern "C" fn linked_list_size(storage: i64) -> i64 {
+    unsafe { (*(storage as usize as *const ListBase)).size as i64 }
 }
 
-extern "C" fn linked_list_set_size(storage: usize, size: i64) {
-    unsafe { (*(storage as *mut ListBase)).size = size as u32 };
+extern "C" fn linked_list_set_size(storage: i64, size: i64) {
+    unsafe { (*(storage as usize as *mut ListBase)).size = size as u32 };
 }
 
-extern "C" fn linked_list_free_node(node: usize) {
-    aheui_runtime::storage::free_node(node as *mut Node);
+extern "C" fn linked_list_free_node(node: i64) {
+    aheui_runtime::storage::free_node(node as usize as *mut Node);
 }
 
 // The dual-mode flag is a static, and the pipeline spells a read of it as a call
@@ -194,6 +201,21 @@ fn runtime_fnaddr_bindings() -> [(&'static str, i64); 16] {
             band_compare_ge as *const () as usize as i64,
         ),
     ]
+}
+
+/// Addresses of every pipeline binding, for the backend's vouched
+/// residual-call list.
+///
+/// The whole table is word-spelled by construction: each shim above takes and
+/// returns `i64` and casts at its own boundary, the two blackhole helpers are
+/// `(i64, i64) -> i64`, and so are the band escapes. A compiled trace may
+/// therefore call any of them with the type its call descr implies, instead of
+/// going out to a host that reflects the callee's declared type first.
+pub fn word_abi_fnaddrs() -> Vec<i64> {
+    runtime_fnaddr_bindings()
+        .iter()
+        .map(|(_, addr)| *addr)
+        .collect()
 }
 
 /// The materialized table, built once.
