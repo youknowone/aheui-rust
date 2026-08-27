@@ -287,8 +287,105 @@ mod bigint_gc {
     pub fn init() {}
 }
 
+// Residual-call host trampoline for the wasm32 native-host build.
+//
+// wasm32 `call_indirect` type-checks every call, so the metainterpreter cannot
+// transmute a raw funcptr to a statically-guessed `extern "C" fn` and call it:
+// a callee taking a pointer declares an `i32` parameter where the transmute
+// spells `i64`, and a void callee declares no result where it spells one.
+// Neither mismatch is tolerated the way the SysV/AAPCS C ABI tolerates both, so
+// the call traps with `indirect call type mismatch` before it reaches the
+// callee. A compiled trace already round-trips such calls through the host
+// (`env.jit_call`); this routes the recording and blackhole paths through the
+// symmetric `majit_host.jit_call_host` import, which reflects the callee's real
+// wasm signature and coerces each positional argument to it.
+#[cfg(all(target_arch = "wasm32", feature = "wasm-host"))]
+mod residual_host {
+    use core::cell::UnsafeCell;
+
+    // Call-area layout, taken from the backend that defines it rather than
+    // restated here: the host reads this same block from the other side of the
+    // import, so a layout change has to reach both ends or neither.
+    use majit_backend_wasm::codegen::{
+        CALL_ARGS_OFS as CALL_ARGS_OFS_U64, CALL_FUNC_OFS as CALL_FUNC_OFS_U64,
+        CALL_NARGS_OFS as CALL_NARGS_OFS_U64, CALL_RESULT_OFS as CALL_RESULT_OFS_U64,
+        MAX_CALL_ARGS as MAX_ARGS, MIN_FRAME_BYTES as SCRATCH_LEN,
+    };
+    const CALL_RESULT_OFS: usize = CALL_RESULT_OFS_U64 as usize;
+    const CALL_FUNC_OFS: usize = CALL_FUNC_OFS_U64 as usize;
+    const CALL_NARGS_OFS: usize = CALL_NARGS_OFS_U64 as usize;
+    const CALL_ARGS_OFS: usize = CALL_ARGS_OFS_U64 as usize;
+
+    #[link(wasm_import_module = "majit_host")]
+    unsafe extern "C" {
+        fn jit_call_host(frame_ptr: u32);
+    }
+
+    // A wasm32 module instance is single-threaded, so a shared scratch buffer
+    // needs no synchronization. Residual calls nest synchronously: each level
+    // writes its arguments, the host reads them before invoking the callee, and
+    // each level reads its result immediately after the host returns — so an
+    // inner call that reuses the buffer cannot clobber an outer call's
+    // already-consumed arguments or not-yet-written result.
+    struct Scratch(UnsafeCell<[u8; SCRATCH_LEN]>);
+    unsafe impl Sync for Scratch {}
+    static SCRATCH: Scratch = Scratch(UnsafeCell::new([0u8; SCRATCH_LEN]));
+
+    fn residual_host_call(func_ptr: usize, args: &[i64]) -> i64 {
+        assert!(
+            args.len() <= MAX_ARGS,
+            "residual_host_call: arity {} exceeds {MAX_ARGS}",
+            args.len()
+        );
+        let base = SCRATCH.0.get() as *mut u8;
+        unsafe {
+            (base.add(CALL_FUNC_OFS) as *mut i64).write_unaligned(func_ptr as i64);
+            (base.add(CALL_NARGS_OFS) as *mut i64).write_unaligned(args.len() as i64);
+            for (i, &a) in args.iter().enumerate() {
+                (base.add(CALL_ARGS_OFS + i * 8) as *mut i64).write_unaligned(a);
+            }
+            jit_call_host(base as u32);
+            (base.add(CALL_RESULT_OFS) as *const i64).read_unaligned()
+        }
+    }
+
+    /// Install the trampoline on the current thread. Idempotent.
+    pub fn install() {
+        majit_backend::call_stub::set_residual_host_call(Some(residual_host_call));
+    }
+}
+
+/// Trace entries, host trace-module materializations, and materializations
+/// served from the byte-identical module cache — all counted inside the guest.
+///
+/// A wasm host cannot report the first of these: a published trace is called
+/// straight through the shared function table (its handle IS the table slot),
+/// so entering one crosses no import the host could count.
+#[cfg(target_arch = "wasm32")]
+pub fn wasm_jit_counts() -> (u64, u64, u64) {
+    (
+        majit_backend_wasm::jit_execute_count(),
+        majit_backend_wasm::jit_compile_count(),
+        majit_backend_wasm::jit_compile_cache_hits(),
+    )
+}
+
 pub fn init_gc_subsystem() {
     bigint_gc::init();
+    #[cfg(all(target_arch = "wasm32", feature = "wasm-host"))]
+    residual_host::install();
+    #[cfg(target_arch = "wasm32")]
+    {
+        // The direct-residual-call lowering picks a callee's wasm type from the
+        // IR: a word-typed argument becomes `i64`. The helpers registered in
+        // `calls` below do not answer to that — they take pool pointers, node
+        // pointers and opcode indices as `usize`, and a `usize` is `i32` on
+        // wasm32. `call_indirect` type-checks its callee, so a call lowered
+        // that way traps before reaching the helper instead of quietly passing
+        // the wrong width. Take the trampoline, which reads each callee's
+        // declared type first, until the helpers themselves are word-wide.
+        majit_backend_wasm::codegen::set_direct_residual_calls(false);
+    }
 }
 
 include!(concat!(env!("OUT_DIR"), "/jit_trace_gen.rs"));

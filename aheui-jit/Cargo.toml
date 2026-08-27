@@ -12,6 +12,15 @@ malachite-bigint = ["aheui-runtime/malachite-bigint", "bigint-backend"]
 runtime-rbigint = ["aheui-runtime/runtime-rbigint", "bigint-backend"]
 cranelift = ["dep:majit-backend-cranelift", "majit-metainterp/cranelift"]
 dynasm = ["dep:majit-backend-dynasm", "majit-metainterp/dynasm"]
+# Host binding for the wasm backend. On wasm32 majit-metainterp already
+# selects `WasmBackend` by target_arch, so no backend feature applies there;
+# what is still missing is who instantiates an emitted trace module. Exactly
+# one of these picks that: `wasm-web` goes through the browser `WebAssembly`
+# API, `wasm-host` through plain `majit_host.*` imports a native embedder
+# supplies. With neither, `glue.rs` keeps its panicking stubs and the JIT
+# traps the first time it tries to run a trace.
+wasm-web = ["majit-backend-wasm/web"]
+wasm-host = ["majit-backend-wasm/host-import"]
 
 [dependencies]
 aheui-runtime = { path = "../aheui-runtime", features = ["jit"], default-features = false }
@@ -27,9 +36,21 @@ majit-gc = { workspace = true, features = ["gc_box"] }
 majit-metainterp = { workspace = true }
 majit-translate = { workspace = true }
 majit-backend = { workspace = true }
+bincode = "1.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native backends never build for wasm32. Gating them here keeps a stray
+# `dynasm`/`cranelift` feature — the crate's own default carries `dynasm` —
+# from pulling a native-only crate into a wasm32 build.
 majit-backend-cranelift = { workspace = true, optional = true }
 majit-backend-dynasm = { workspace = true, optional = true }
-bincode = "1.3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Specified directly rather than through workspace inheritance so
+# default-features can be turned off: pulling the `web` default here would
+# unify `web` into a `host-import` build and route `glue.rs` through
+# wasm-bindgen instead of the plain wasm imports.
+majit-backend-wasm = { workspace = true, default-features = false }
 
 [build-dependencies]
 majit-translate = { workspace = true }

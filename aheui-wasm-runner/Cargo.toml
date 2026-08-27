@@ -1,0 +1,25 @@
+[package]
+name = "aheui-wasm-runner"
+version = "0.0.1"
+edition = "2024"
+publish = false
+description = "Native wasmtime host that runs the wasm32 build of aheui, satisfying the JIT host-import contract"
+
+[[bin]]
+name = "aheui-wasm-runner"
+path = "src/main.rs"
+
+[dependencies]
+# wasmtime vendors its own error type (`wasmtime::Error`) and re-exports a
+# `Context` trait, so the runner needs no separate `anyhow` dependency.
+wasmtime = "47"
+# The guest is a `wasm32-wasip1` command: it reads its program from a preopened
+# directory, writes to stdout, and reads `MAJIT_*` knobs out of the environment.
+wasmtime-wasi = "47"
+# Call-area layout and the JIT host-import contract are defined by the backend
+# that emits the calls; naming them here keeps the two ends of the import from
+# drifting. Native-only dependency: this crate is the host, not the guest.
+majit-backend-wasm = { workspace = true }
+# Disassemble a trace module to WAT when it fails to compile, gated by
+# AHEUI_WASM_DUMP_BAD_TRACE.
+wasmprinter = "0.248"

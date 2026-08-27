@@ -4,7 +4,7 @@ version = "0.0.1"
 edition = "2024"
 
 [workspace]
-members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler", "aheui-wasm"]
+members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler", "aheui-wasm", "aheui-wasm-runner"]
 
 # majit lives in the `pyre` repository, which this one does not vendor or
 # submodule.  Pinning a revision here rather than a path makes a checkout of
@@ -33,6 +33,7 @@ majit-translate = { git = "https://github.com/youknowone/pyre", rev = "f395e39b5
 majit-backend = { git = "https://github.com/youknowone/pyre", rev = "f395e39b58e193da80819464b7f094b6e752fea0" }
 majit-backend-cranelift = { git = "https://github.com/youknowone/pyre", rev = "f395e39b58e193da80819464b7f094b6e752fea0" }
 majit-backend-dynasm = { git = "https://github.com/youknowone/pyre", rev = "f395e39b58e193da80819464b7f094b6e752fea0" }
+majit-backend-wasm = { git = "https://github.com/youknowone/pyre", rev = "f395e39b58e193da80819464b7f094b6e752fea0", default-features = false }
 
 [features]
 default = ["jit", "dynasm", "malachite-bigint"]
@@ -45,6 +46,10 @@ cranelift = ["aheui-jit?/cranelift"]
 # selector above — they share a name and nothing else, and enabling `cranelift`
 # to reach this one would drag the JIT onto a second backend.
 aot-cranelift = ["compaheuiler/cranelift"]
+# Host binding for the wasm JIT backend, forwarded to aheui-jit. Only
+# meaningful on wasm32; exactly one is selected by a wasm build.
+wasm-web = ["aheui-jit?/wasm-web"]
+wasm-host = ["aheui-jit?/wasm-host"]
 num-bigint = ["aheuinterpreter?/num-bigint", "aheui-jit?/num-bigint", "compaheuiler/num-bigint"]
 malachite-bigint = ["aheuinterpreter?/malachite-bigint", "aheui-jit?/malachite-bigint", "compaheuiler/malachite-bigint"]
 # compaheuiler is deliberately absent because its bigint features select AOT-generated arithmetic, not the interpreter runtime.
