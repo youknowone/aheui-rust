@@ -370,6 +370,26 @@ pub fn wasm_jit_counts() -> (u64, u64, u64) {
     )
 }
 
+/// The wasm backend's own bridge/inline decline census, as `label=value` for
+/// every tally that fired.
+///
+/// The backend counts these in a static array and the labels are its own, so
+/// joining them here keeps a decline readable without a second place to keep
+/// the names in step. Zero rows are dropped: the array is a census of rare
+/// declines, and printing 57 zeroes hides the one that is not.
+#[cfg(target_arch = "wasm32")]
+pub fn wasm_bridge_diag_summary() -> String {
+    majit_backend_wasm::BRIDGE_DIAG_LABELS
+        .iter()
+        .enumerate()
+        .filter_map(|(i, label)| match majit_backend_wasm::bridge_diag(i) {
+            0 => None,
+            v => Some(format!("{label}={v}")),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn init_gc_subsystem() {
     bigint_gc::init();
     #[cfg(all(target_arch = "wasm32", feature = "wasm-host"))]

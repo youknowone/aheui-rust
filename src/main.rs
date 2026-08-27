@@ -206,6 +206,10 @@ fn maybe_print_jit_stats() {
             "[jit-stats] wasm_trace_entries={entries} wasm_host_modules={modules} \
              wasm_module_cache_hits={cache_hits}"
         );
+        eprintln!(
+            "[jit-stats] wasm_bridge_diag {}",
+            aheui_jit::wasm_bridge_diag_summary()
+        );
     }
     eprintln!(
         "[jit-stats] loops_compiled={} bridges_compiled={} loops_aborted={} \
