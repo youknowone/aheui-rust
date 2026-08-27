@@ -136,6 +136,38 @@ fn exit_code_to_i32(exit_code: aheuinterpreter::Val) -> i32 {
     aheuinterpreter::value::val_to_i32_saturating(&exit_code)
 }
 
+/// Largest status a WASI host accepts. `proc_exit` is specified over
+/// `[0, 126)`, the range left after the shell conventions for 126 and 127.
+#[cfg(target_os = "wasi")]
+const WASI_MAX_EXIT: i32 = 125;
+
+/// Leave with `code`, narrowed to what this platform's exit status can carry.
+///
+/// A POSIX status is eight bits, so `exit(810)` is observed by the parent as
+/// `810 & 0xff` — 42, which is the value the corpus records for `logo`. Taking
+/// the low byte here is therefore a no-op natively and states the rule once.
+///
+/// It is not a no-op under WASI, which narrows the range again to `[0, 126)`
+/// and traps on anything outside it. That trap costs the status AND turns a
+/// completed run into a failed one with its stdout already written, so 8 of
+/// the 78 corpus programs exited 1 with a backtrace instead of the code they
+/// computed. Four of them — `logo` among them — carry a low byte that fits,
+/// and now report exactly what they report natively. For the rest the status
+/// simply cannot be expressed, so it is named on stderr rather than replaced
+/// by a number the program never produced.
+fn exit_with(code: i32) -> ! {
+    let low = (code as u32 & 0xff) as i32;
+    #[cfg(target_os = "wasi")]
+    if low > WASI_MAX_EXIT {
+        eprintln!(
+            "[exit] status {code} (low byte {low}) is outside the [0, 126) a \
+             WASI host accepts; exiting {WASI_MAX_EXIT}"
+        );
+        std::process::exit(WASI_MAX_EXIT);
+    }
+    std::process::exit(low)
+}
+
 /// Print the one-line JIT statistics summary to stderr when `MAJIT_STATS` is
 /// set, in the same `[jit-stats]` shape `pyre/pyrex` emits so one recorder and
 /// one regression floor can read both.
@@ -167,6 +199,14 @@ fn maybe_print_jit_stats() {
         "[jit-stats] {}",
         aheui_jit::majit_metainterp::guard_census_summary(8)
     );
+    #[cfg(target_arch = "wasm32")]
+    {
+        let (entries, modules, cache_hits) = aheui_jit::wasm_jit_counts();
+        eprintln!(
+            "[jit-stats] wasm_trace_entries={entries} wasm_host_modules={modules} \
+             wasm_module_cache_hits={cache_hits}"
+        );
+    }
     eprintln!(
         "[jit-stats] loops_compiled={} bridges_compiled={} loops_aborted={} \
          guard_failures={} internal_compile_panics={}",
@@ -231,13 +271,13 @@ fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
     if args.use_jit() {
         let exitcode = aheui_jit::mainloop(&program, aheui_jit::jit_threshold());
         maybe_print_jit_stats();
-        std::process::exit(exit_code_to_i32(exitcode));
+        exit_with(exit_code_to_i32(exitcode));
     }
 
     #[cfg(feature = "naive")]
     {
         let exitcode = aheuinterpreter::interp::mainloop(&program);
-        std::process::exit(exit_code_to_i32(exitcode));
+        exit_with(exit_code_to_i32(exitcode));
     }
 
     #[cfg(not(feature = "naive"))]
