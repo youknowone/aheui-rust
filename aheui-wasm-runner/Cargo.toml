@@ -20,6 +20,13 @@ wasmtime-wasi = "47"
 # that emits the calls; naming them here keeps the two ends of the import from
 # drifting. Native-only dependency: this crate is the host, not the guest.
 majit-backend-wasm = { workspace = true }
-# Disassemble a trace module to WAT when it fails to compile, gated by
-# AHEUI_WASM_DUMP_BAD_TRACE.
+# Disassemble a trace module to WAT — on a failed compile, and on demand for
+# every trace. Pinned to the version wasmtime already resolves in the lockfile.
 wasmprinter = "0.248"
+# Resolve a guest function-table slot to its symbol, so a dumped trace's
+# `call_indirect` targets read as names rather than as table indices. Pinned to
+# the version wasmtime already resolves in the lockfile, as wasmprinter is.
+wasmparser = "0.248"
+# Render a resolved symbol the way the codebase cites one rather than as its
+# v0 mangling. Already in the lockfile as a wasmtime backtrace dependency.
+rustc-demangle = "0.1"

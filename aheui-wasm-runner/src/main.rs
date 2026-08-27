@@ -71,6 +71,12 @@ struct Host {
     /// there and the guest's own tally is the one that counts trace entries.
     execute_count: u64,
     call_count: u64,
+    /// Nanoseconds spent turning the guest module into something runnable,
+    /// reported so a measurement can tell that cost apart from the program's.
+    guest_load_time_ns: u128,
+    /// Whether that time went into compiling the guest rather than reading back
+    /// an artefact compiled by an earlier run.
+    guest_compiled: bool,
 }
 
 impl Host {
@@ -85,6 +91,8 @@ impl Host {
             compile_time_ns: 0,
             execute_count: 0,
             call_count: 0,
+            guest_load_time_ns: 0,
+            guest_compiled: false,
         }
     }
 }
@@ -157,11 +165,86 @@ fn main() {
     }
 }
 
+/// Whether to count the wasm instructions this run executes.
+///
+/// Fuel charges one unit per executed instruction, so the count is a property
+/// of the program rather than of the machine it runs on: it stays put while
+/// wall clock moves with whatever else the host happens to be doing. Reading it
+/// costs the run its speed, because every basic block gains the accounting, so
+/// it answers "how much work" and never "how fast".
+fn fuel_count_enabled() -> bool {
+    std::env::var_os("AHEUI_WASM_FUEL_COUNT").is_some()
+}
+
+/// Path of the compiled artefact that belongs to a guest module.
+fn artifact_path(module_path: &Path) -> PathBuf {
+    let mut path = module_path.to_path_buf();
+    let ext = match module_path.extension() {
+        Some(ext) => format!("{}.cwasm", ext.to_string_lossy()),
+        None => "cwasm".to_string(),
+    };
+    path.set_extension(ext);
+    path
+}
+
+/// Whether `artifact` was written after `source` was last changed.
+fn artifact_is_current(artifact: &Path, source: &Path) -> bool {
+    let stamp = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (stamp(artifact), stamp(source)) {
+        (Some(a), Some(s)) => a >= s,
+        _ => false,
+    }
+}
+
+/// Load the guest, reusing the artefact of an earlier compile when there is a
+/// current one.
+///
+/// Compiling a multi-megabyte module is seconds of work that says nothing about
+/// what the module then does, and without an artefact every launch pays it
+/// again — enough, for this guest, to be several times the program's own run and
+/// to read as if the JIT bought nothing. A deserialized artefact skips it.
+///
+/// `AHEUI_WASM_NO_MODULE_CACHE` compiles unconditionally and writes nothing,
+/// for measuring what that compile costs. `reusable` is false for an engine
+/// configured differently from the one an ordinary run builds — its artefact
+/// would be rejected by every other run, and writing it would evict theirs.
+fn load_guest(engine: &Engine, module_path: &Path, reusable: bool) -> Result<(Module, bool)> {
+    if !reusable || std::env::var_os("AHEUI_WASM_NO_MODULE_CACHE").is_some() {
+        return Ok((Module::from_file(engine, module_path)?, true));
+    }
+    let artifact = artifact_path(module_path);
+    if artifact_is_current(&artifact, module_path) {
+        // SAFETY: `deserialize_file` requires an artefact this engine produced.
+        // Only the write below creates one, the name is derived from the source
+        // module, and a stale or foreign artefact is rejected by the engine's
+        // own compatibility check rather than being run — so the residual risk
+        // is a file corrupted underneath us, which recompiling cannot detect
+        // either.
+        if let Ok(module) = unsafe { Module::deserialize_file(engine, &artifact) } {
+            return Ok((module, false));
+        }
+    }
+    let module = Module::from_file(engine, module_path)?;
+    // A directory that cannot be written to costs the next run a compile, which
+    // is what it would have paid anyway.
+    if let Ok(bytes) = module.serialize() {
+        let _ = std::fs::write(&artifact, bytes);
+    }
+    Ok((module, true))
+}
+
 fn run(module_path: &Path, dirs: &[DirMapping], guest_args: &[String]) -> Result<i32> {
     let mut config = Config::new();
     config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
+    let counting_fuel = fuel_count_enabled();
+    config.consume_fuel(counting_fuel);
     let engine = Engine::new(&config)?;
-    let module = Module::from_file(&engine, module_path)?;
+    // Recorded before the first compile, so a dumped trace can name its
+    // `call_indirect` targets by the guest's own symbols.
+    *GUEST_MODULE_PATH.lock().unwrap() = Some(module_path.to_path_buf());
+    let load_started = std::time::Instant::now();
+    let (module, guest_compiled) = load_guest(&engine, module_path, !counting_fuel)?;
+    let guest_load_time_ns = load_started.elapsed().as_nanos();
 
     let mut builder = WasiCtxBuilder::new();
     builder.inherit_stdio().inherit_env();
@@ -176,6 +259,12 @@ fn run(module_path: &Path, dirs: &[DirMapping], guest_args: &[String]) -> Result
             .map_err(|e| Error::msg(format!("preopen {} as {}: {e}", d.host.display(), d.guest)))?;
     }
     let mut store = Store::new(&engine, Host::new(builder.build_p1()));
+    // Half the range, so the guest's own accounting has room to subtract
+    // without the store ever running dry mid-program.
+    let fuel_budget = u64::MAX / 2;
+    if counting_fuel {
+        store.set_fuel(fuel_budget)?;
+    }
 
     let mut linker: Linker<Host> = Linker::new(&engine);
     p1::add_to_linker_sync(&mut linker, |h: &mut Host| &mut h.wasi)?;
@@ -197,6 +286,8 @@ fn run(module_path: &Path, dirs: &[DirMapping], guest_args: &[String]) -> Result
     // i.e. the first trace handle; everything below it belongs to the guest.
     let trace_base = table.size(&store);
     let host = store.data_mut();
+    host.guest_load_time_ns = guest_load_time_ns;
+    host.guest_compiled = guest_compiled;
     host.memory = Some(memory);
     host.table = Some(table);
     host.trace_base = trace_base;
@@ -215,7 +306,15 @@ fn run(module_path: &Path, dirs: &[DirMapping], guest_args: &[String]) -> Result
             }
         },
     };
+    if counting_fuel {
+        let left = store.get_fuel().unwrap_or(fuel_budget);
+        eprintln!(
+            "[jit-stats] wasm_instructions_executed={}",
+            fuel_budget.saturating_sub(left)
+        );
+    }
     report_stats(store.data());
+    call_hist_dump();
     Ok(code)
 }
 
@@ -232,6 +331,11 @@ fn report_stats(host: &Host) {
         host.compile_time_ns / 1_000_000,
         host.execute_count,
         host.call_count,
+    );
+    eprintln!(
+        "[jit-stats] guest_load_ms={} guest_compiled={}",
+        host.guest_load_time_ns / 1_000_000,
+        host.guest_compiled,
     );
 }
 
@@ -315,6 +419,164 @@ fn add_majit_host(linker: &mut Linker<Host>) -> Result<()> {
     Ok(())
 }
 
+/// Residual crossings per callee, under `AHEUI_WASM_CALL_HIST`.
+///
+/// Every entry here is a call the compiled trace could not make in-guest, so
+/// the histogram is the work list for narrowing the trampoline: a callee near
+/// the top is one whose declared wasm signature the trace could match directly.
+static CALL_HIST: std::sync::Mutex<Option<std::collections::BTreeMap<u32, u64>>> =
+    std::sync::Mutex::new(None);
+
+fn call_hist_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("AHEUI_WASM_CALL_HIST").is_some())
+}
+
+fn call_hist_record(slot: u32) {
+    if !call_hist_enabled() {
+        return;
+    }
+    let mut g = CALL_HIST.lock().unwrap();
+    *g.get_or_insert_with(Default::default)
+        .entry(slot)
+        .or_insert(0) += 1;
+}
+
+fn call_hist_dump() {
+    if !call_hist_enabled() {
+        return;
+    }
+    let g = CALL_HIST.lock().unwrap();
+    let Some(m) = g.as_ref() else { return };
+    let total: u64 = m.values().sum();
+    let mut v: Vec<_> = m.iter().collect();
+    v.sort_by(|a, b| b.1.cmp(a.1));
+    let names = guest_slot_names();
+    eprintln!("[call-hist] total={total} distinct={}", v.len());
+    for (slot, n) in v.into_iter().take(20) {
+        let pct = *n as f64 * 100.0 / total.max(1) as f64;
+        let name = names.get(slot).map(String::as_str).unwrap_or("?");
+        eprintln!("[call-hist] slot={slot} n={n} pct={pct:.1} {name}");
+    }
+}
+
+/// Path of the guest module, so a dumped trace's `call_indirect` targets can
+/// be resolved against the table the guest itself populated.
+static GUEST_MODULE_PATH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Directory named by `AHEUI_WASM_DUMP_TRACES`, or `None` when the knob is
+/// unset. Every compiled trace is written there as both `.wasm` and WAT.
+fn trace_dump_dir() -> Option<PathBuf> {
+    let dir = PathBuf::from(std::env::var_os("AHEUI_WASM_DUMP_TRACES")?);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("[dump-traces] {}: {e}", dir.display());
+        return None;
+    }
+    Some(dir)
+}
+
+/// Table slot to symbol, read out of the guest module's element and name
+/// sections. A trace calls its residual targets by table index, and a trap
+/// report names a wasm offset -- neither reads as anything without this map.
+fn guest_slot_names() -> std::collections::BTreeMap<u32, String> {
+    use wasmparser::{ElementItems, ElementKind, Name, Operator, Payload};
+
+    let mut out = std::collections::BTreeMap::new();
+    let path = GUEST_MODULE_PATH.lock().unwrap().clone();
+    let Some(path) = path else { return out };
+    let Ok(bytes) = std::fs::read(&path) else {
+        return out;
+    };
+
+    let mut slot_to_func: std::collections::BTreeMap<u32, u32> = Default::default();
+    let mut func_to_name: std::collections::BTreeMap<u32, String> = Default::default();
+    for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
+        match payload {
+            Ok(Payload::ElementSection(reader)) => {
+                for element in reader {
+                    let Ok(element) = element else { continue };
+                    // Only an active segment puts entries in the table; a
+                    // passive or declared one is never indexed by a call.
+                    let ElementKind::Active { offset_expr, .. } = element.kind else {
+                        continue;
+                    };
+                    let mut ops = offset_expr.get_operators_reader().into_iter();
+                    let base = match ops.next() {
+                        Some(Ok(Operator::I32Const { value })) => value as u32,
+                        _ => continue,
+                    };
+                    let ElementItems::Functions(funcs) = element.items else {
+                        continue;
+                    };
+                    for (i, func) in funcs.into_iter().enumerate() {
+                        let Ok(func) = func else { continue };
+                        slot_to_func.insert(base + i as u32, func);
+                    }
+                }
+            }
+            Ok(Payload::CustomSection(c)) if c.name() == "name" => {
+                let reader = wasmparser::NameSectionReader::new(wasmparser::BinaryReader::new(
+                    c.data(),
+                    c.data_offset(),
+                ));
+                for subsection in reader {
+                    let Ok(Name::Function(map)) = subsection else {
+                        continue;
+                    };
+                    for naming in map {
+                        let Ok(naming) = naming else { continue };
+                        func_to_name.insert(
+                            naming.index,
+                            rustc_demangle::demangle(naming.name).to_string(),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for (slot, func) in slot_to_func {
+        if let Some(name) = func_to_name.get(&func) {
+            out.insert(slot, name.clone());
+        }
+    }
+    out
+}
+
+/// Write one trace module beside its disassembly. The WAT carries binary
+/// offsets, so a trap reported at an offset inside the trace names the
+/// instruction that took it.
+fn dump_trace(bytes: &[u8], seq: u64) {
+    let Some(dir) = trace_dump_dir() else { return };
+    let stem = dir.join(format!("trace-{seq:04}"));
+    let _ = std::fs::write(stem.with_extension("wasm"), bytes);
+    let mut wat = String::new();
+    let mut cfg = wasmprinter::Config::new();
+    cfg.print_offsets(true);
+    match cfg.print(bytes, &mut wasmprinter::PrintFmtWrite(&mut wat)) {
+        Ok(()) => {
+            let _ = std::fs::write(stem.with_extension("wat"), &wat);
+        }
+        Err(e) => eprintln!("[dump-traces] wat print failed for {seq}: {e}"),
+    }
+    // The slot map is the same for every trace; write it once beside them.
+    let slots = dir.join("guest-slots.txt");
+    if !slots.exists() {
+        let names = guest_slot_names();
+        let text: String = names
+            .iter()
+            .map(|(slot, name)| format!("{slot}\t{name}\n"))
+            .collect();
+        let _ = std::fs::write(&slots, text);
+    }
+    eprintln!(
+        "[dump-traces] wrote {} ({} bytes)",
+        stem.display(),
+        bytes.len()
+    );
+}
+
 fn jit_compile_trace(
     caller: &mut Caller<'_, Host>,
     bytes_ptr: u32,
@@ -326,6 +588,7 @@ fn jit_compile_trace(
 
     let mut bytes = vec![0u8; bytes_len as usize];
     memory.read(&*caller, bytes_ptr as usize, &mut bytes)?;
+    dump_trace(&bytes, caller.data().compile_count);
 
     let engine = caller.engine().clone();
     let compile_start = std::time::Instant::now();
@@ -492,6 +755,8 @@ fn jit_call_trampoline(
         &*caller,
         call_area + (CALL_FUNC_OFS - CALL_RESULT_OFS) as usize,
     );
+
+    call_hist_record(func_ptr);
 
     let func = match table.get(&mut *caller, func_ptr as u64) {
         Some(Ref::Func(Some(f))) => f,
