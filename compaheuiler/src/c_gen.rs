@@ -116,6 +116,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
         block_order.get(&cfg.entry).copied().unwrap_or(0)
     ));
     out.push_str("  for (;;) {\n");
+    out.push_str("  /*DISPATCH*/\n");
     if use_match {
         out.push_str("    switch (_pc) {\n");
     }
@@ -176,11 +177,11 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                 let exit_seq = block_order.get(exit_target).copied().unwrap_or(0);
                 if let Some(guard_fail_seq) = scan_guard_fail {
                     out.push_str(&format!(
-                        "{ind}  if (sp.q_len == 0) {{ _pc = {guard_fail_seq}; continue; }}\n"
+                        "{ind}  if (sp.q_len == 0) {{ _pc = {guard_fail_seq}; goto _dispatch; }}\n"
                     ));
                 }
                 out.push_str(&format!("{ind}  sp_scan_to_zero(&sp);\n"));
-                out.push_str(&format!("{ind}  _pc = {exit_seq}; continue;\n"));
+                out.push_str(&format!("{ind}  _pc = {exit_seq}; goto _dispatch;\n"));
             }
             if use_match {
                 out.push_str("    } break;\n");
@@ -580,7 +581,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                         out.push_str("default: break; }\n");
                     }
                     let fail_seq = block_order.get(fail).copied().unwrap_or(0);
-                    out.push_str(&format!("{ind}  if (({depth_expr}) < (int64_t){min_depth}) {{ _pc = {fail_seq}; continue; }}\n"));
+                    out.push_str(&format!("{ind}  if (({depth_expr}) < (int64_t){min_depth}) {{ _pc = {fail_seq}; goto _dispatch; }}\n"));
                 }
             }
             ii += 1;
@@ -630,7 +631,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                 if !use_match && target_seq == next_seq {
                     out.push_str(&format!("{ind}  _pc = {next_seq};\n"));
                 } else {
-                    out.push_str(&format!("{ind}  _pc = {target_seq}; continue;\n"));
+                    out.push_str(&format!("{ind}  _pc = {target_seq}; goto _dispatch;\n"));
                 }
             }
             Terminator::StackGuard {
@@ -655,10 +656,10 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                 let ok_seq = block_order.get(ok).copied().unwrap_or(0);
                 let fail_seq = block_order.get(fail).copied().unwrap_or(0);
                 if ok_seq == next_seq {
-                    out.push_str(&format!("{ind}  if (({depth_expr}) < (int64_t){min_depth}) {{ _pc = {fail_seq}; continue; }}\n"));
+                    out.push_str(&format!("{ind}  if (({depth_expr}) < (int64_t){min_depth}) {{ _pc = {fail_seq}; goto _dispatch; }}\n"));
                     out.push_str(&format!("{ind}  _pc = {next_seq};\n"));
                 } else {
-                    out.push_str(&format!("{ind}  _pc = (({depth_expr}) >= (int64_t){min_depth}) ? {ok_seq} : {fail_seq}; continue;\n"));
+                    out.push_str(&format!("{ind}  _pc = (({depth_expr}) >= (int64_t){min_depth}) ? {ok_seq} : {fail_seq}; goto _dispatch;\n"));
                 }
             }
             Terminator::BranchZero {
@@ -731,7 +732,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                         format!("{vr} == 0")
                     };
                     out.push_str(&format!(
-                        "{ind}  _pc = ({zero}) ? {zero_seq} : {nonzero_seq}; continue;\n"
+                        "{ind}  _pc = ({zero}) ? {zero_seq} : {nonzero_seq}; goto _dispatch;\n"
                     ));
                 }
             }
@@ -771,7 +772,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
         // Close inner loop
         if is_self_loop {
             out.push_str(&format!("{ind}  }} /* end inner loop */\n"));
-            out.push_str(&format!("{ind}  continue;\n"));
+            out.push_str(&format!("{ind}  goto _dispatch;\n"));
         }
         // Close block
         if use_match {
@@ -793,6 +794,20 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
         var_decl.push_str(&format!("  int64_t v{i} = 0;\n"));
     }
     out = out.replacen("  /*VARDECL*/\n", &var_decl, 1);
+
+    // Re-dispatch target for a block that hands control to another block. It
+    // has to be spelled as a label: a self-loop block wraps its body in a
+    // second `for (;;)`, and a plain `continue` written inside that binds to
+    // the inner loop, re-running the block it was leaving instead of
+    // dispatching on the `_pc` just assigned. Emitted only when something jumps
+    // to it, so a program whose only block falls straight to its terminator
+    // does not carry a label nothing names.
+    let dispatch_label = if out.contains("goto _dispatch;") {
+        "  _dispatch:\n"
+    } else {
+        ""
+    };
+    out = out.replacen("  /*DISPATCH*/\n", dispatch_label, 1);
 
     out.push_str(C_MAIN);
     out
@@ -1007,13 +1022,16 @@ static inline void sp_swap(SpecialStorage* s, size_t sel) {
 }
 
 static inline void sp_scan_to_zero(SpecialStorage* s) {
+    /* rotate_left(pos+1): every element up to and including the zero moves to
+       the back, in order, and the one after it becomes the front. Advancing
+       q_head alone is not that rotation -- the ring keeps its length, so the
+       slots it pulls in at the back are the ones past the old back, not the
+       elements just scanned. */
     for (size_t i = 0; i < s->q_len; i++) {
-        size_t idx = (s->q_head + i) % QUEUE_CAP;
-        if (s->queue[idx] == 0) {
-            /* rotate_left(pos+1): element at pos+1 becomes new front, length unchanged */
-            s->q_head = (s->q_head + i + 1) % QUEUE_CAP;
-            return;
-        }
+        int64_t v = s->queue[s->q_head];
+        s->q_head = (s->q_head + 1) % QUEUE_CAP;
+        s->queue[(s->q_head + s->q_len - 1) % QUEUE_CAP] = v;
+        if (v == 0) return;
     }
 }
 

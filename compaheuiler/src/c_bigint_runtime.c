@@ -83,7 +83,12 @@ static int64_t sp_pop(SpecialStorage *s, size_t sel) { if (sel==21) { if (!s->q_
 static size_t sp_depth(SpecialStorage *s, size_t sel) { return sel==21 ? s->q_len : s->p_len; }
 static void sp_dup(SpecialStorage *s, size_t sel) { if (sel==21) { if (s->q_len) { if(s->q_len>=QUEUE_CAP)sp_overflow(); int64_t v=s->queue[s->q_head]; s->q_head=(s->q_head+QUEUE_CAP-1)%QUEUE_CAP; s->queue[s->q_head]=v; s->q_len++; } } else { if(s->p_len>=PORT_CAP)sp_overflow(); s->port[s->p_len++]=s->port_last; } }
 static void sp_swap(SpecialStorage *s, size_t sel) { if (sel==21 && s->q_len>=2) { size_t a=s->q_head,b=(a+1)%QUEUE_CAP; int64_t t=s->queue[a];s->queue[a]=s->queue[b];s->queue[b]=t; } else if (sel==27 && s->p_len>=2) { int64_t t=s->port[s->p_len-1];s->port[s->p_len-1]=s->port[s->p_len-2];s->port[s->p_len-2]=t; } }
-static void sp_scan_to_zero(SpecialStorage *s) { int64_t z=s->big_mode?1:0; for(size_t i=0;i<s->q_len;i++){size_t k=(s->q_head+i)%QUEUE_CAP;if(s->queue[k]==z){s->q_head=(s->q_head+i+1)%QUEUE_CAP;return;}} }
+/* rotate_left(pos+1): every element up to and including the zero moves to the
+   back, in order, and the one after it becomes the front. Advancing q_head
+   alone is not that rotation -- the ring keeps its length, so the slots it
+   pulls in at the back are the ones past the old back, not the elements just
+   scanned. */
+static void sp_scan_to_zero(SpecialStorage *s) { int64_t z=s->big_mode?1:0; for(size_t i=0;i<s->q_len;i++){int64_t v=s->queue[s->q_head];s->q_head=(s->q_head+1)%QUEUE_CAP;s->queue[(s->q_head+s->q_len-1)%QUEUE_CAP]=v;if(v==z)return;} }
 static void sp_promote(SpecialStorage *s) { for(size_t i=0;i<s->q_len;i++){size_t k=(s->q_head+i)%QUEUE_CAP;s->queue[k]=promote_val(s->queue[k]);} for(size_t i=0;i<s->p_len;i++)s->port[i]=promote_val(s->port[i]); s->port_last=promote_val(s->port_last);s->big_mode=1; }
 static void do_promote(int *bm, int64_t **bases, int64_t **tops, SpecialStorage *sp) { *bm=1; for(size_t s=0;s<STORAGE_COUNT;s++) if(tops[s]) for(int64_t*p=bases[s];p<tops[s];p++)*p=promote_val(*p); sp_promote(sp); }
 
