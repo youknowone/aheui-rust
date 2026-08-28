@@ -337,6 +337,13 @@ mod residual_host {
             "residual_host_call: arity {} exceeds {MAX_ARGS}",
             args.len()
         );
+        // A target the backend was told is spelled in words needs no host to
+        // reflect its type: the signature the residual call carries is the
+        // signature it has. Every widening shim the jitcode producer mints is
+        // one, and those are the callees this path meets most.
+        if let Some(result) = majit_backend_wasm::direct_word_abi_call(func_ptr, args) {
+            return result;
+        }
         let base = SCRATCH.0.get() as *mut u8;
         unsafe {
             (base.add(CALL_FUNC_OFS) as *mut i64).write_unaligned(func_ptr as i64);

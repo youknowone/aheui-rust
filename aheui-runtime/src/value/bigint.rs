@@ -45,6 +45,16 @@ impl majit_ir::CallResultWord for Val {
     }
 }
 
+/// And the same word going the other way: a call passing a `Val` passes the
+/// tagged word itself, so the narrowing is the identity too.
+#[cfg(feature = "jit")]
+impl majit_ir::CallArgWord for Val {
+    #[inline(always)]
+    unsafe fn from_call_word(word: i64) -> Self {
+        Val(word)
+    }
+}
+
 /// Raw tagged-word AND for JIT fast paths.
 ///
 /// This compares/ANDs the packed `i64` representation directly. It is correct
