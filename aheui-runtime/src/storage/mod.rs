@@ -118,6 +118,23 @@ struct Nursery {
     /// `--no-jit` / `AHEUI_GC_DISABLE` nothing is ever retired so `chunks`
     /// grows to dozens — a linear scan there is a hot-path regression.
     chunk_ranges: Vec<(usize, usize)>,
+    /// The sole chunk's byte range when `chunks` holds exactly one, and a
+    /// zero-width one for any other count.
+    ///
+    /// Published to the JIT-emitted inline deallocator, which pushes a cell
+    /// onto `free_list` only after an unsigned `addr - base < width` test: a
+    /// zero width fails that test for every address, so a nursery that has
+    /// grown or is mid-collection routes every release back to [`free_node`],
+    /// whose `owns` search answers for all of `chunks`.
+    recycle_window: RecycleWindow,
+}
+
+/// The byte range an inline deallocator may recycle a node from, laid out so
+/// one published address names both words.
+#[repr(C)]
+struct RecycleWindow {
+    base: usize,
+    width: usize,
 }
 
 impl Nursery {
@@ -133,6 +150,7 @@ impl Nursery {
             collected: false,
             collect_count: 0,
             chunk_ranges: Vec::new(),
+            recycle_window: RecycleWindow { base: 0, width: 0 },
         }
     }
 
@@ -282,6 +300,13 @@ impl Nursery {
                 .map(|&b| (b as usize, b as usize + NURSERY_SIZE * NODE_SIZE)),
         );
         self.chunk_ranges.sort_unstable();
+        if self.chunk_ranges.len() == 1 {
+            self.recycle_window.base = self.chunk_ranges[0].0;
+            self.recycle_window.width = self.chunk_ranges[0].1 - self.chunk_ranges[0].0;
+        } else {
+            self.recycle_window.base = 0;
+            self.recycle_window.width = 0;
+        }
     }
 
     /// Whether `node` lies in a chunk the collector currently owns.
@@ -856,6 +881,20 @@ pub fn nursery_free_list_addr() -> usize {
     unsafe {
         let p = std::ptr::addr_of_mut!(NURSERY);
         std::ptr::addr_of!((*p).free_list) as usize
+    }
+}
+
+/// Stable address of the [`Nursery::recycle_window`] pair, for a JIT-emitted
+/// inline deallocator.
+///
+/// Publishing it alongside [`nursery_free_list_addr`] declares that returning
+/// a node whose address lies in the window is exactly `node.next =
+/// *free_list; *free_list = node` — what [`free_node`] does once `owns` has
+/// answered — and that a node outside it has to reach `free_node` instead.
+pub fn nursery_recycle_window_addr() -> usize {
+    unsafe {
+        let p = std::ptr::addr_of_mut!(NURSERY);
+        std::ptr::addr_of!((*p).recycle_window) as usize
     }
 }
 
