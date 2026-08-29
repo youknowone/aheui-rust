@@ -5,7 +5,8 @@
  *   mode 0: every word is an ordinary signed int64_t
  *   mode 1: odd words are signed 62-bit immediates, even words are Rust BigInt*
  * The first overflowing add/sub/mul converts every live storage exactly once.
- * Actual bigint work is provided by c_bigint_bridge.rs and linked by Rust.
+ * Actual bigint work and the special storage are provided by
+ * c_bigint_bridge.rs and linked by Rust.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -16,8 +17,6 @@
 
 #define STORAGE_COUNT 28
 #define MAX_STACK 65536
-#define QUEUE_CAP 65536
-#define PORT_CAP 65536
 #define SMALL_MIN (-(INT64_C(1) << 62))
 #define SMALL_MAX ((INT64_C(1) << 62) - 1)
 
@@ -71,26 +70,29 @@ CBIG_INLINE int64_t tag_mul(int64_t a, int64_t b) {
     return cbig_mul(a, b);
 }
 
-typedef struct {
-    int64_t queue[QUEUE_CAP]; size_t q_head, q_len;
-    int64_t port[PORT_CAP]; size_t p_len; int64_t port_last;
-    int big_mode;
-} SpecialStorage;
-static void sp_init(SpecialStorage *s) { s->q_head=0; s->q_len=0; s->p_len=0; s->port_last=0; s->big_mode=0; }
-static void sp_overflow(void) { fputs("compaheuiler: special storage capacity exceeded\n", stderr); exit(1); }
-static void sp_push(SpecialStorage *s, size_t sel, int64_t v) { if (sel==21) { if(s->q_len>=QUEUE_CAP)sp_overflow(); s->queue[(s->q_head+s->q_len)%QUEUE_CAP]=v; s->q_len++; } else { if(s->p_len>=PORT_CAP)sp_overflow(); s->port_last=v; s->port[s->p_len++]=v; } }
-static int64_t sp_pop(SpecialStorage *s, size_t sel) { if (sel==21) { if (!s->q_len) return s->big_mode ? 1 : 0; int64_t v=s->queue[s->q_head]; s->q_head=(s->q_head+1)%QUEUE_CAP; s->q_len--; return v; } if (!s->p_len) return s->big_mode ? 1 : 0; return s->port[--s->p_len]; }
-static size_t sp_depth(SpecialStorage *s, size_t sel) { return sel==21 ? s->q_len : s->p_len; }
-static void sp_dup(SpecialStorage *s, size_t sel) { if (sel==21) { if (s->q_len) { if(s->q_len>=QUEUE_CAP)sp_overflow(); int64_t v=s->queue[s->q_head]; s->q_head=(s->q_head+QUEUE_CAP-1)%QUEUE_CAP; s->queue[s->q_head]=v; s->q_len++; } } else { if(s->p_len>=PORT_CAP)sp_overflow(); s->port[s->p_len++]=s->port_last; } }
-static void sp_swap(SpecialStorage *s, size_t sel) { if (sel==21 && s->q_len>=2) { size_t a=s->q_head,b=(a+1)%QUEUE_CAP; int64_t t=s->queue[a];s->queue[a]=s->queue[b];s->queue[b]=t; } else if (sel==27 && s->p_len>=2) { int64_t t=s->port[s->p_len-1];s->port[s->p_len-1]=s->port[s->p_len-2];s->port[s->p_len-2]=t; } }
-/* rotate_left(pos+1): every element up to and including the zero moves to the
-   back, in order, and the one after it becomes the front. Advancing q_head
-   alone is not that rotation -- the ring keeps its length, so the slots it
-   pulls in at the back are the ones past the old back, not the elements just
-   scanned. */
-static void sp_scan_to_zero(SpecialStorage *s) { int64_t z=s->big_mode?1:0; for(size_t i=0;i<s->q_len;i++){int64_t v=s->queue[s->q_head];s->q_head=(s->q_head+1)%QUEUE_CAP;s->queue[(s->q_head+s->q_len-1)%QUEUE_CAP]=v;if(v==z)return;} }
-static void sp_promote(SpecialStorage *s) { for(size_t i=0;i<s->q_len;i++){size_t k=(s->q_head+i)%QUEUE_CAP;s->queue[k]=promote_val(s->queue[k]);} for(size_t i=0;i<s->p_len;i++)s->port[i]=promote_val(s->port[i]); s->port_last=promote_val(s->port_last);s->big_mode=1; }
-static void do_promote(int *bm, int64_t **bases, int64_t **tops, SpecialStorage *sp) { *bm=1; for(size_t s=0;s<STORAGE_COUNT;s++) if(tops[s]) for(int64_t*p=bases[s];p<tops[s];p++)*p=promote_val(*p); sp_promote(sp); }
+/* Special storage lives in the Rust bridge, the same way bigint arithmetic
+   does: the C side carries only an opaque handle and calls `csp_*`. Sharing
+   one implementation is also what removes the fixed capacity -- the queue and
+   the port grow on demand, so there is nothing left to overflow. */
+typedef struct { void *h; } SpecialStorage;
+extern void *csp_new(void);
+extern void csp_push(void *h, size_t sel, int64_t v);
+extern int64_t csp_pop(void *h, size_t sel);
+extern size_t csp_depth(void *h, size_t sel);
+extern void csp_dup(void *h, size_t sel);
+extern void csp_dup_back(void *h);
+extern void csp_swap(void *h, size_t sel);
+extern void csp_scan_to_zero(void *h);
+extern void csp_promote(void *h);
+static void sp_init(SpecialStorage *s) { s->h = csp_new(); }
+static void sp_push(SpecialStorage *s, size_t sel, int64_t v) { csp_push(s->h, sel, v); }
+static int64_t sp_pop(SpecialStorage *s, size_t sel) { return csp_pop(s->h, sel); }
+static size_t sp_depth(SpecialStorage *s, size_t sel) { return csp_depth(s->h, sel); }
+static void sp_dup(SpecialStorage *s, size_t sel) { csp_dup(s->h, sel); }
+static void sp_dup_back(SpecialStorage *s) { csp_dup_back(s->h); }
+static void sp_swap(SpecialStorage *s, size_t sel) { csp_swap(s->h, sel); }
+static void sp_scan_to_zero(SpecialStorage *s) { csp_scan_to_zero(s->h); }
+static void do_promote(int *bm, int64_t **bases, int64_t **tops, SpecialStorage *sp) { *bm=1; for(size_t s=0;s<STORAGE_COUNT;s++) if(tops[s]) for(int64_t*p=bases[s];p<tops[s];p++)*p=promote_val(*p); csp_promote(sp->h); }
 
 CBIG_INLINE int try_add(int64_t a,int64_t b,int64_t*r){
 #if defined(__GNUC__) || defined(__clang__)

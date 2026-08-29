@@ -177,7 +177,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                 let exit_seq = block_order.get(exit_target).copied().unwrap_or(0);
                 if let Some(guard_fail_seq) = scan_guard_fail {
                     out.push_str(&format!(
-                        "{ind}  if (sp.q_len == 0) {{ _pc = {guard_fail_seq}; goto _dispatch; }}\n"
+                        "{ind}  if (sp_depth(&sp, {QUEUE}) == 0) {{ _pc = {guard_fail_seq}; goto _dispatch; }}\n"
                     ));
                 }
                 out.push_str(&format!("{ind}  sp_scan_to_zero(&sp);\n"));
@@ -308,7 +308,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                             && let Some(Inst::Mov(t)) = next
                             && *t == s
                         {
-                            out.push_str(&format!("{ind}  if (sp.q_len > 0) {{ int64_t _v = sp.queue[sp.q_head]; sp.queue[(sp.q_head + sp.q_len) % QUEUE_CAP] = _v; sp.q_len++; }}\n"));
+                            out.push_str(&format!("{ind}  sp_dup_back(&sp);\n"));
                             ii += 2;
                             continue;
                         }
@@ -1004,6 +1004,16 @@ static inline void sp_dup(SpecialStorage* s, size_t sel) {
         if (s->p_len >= PORT_CAP) sp_overflow();
         s->port[s->p_len] = s->port_last;
         s->p_len++;
+    }
+}
+
+/* Duplicate the queue front onto the back: one rotation step, which is what a
+   duplicate immediately followed by a move to the same queue amounts to. */
+static inline void sp_dup_back(SpecialStorage* s) {
+    if (s->q_len > 0) {
+        if (s->q_len >= QUEUE_CAP) sp_overflow();
+        s->queue[(s->q_head + s->q_len) % QUEUE_CAP] = s->queue[s->q_head];
+        s->q_len++;
     }
 }
 
