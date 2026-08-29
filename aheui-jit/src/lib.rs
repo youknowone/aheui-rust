@@ -2216,8 +2216,20 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
                     };
                     let target = program.get_operand(pc - 1) as usize;
-                    if target == VAL_QUEUE || target == VAL_PORT {
-                        // Queue/Port keep the polymorphic residual (tail-append semantics).
+                    if target == VAL_QUEUE {
+                        // The operand is green, so `jit_sel_get_ref` resolves it
+                        // to one concrete list exactly as OP_SEL resolves
+                        // `selected`, and the tail-append becomes the same
+                        // monomorphic `queue_push` the OP_PUSH arm takes. The
+                        // residual it replaces re-dispatched on a target the
+                        // trace already knew, and its callee reached the
+                        // uninlined `Queue::push`.
+                        let target_ref = jit_sel_get_ref(state.storage_ref, target);
+                        lj::queue_push(target_ref, jit_tag_val_raw(moved));
+                    } else if target == VAL_PORT {
+                        // `Port::push` records `last_push`, which no inlined
+                        // helper writes, so the port keeps the polymorphic
+                        // residual.
                         jit_storage_push(state.storage_ref, target, jit_tag_val_raw(moved));
                     } else if target < bands {
                         // A move into the selected pool lands one below where
