@@ -846,6 +846,19 @@ pub fn nursery_bump_addrs() -> (usize, usize) {
     }
 }
 
+/// Stable address of the [`Nursery::free_list`] head, for the same allocator.
+///
+/// `take_node` takes from this list before it bumps, so an inline allocator
+/// that only bumps agrees with it only until a chunk fills: after that every
+/// allocation is served from the list, `free` stays at `end`, and the inline
+/// path can never fire again.
+pub fn nursery_free_list_addr() -> usize {
+    unsafe {
+        let p = std::ptr::addr_of_mut!(NURSERY);
+        std::ptr::addr_of!((*p).free_list) as usize
+    }
+}
+
 /// Allocate a zeroed `Node` without initializing fields.
 ///
 /// Serves the JIT's `GcAllocator`, so its nodes come from the same nursery the

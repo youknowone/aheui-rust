@@ -660,6 +660,9 @@ impl majit_gc::GcAllocator for NurseryGcAllocator {
     fn nursery_top_addr(&self) -> usize {
         aheui_runtime::storage::nursery_bump_addrs().1
     }
+    fn nursery_recycle_list_addr(&self) -> usize {
+        aheui_runtime::storage::nursery_free_list_addr()
+    }
     fn max_nursery_object_size(&self) -> usize {
         usize::MAX
     }
