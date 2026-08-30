@@ -69,6 +69,27 @@ pub fn trace_limit() -> u32 {
         .unwrap_or(TRACE_LIMIT)
 }
 
+/// A sweep override for the guard-failure count a guard must reach before its
+/// bridge is traced.
+///
+/// Unset, the driver keeps the parameter table's default. The reason to be
+/// able to move it is that this driver's guards fail far more often than a
+/// typical one — the self-interpreting corpus reaches five figures of guard
+/// failures against two figures of bridge compilations — so what the default
+/// is worth here is a measurement rather than an inheritance.
+///
+/// The measurement so far says: leave it. Wall time on the self-interpreter is
+/// flat from the default down to 15, and BELOW that the run stops being
+/// byte-exact — the same wrong output every time, from a guard-resume bridge
+/// entry rather than from anything this override touches. The override is
+/// therefore an instrument, not a tuning knob, and the defect it exposes is
+/// recorded where that entry is decided rather than here.
+fn trace_eagerness_override() -> Option<i64> {
+    std::env::var("AHEUI_TRACE_EAGERNESS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+}
+
 /// The last [`mainloop`] run's cumulative JIT counters.
 ///
 /// `mainloop` owns its `JitDriver` for the length of the run and drops it on
@@ -1619,6 +1640,9 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     driver.register_blackhole_allocator(AheuiBlackholeAllocator);
 
     driver.set_param("trace_limit", trace_limit() as i64);
+    if let Some(eagerness) = trace_eagerness_override() {
+        driver.set_param("trace_eagerness", eagerness);
+    }
 
     // `ALL_OPTS` minus `unroll`, a per-driver choice that affects nothing else
     // on the process. Peeling the preamble costs this driver more than it
