@@ -144,6 +144,12 @@ fn main() {
                     // `mainloop` is a crate-root (`lib.rs`) function, so its
                     // module-qualified identity is the bare name.
                     portal: majit_translate::CallPath::from_segments(["mainloop"]),
+                    // No synthetic runner wraps the portal here: the driver is
+                    // entered from the `#[jit_interp]` merge-point hook inside
+                    // `mainloop` itself, so there is no separate function whose
+                    // direct calls `guess_call_kind` should classify as
+                    // recursive.
+                    portal_runner: None,
                     greens: vec![
                         "pc".to_string(),
                         "is_queue".to_string(),
@@ -162,6 +168,10 @@ fn main() {
                     autoreds: false,
                     virtualizables: Vec::new(),
                     red_types: Vec::new(),
+                    // The marker's own graph is the one to register against:
+                    // `mainloop` reaches its `jit_merge_point` on the same
+                    // graph the dispatch loop runs, so no split copy is made.
+                    split_portal: false,
                 }],
             },
         },
