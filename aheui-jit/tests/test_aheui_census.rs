@@ -47,6 +47,7 @@ fn llbc_ready(required: &[&str]) -> bool {
 fn driver(portal: &[&str], greens: &[&str], reds: &[&str]) -> JitDriverSpec {
     JitDriverSpec {
         portal: CallPath::from_segments(portal.iter().copied()),
+        portal_runner: None,
         greens: greens.iter().map(|s| s.to_string()).collect(),
         reds: reds.iter().map(|s| s.to_string()).collect(),
         green_kinds: Vec::new(),
@@ -54,6 +55,7 @@ fn driver(portal: &[&str], greens: &[&str], reds: &[&str]) -> JitDriverSpec {
         autoreds: false,
         virtualizables: Vec::new(),
         red_types: Vec::new(),
+        split_portal: false,
     }
 }
 
