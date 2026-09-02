@@ -78,14 +78,14 @@ pub fn trace_limit() -> u32 {
 /// failures against two figures of bridge compilations — so what the default
 /// is worth here is a measurement rather than an inheritance.
 ///
-/// The measurement so far says: leave it. Wall time on the self-interpreter is
-/// flat across the band where the run is still byte-exact, and that band ends
-/// somewhere ABOVE 25: at 25 the self-interpreted quine exits 0 having printed
-/// only a prefix of its output, and the self-interpreted 99bottles does not
-/// terminate; 15 hangs the same way. Both failures are deterministic. They come
-/// from a guard-resume bridge entry rather than from anything this override
-/// touches. The override is therefore an instrument, not a tuning knob, and the
-/// defect it exposes is recorded where that entry is decided rather than here.
+/// The measurement so far says: leave it. Guard failures approximate
+/// `bridges_compiled x eagerness` — an admission toll each bridge pays before
+/// it compiles, not work the run loses — so lowering the value cuts the
+/// counter without moving wall time. Low values used to produce wrong answers
+/// on the self-interpreter; that came from unnormalized constants in the
+/// loop-header virtualizable boxes, and since the header started running
+/// `remove_consts_and_duplicates` the sweep is byte-exact down to 15. The
+/// override remains an instrument rather than a tuning knob.
 fn trace_eagerness_override() -> Option<i64> {
     std::env::var("AHEUI_TRACE_EAGERNESS")
         .ok()
@@ -462,6 +462,7 @@ fn word_abi_residual_addrs() -> Vec<i64> {
     const _: extern "C" fn(i64) -> i64 = jit_tag_word;
     const _: fn() -> i64 = jit_bigint_mode;
     const _: extern "C" fn() -> i64 = jit_band_count;
+    const _: extern "C" fn() -> i64 = jit_cap;
     const _: fn(Val, Val) -> Val = val_add;
     const _: fn(Val, Val) -> Val = val_sub;
     const _: fn(Val, Val) -> Val = val_mul;
@@ -478,6 +479,7 @@ fn word_abi_residual_addrs() -> Vec<i64> {
         jit_tag_word as *const () as usize as i64,
         jit_bigint_mode as *const () as usize as i64,
         jit_band_count as *const () as usize as i64,
+        jit_cap as *const () as usize as i64,
         val_add as *const () as usize as i64,
         val_sub as *const () as usize as i64,
         val_mul as *const () as usize as i64,
@@ -745,21 +747,34 @@ thread_local! {
 
 /// Operand words each banded stack pool keeps out of its node chain.
 ///
-/// A pool's band is a ring holding its **top** `CAP` elements: element at
-/// absolute height `h` lives at `pool * CAP + (h & CAP_MASK)`. Anything below
-/// that stays in the node chain, so a push past `CAP` evicts one word to the
+/// A pool's band is a ring holding its **top** `cap` elements: element at
+/// absolute height `h` lives at `pool * cap + (h & cap_mask)`. Anything below
+/// that stays in the node chain, so a push past `cap` evicts one word to the
 /// chain and a pop below it refills one word back — into the slot the pop just
-/// vacated, since `h` and `h - CAP` share a ring slot. Holding the top rather
+/// vacated, since `h` and `h - cap` share a ring slot. Holding the top rather
 /// than the bottom is what keeps both operands of a binary op on the same tier
 /// at every depth.
 ///
 /// A power of two, so the ring index is a mask. 64 covers the depth programs
 /// actually reach without paying for slots they never use — the declared length
-/// of a virtualizable array is what its per-compile cost scales with.
-pub const CAP: usize = 64;
-const _: () = assert!(CAP.is_power_of_two());
-/// `h & CAP_MASK` is `h`'s slot inside its pool's ring.
-pub const CAP_MASK: usize = CAP - 1;
+/// of a virtualizable array is what its per-compile cost scales with, and every
+/// deopt decodes and writes the whole array back. Programs whose stacks stay
+/// shallow pay that full length per guard failure for slots they never fill,
+/// which is why the size is selectable per run rather than fixed.
+pub const CAP_DEFAULT: usize = 64;
+/// The ring size of the running program: [`CAP_DEFAULT`], or the power of two
+/// `AHEUI_CAP` named. Stored once before the state arrays are sized and read
+/// through [`cap_selected`] / [`jit_cap`] everywhere else, so the array length,
+/// the traced index arithmetic and the root walk cannot disagree.
+static CAP_SELECTED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(CAP_DEFAULT);
+fn cap_selected() -> usize {
+    CAP_SELECTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// The ring size as a green — same footing as [`jit_band_count`].
+extern "C" fn jit_cap() -> i64 {
+    CAP_SELECTED.load(std::sync::atomic::Ordering::Relaxed) as i64
+}
 
 /// The live `AheuiState`, for [`walk_band_values`]. Zero until the mainloop
 /// registers it, which is also when the first band slot can hold a value.
@@ -778,7 +793,7 @@ fn walk_band_values(visit: &mut dyn FnMut(&mut Val)) {
         return;
     }
     let state = unsafe { &mut *(state_addr as *mut AheuiState) };
-    // The armed count, not `vals.len() / CAP`: a pool at or above it never
+    // The armed count, not `vals.len() / cap`: a pool at or above it never
     // takes a band arm, so its slots hold whatever an earlier arming left
     // there while its words are all in the chain, which the collector walks
     // on its own.
@@ -795,9 +810,10 @@ fn walk_band_values(visit: &mut dyn FnMut(&mut Val)) {
             state.depths[pool]
         };
         let depth = if depth < 0 { 0usize } else { depth as usize };
-        let held = depth.min(CAP);
+        let cap = cap_selected();
+        let held = depth.min(cap);
         for step in 0..held {
-            let slot = pool * CAP + ((depth - 1 - step) & CAP_MASK);
+            let slot = pool * cap + ((depth - 1 - step) & (cap - 1));
             // A `Val` is `#[repr(transparent)]` over the word the band stores,
             // so the slot is already the value; the reference just names it as
             // one.
@@ -822,7 +838,7 @@ extern "C" fn jit_band_count() -> i64 {
 /// Highest stack pool index a program selects or moves into, plus one.
 ///
 /// Only pools below this get a band in `vals`, so a program that stays in the
-/// first few pools declares a short array. A band is addressed as `pool * CAP`
+/// first few pools declares a short array. A band is addressed as `pool * cap`
 /// with no remapping table to read at run time, so the count is a ceiling, not
 /// a population.
 ///
@@ -884,9 +900,9 @@ fn banded_pool_count(program: &Program) -> usize {
 ///   `selected` changes.
 struct AheuiState {
     storage: Storage,
-    /// The top operand words of every pool, `STORAGE_COUNT * CAP` of them.
+    /// The top operand words of every pool, `bands * cap` of them.
     ///
-    /// Index `i * CAP + (h & CAP_MASK)` is pool `i`'s element at absolute
+    /// Index `i * cap + (h & cap_mask)` is pool `i`'s element at absolute
     /// height `h`, for the heights the window currently owns. Declared
     /// `[int; virt]` so an access promotes its index and answers out of the
     /// virtualizable's boxes rather than memory.
@@ -988,8 +1004,8 @@ impl AheuiState {
 
     /// Disagreement between a banded pool's depth and the chain under it.
     ///
-    /// A band holds a pool's top `CAP` words, so its chain holds exactly the
-    /// rest: `depth - CAP` of them, or none while the band is not yet full.
+    /// A band holds a pool's top `cap` words, so its chain holds exactly the
+    /// rest: `depth - cap` of them, or none while the band is not yet full.
     /// [`Storage::check_chains`] cannot see a break in that split, because
     /// each chain stays internally consistent across it; the program only
     /// notices opcodes later, when a refill pops a chain the depth said was
@@ -1002,7 +1018,7 @@ impl AheuiState {
             } else {
                 self.depths[pool]
             };
-            let want = (depth - CAP as i64).max(0);
+            let want = (depth - cap_selected() as i64).max(0);
             let have = self.storage.len_at(pool) as i64;
             if want != have {
                 return Some(format!(
@@ -1047,9 +1063,9 @@ impl AheuiState {
             }
         }
         // `len_at` counts the node chain, which is the pool's whole content
-        // only while the pool is unbanded. A banded pool keeps its top `CAP`
+        // only while the pool is unbanded. A banded pool keeps its top `cap`
         // words in `vals`, which the chain cannot see, and the number of them
-        // it holds is `min(stacksize, CAP)` — so the chain under-reports by
+        // it holds is `min(stacksize, cap)` — so the chain under-reports by
         // exactly the quantity that would be needed to correct it, and no
         // count derived from storage can name the pool's depth. `stacksize` is
         // a scalar state field written back from the walk immediately before
@@ -1449,6 +1465,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_write_utf8 => residual_void,
         jit_bigint_mode => elidable_int_cannot_raise,
         jit_band_count => elidable_int_cannot_raise,
+        jit_cap => elidable_int_cannot_raise,
         // Method-call results consumed as values are lowered through
         // `lower_method_call_value`.
         Program::get_req_size => elidable_int_cannot_raise,
@@ -1603,7 +1620,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // only the live branch reaches the optimised IR.
     // `bm` is pyre's own fifth green — see the module header. It binds through
     // the same pre-merge-point walker as `is_queue`.
-    greens = [pc, stackok, is_queue, bm, bands, program],
+    greens = [pc, stackok, is_queue, bm, bands, cap, program],
     recover = refresh_state_from_storage,
     switch_dispatch = true,
     native_tag_small = { jit_retag_small },
@@ -1665,12 +1682,26 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     }
 
     let mut pc: usize = 0;
+    // Resolved before the arrays are sized: everything downstream — the
+    // traced index arithmetic, the deopt writeback length, the root walk —
+    // reads the stored value, so this store is the single decision point.
+    // A value that is not a power of two would break the `& (cap - 1)` ring
+    // indexing, so it is refused rather than rounded. 1 is refused too: a
+    // one-slot ring evicts on every push and refills on every pop, which
+    // multiplies runtime past any measured budget.
+    if let Some(cap) = std::env::var("AHEUI_CAP")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|c| c.is_power_of_two() && *c >= 2)
+    {
+        CAP_SELECTED.store(cap, std::sync::atomic::Ordering::Relaxed);
+    }
     // rpaheui/aheui/aheui.py: reds=['stacksize','storage','selected']
     let mut state = AheuiState {
         storage: Storage::new(),
         vals: majit_metainterp::virt_array::VirtArray::filled(
             0i64,
-            banded_pool_count(program) * CAP,
+            banded_pool_count(program) * cap_selected(),
         ),
         // Sized like `vals`, not `STORAGE_COUNT`: every read and write of a
         // depth is gated on `< bands`, and `bands` never exceeds the banded
@@ -1700,8 +1731,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         .ok()
         .and_then(|t| t.parse::<usize>().ok())
     {
-        Some(limit) => limit.min(state.vals.len() / CAP),
-        None => state.vals.len() / CAP,
+        Some(limit) => limit.min(state.vals.len() / cap_selected()),
+        None => state.vals.len() / cap_selected(),
     };
     BAND_COUNT.store(arms, std::sync::atomic::Ordering::Relaxed);
 
@@ -1782,7 +1813,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(2085)
                 });
-                let cap: u32 = *HCAP.get_or_init(|| {
+                let hcap: u32 = *HCAP.get_or_init(|| {
                     std::env::var("MAJIT_HANDOFF_CAP")
                         .ok()
                         .and_then(|s| s.parse().ok())
@@ -1793,7 +1824,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 }
                 if HLATCH.load(std::sync::atomic::Ordering::Relaxed) {
                     let n = HCOUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if n < cap {
+                    if n < hcap {
                         let op0 = program.get_op(pc);
                         eprintln!(
                             "@@@HANDOFF#{n} pc={pc} op={op0} out={out} ss={} sel={}{}",
@@ -1818,6 +1849,11 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // The declared band count, bound alongside `bm` so an arm's
         // `state.selected < bands` test folds inside a specialised trace.
         let bands = jit_band_count() as usize;
+        // The ring size and its index mask, bound the same way: an arm's
+        // `sp >= cap` tier test and `& cap_mask` slot arithmetic fold inside
+        // a trace specialised on them.
+        let cap = jit_cap() as usize;
+        let cap_mask = cap - 1;
 
         // rpaheui/aheui/aheui.py: jit_merge_point
         // `; state` selects the single-pass close: the walk's final state is
@@ -1888,23 +1924,23 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if !stackok {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, program);
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, cap, program);
                     continue;
                 }
             }
             OP_JMP => {
                 pc = program.get_label(pc - 1);
                 stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, program);
+                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, cap, program);
                 continue;
             }
             OP_BRZ => {
                 // The pop is the same for every storage, and the zero test is
                 // one comparison on the popped `Val` either way.
                 let pop_word = if state.selected < bands {
-                    let top_slot = state.selected * CAP + (state.sp & CAP_MASK);
+                    let top_slot = state.selected * cap + (state.sp & cap_mask);
                     let word = state.vals[top_slot];
-                    if state.sp >= CAP {
+                    if state.sp >= cap {
                         state.vals[top_slot] =
                             jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                     }
@@ -1926,7 +1962,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 if zero != 0 {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, program);
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, cap, program);
                     continue;
                 }
             }
@@ -1944,7 +1980,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             // over the ring instead of the chain. `sp` is the depth after the
             // op, so the operands sit at `sp` and `sp - 1` and the result takes
             // the lower slot, the shape `linkedlist.py` has over the chain. At
-            // `sp >= CAP` the pop dropped the band's bottom element out of
+            // `sp >= cap` the pop dropped the band's bottom element out of
             // range, so the chain hands the next one back — into the slot the
             // popped operand just vacated, which is the same ring slot.
             OP_ADD => {
@@ -1956,8 +1992,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_add_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
-                        let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
                         let r1 = state.vals[r1_slot];
                         let r2 = state.vals[r2_slot];
                         let __band_word = if bm != 0 {
@@ -1966,7 +2002,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             bd::band_add_raw(r2, r1)
                         };
                         state.vals[r2_slot] = __band_word;
-                        if state.sp >= CAP {
+                        if state.sp >= cap {
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -1986,8 +2022,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_sub_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
-                        let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
                         let r1 = state.vals[r1_slot];
                         let r2 = state.vals[r2_slot];
                         let __band_word = if bm != 0 {
@@ -1996,7 +2032,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             bd::band_sub_raw(r2, r1)
                         };
                         state.vals[r2_slot] = __band_word;
-                        if state.sp >= CAP {
+                        if state.sp >= cap {
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2016,8 +2052,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_mul_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
-                        let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
                         let r1 = state.vals[r1_slot];
                         let r2 = state.vals[r2_slot];
                         let __band_word = if bm != 0 {
@@ -2026,7 +2062,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             bd::band_mul_raw(r2, r1)
                         };
                         state.vals[r2_slot] = __band_word;
-                        if state.sp >= CAP {
+                        if state.sp >= cap {
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2046,8 +2082,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_div_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
-                        let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
                         let r1 = state.vals[r1_slot];
                         let r2 = state.vals[r2_slot];
                         let __band_word = if bm != 0 {
@@ -2056,7 +2092,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             bd::band_div_raw(r2, r1)
                         };
                         state.vals[r2_slot] = __band_word;
-                        if state.sp >= CAP {
+                        if state.sp >= cap {
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2083,8 +2119,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_mod_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
-                        let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
                         let r1 = state.vals[r1_slot];
                         let r2 = state.vals[r2_slot];
                         let __band_word = if bm != 0 {
@@ -2093,7 +2129,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             bd::band_mod_raw(r2, r1)
                         };
                         state.vals[r2_slot] = __band_word;
-                        if state.sp >= CAP {
+                        if state.sp >= cap {
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2118,8 +2154,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     // statement-position `inline_int` call has no lowering and
                     // aborts the trace. Mirrors OP_POPNUM's pop shape.
                     if state.selected < bands {
-                        let top_slot = state.selected * CAP + (state.sp & CAP_MASK);
-                        if state.sp >= CAP {
+                        let top_slot = state.selected * cap + (state.sp & cap_mask);
+                        if state.sp >= cap {
                             state.vals[top_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2153,8 +2189,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else if state.selected < bands {
                     // `sp` is the depth after the push, so the new word takes
                     // the slot of height `sp - 1`.
-                    let free_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
-                    if state.sp > CAP {
+                    let free_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
+                    if state.sp > cap {
                         // The ring is full: the word this slot holds is the
                         // band's oldest and leaves for the chain.
                         lj::stack_push(state.selected_ref, jit_tag_val_raw(state.vals[free_slot]));
@@ -2176,10 +2212,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     } else if state.selected == VAL_PORT {
                         jit_storage_dup(state.storage_ref, state.selected);
                     } else if state.selected < bands {
-                        let src_slot = state.selected * CAP + ((state.sp - 2) & CAP_MASK);
-                        let free_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
+                        let src_slot = state.selected * cap + ((state.sp - 2) & cap_mask);
+                        let free_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
                         let top = state.vals[src_slot];
-                        if state.sp > CAP {
+                        if state.sp > cap {
                             lj::stack_push(
                                 state.selected_ref,
                                 jit_tag_val_raw(state.vals[free_slot]),
@@ -2198,8 +2234,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     // they embed, so there is no per-storage helper to pick
                     // between.
                     if state.selected < bands {
-                        let top_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
-                        let second_slot = state.selected * CAP + ((state.sp - 2) & CAP_MASK);
+                        let top_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
+                        let second_slot = state.selected * cap + ((state.sp - 2) & cap_mask);
                         let top = state.vals[top_slot];
                         state.vals[top_slot] = state.vals[second_slot];
                         state.vals[second_slot] = top;
@@ -2246,9 +2282,9 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                     // The moved word, taken off whichever tier holds the
                     // source pool's top.
                     let moved = if state.selected < bands {
-                        let top_slot = state.selected * CAP + (state.sp & CAP_MASK);
+                        let top_slot = state.selected * cap + (state.sp & cap_mask);
                         let word = state.vals[top_slot];
-                        if state.sp >= CAP {
+                        if state.sp >= cap {
                             state.vals[top_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2282,8 +2318,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             state.depths[target] as usize
                         };
                         let target_ref = jit_sel_get_ref(state.storage_ref, target);
-                        let free_slot = target * CAP + (depth & CAP_MASK);
-                        if depth >= CAP {
+                        let free_slot = target * cap + (depth & cap_mask);
+                        if depth >= cap {
                             lj::stack_push(target_ref, jit_tag_val_raw(state.vals[free_slot]));
                         }
                         state.vals[free_slot] = moved;
@@ -2316,8 +2352,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             lj::queue_cmp_raw(state.selected_ref);
                         }
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * CAP + (state.sp & CAP_MASK);
-                        let r2_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
                         let r1 = state.vals[r1_slot];
                         let r2 = state.vals[r2_slot];
                         let __band_word = if bm != 0 {
@@ -2326,7 +2362,7 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                             bd::band_cmp_raw(r2, r1)
                         };
                         state.vals[r2_slot] = __band_word;
-                        if state.sp >= CAP {
+                        if state.sp >= cap {
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2341,9 +2377,9 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_POPNUM => {
                 if stackok {
                     if state.selected < bands {
-                        let top_slot = state.selected * CAP + (state.sp & CAP_MASK);
+                        let top_slot = state.selected * cap + (state.sp & cap_mask);
                         let word = state.vals[top_slot];
-                        if state.sp >= CAP {
+                        if state.sp >= cap {
                             state.vals[top_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2357,9 +2393,9 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             OP_POPCHAR => {
                 if stackok {
                     if state.selected < bands {
-                        let top_slot = state.selected * CAP + (state.sp & CAP_MASK);
+                        let top_slot = state.selected * cap + (state.sp & cap_mask);
                         let word = state.vals[top_slot];
-                        if state.sp >= CAP {
+                        if state.sp >= cap {
                             state.vals[top_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
@@ -2383,8 +2419,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else if state.selected == VAL_PORT {
                     jit_storage_push(state.storage_ref, state.selected, v);
                 } else if state.selected < bands {
-                    let free_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
-                    if state.sp > CAP {
+                    let free_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
+                    if state.sp > cap {
                         lj::stack_push(state.selected_ref, jit_tag_val_raw(state.vals[free_slot]));
                     }
                     let __band_word = if bm != 0 {
@@ -2410,8 +2446,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
                 } else if state.selected == VAL_PORT {
                     jit_storage_push(state.storage_ref, state.selected, v);
                 } else if state.selected < bands {
-                    let free_slot = state.selected * CAP + ((state.sp - 1) & CAP_MASK);
-                    if state.sp > CAP {
+                    let free_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
+                    if state.sp > cap {
                         lj::stack_push(state.selected_ref, jit_tag_val_raw(state.vals[free_slot]));
                     }
                     let __band_word = if bm != 0 {
@@ -2448,12 +2484,14 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // at or above it holds every word in its chain, and its band slots are
     // whatever an earlier arming left there.
     let bands = jit_band_count() as usize;
+    let cap = cap_selected();
+    let cap_mask = cap - 1;
     let selected = state.selected;
     if selected != VAL_QUEUE && selected != VAL_PORT && selected < bands {
         if state.stacksize > 0 {
             let depth = state.stacksize as usize;
             aheui_runtime::value::val_from_raw_i64(
-                state.vals[selected * CAP + ((depth - 1) & CAP_MASK)],
+                state.vals[selected * cap + ((depth - 1) & cap_mask)],
             )
         } else {
             val_from_i32(0)
