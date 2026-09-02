@@ -1715,6 +1715,11 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // reclaimed by `Nursery::collect` walking these roots.
     aheui_runtime::storage::set_gc_roots(&mut state.storage as *mut Storage);
     register_aheui_copying_gc_jit_roots();
+    // Publish the storage for the output shims' diagnostic dump. It is taken
+    // from the same stationary `state` as the roots above, so the pointer does
+    // not change for the life of the run: it is published here, once, next to
+    // the other publications of it, rather than before every merge point.
+    WALK_STORAGE_PTR.with(|c| c.set(&state.storage as *const Storage as usize));
 
     // RPython `warmspot.py` `make_jitcodes() →
     // finish_setup(codewriter)` parity for state-field JIT: register the
@@ -1814,7 +1819,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         // `state.selected < bands` test folds inside a specialised trace.
         let bands = jit_band_count() as usize;
 
-        WALK_STORAGE_PTR.with(|c| c.set(&state.storage as *const Storage as usize));
         // rpaheui/aheui/aheui.py: jit_merge_point
         // `; state` selects the single-pass close: the walk's final state is
         // transferred into `state` here (via the hook's `recover`) instead of
