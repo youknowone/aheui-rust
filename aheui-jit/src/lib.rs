@@ -79,11 +79,13 @@ pub fn trace_limit() -> u32 {
 /// is worth here is a measurement rather than an inheritance.
 ///
 /// The measurement so far says: leave it. Wall time on the self-interpreter is
-/// flat from the default down to 15, and BELOW that the run stops being
-/// byte-exact — the same wrong output every time, from a guard-resume bridge
-/// entry rather than from anything this override touches. The override is
-/// therefore an instrument, not a tuning knob, and the defect it exposes is
-/// recorded where that entry is decided rather than here.
+/// flat across the band where the run is still byte-exact, and that band ends
+/// somewhere ABOVE 25: at 25 the self-interpreted quine exits 0 having printed
+/// only a prefix of its output, and the self-interpreted 99bottles does not
+/// terminate; 15 hangs the same way. Both failures are deterministic. They come
+/// from a guard-resume bridge entry rather than from anything this override
+/// touches. The override is therefore an instrument, not a tuning knob, and the
+/// defect it exposes is recorded where that entry is decided rather than here.
 fn trace_eagerness_override() -> Option<i64> {
     std::env::var("AHEUI_TRACE_EAGERNESS")
         .ok()
