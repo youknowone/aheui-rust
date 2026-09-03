@@ -835,6 +835,33 @@ extern "C" fn jit_band_count() -> i64 {
     BAND_COUNT.load(std::sync::atomic::Ordering::Relaxed) as i64
 }
 
+/// A ring size licensed by the compiler's per-pool depth bounds, or `None`
+/// to keep the default.
+///
+/// `co_stacksize` consumption: when every banded pool has a proven depth
+/// bound under [`CAP_DEFAULT`], a ring that big never evicts, so the array
+/// carries — and every deopt writes back — only the slots the program can
+/// fill. An unbounded pool keeps the default: the bound is about the peak,
+/// and the peak says nothing about how much of it is hot, so shrinking on
+/// anything less than a proof risks trading eviction traffic for the deopt
+/// savings.
+fn proven_cap(program: &Program) -> Option<usize> {
+    let bands = banded_pool_count(program);
+    let bounds = ahsembler::depth::max_pool_depths(program);
+    let mut deepest: usize = 0;
+    for (pool, bound) in bounds.iter().enumerate().take(bands) {
+        if pool == VAL_QUEUE || pool == VAL_PORT {
+            continue;
+        }
+        match bound {
+            ahsembler::depth::DepthBound::Bounded(b) => deepest = deepest.max(*b as usize),
+            ahsembler::depth::DepthBound::Unbounded => return None,
+        }
+    }
+    let cap = deepest.next_power_of_two().max(2);
+    (cap < CAP_DEFAULT).then_some(cap)
+}
+
 /// Highest stack pool index a program selects or moves into, plus one.
 ///
 /// Only pools below this get a band in `vals`, so a program that stays in the
@@ -1694,6 +1721,8 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         .and_then(|v| v.parse::<usize>().ok())
         .filter(|c| c.is_power_of_two() && *c >= 2)
     {
+        CAP_SELECTED.store(cap, std::sync::atomic::Ordering::Relaxed);
+    } else if let Some(cap) = proven_cap(program) {
         CAP_SELECTED.store(cap, std::sync::atomic::Ordering::Relaxed);
     }
     // rpaheui/aheui/aheui.py: reds=['stacksize','storage','selected']
