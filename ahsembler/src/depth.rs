@@ -204,6 +204,165 @@ pub fn max_pool_depths(program: &Program) -> [DepthBound; STORAGE_COUNT] {
     result
 }
 
+/// Exact per-pool peak depths, measured by running the program.
+///
+/// The static bounds above cannot count loop trips, so a counted loop that
+/// nets a push is Unbounded there even when the real peak is small. A program
+/// with no input is deterministic, which makes the exact answer computable —
+/// by paying the program's own runtime. This caps that price with a step
+/// budget and answers only when the run both finished inside it and stayed
+/// on ground the simulation models exactly:
+///
+/// * an input opcode, or any touch of the port pool, means the run is not
+///   deterministic from the program alone;
+/// * an `i64` overflow means the real run continues in bigint mode the
+///   simulation does not model;
+/// * a division by zero or an underflowing pop means the real run diverges
+///   from anything worth measuring.
+///
+/// Every one of those answers `None` — never an approximation — so a `Some`
+/// is the true peak of the real run and a ring sized to it can never evict.
+pub fn measured_pool_depths(
+    program: &Program,
+    step_budget: u64,
+) -> Option<[u32; STORAGE_COUNT]> {
+    for pc in 0..program.size {
+        let op = program.get_op(pc);
+        if matches!(op, OP_PUSHNUM | OP_PUSHCHAR) {
+            return None;
+        }
+        if matches!(op, OP_SEL | OP_MOV) && program.get_operand(pc) as usize == VAL_PORT {
+            return None;
+        }
+    }
+
+    let mut pools: Vec<Vec<i64>> = vec![Vec::new(); STORAGE_COUNT];
+    let mut maxd = [0u32; STORAGE_COUNT];
+    let mut selected = 0usize;
+    let mut pc = 0usize;
+    let mut steps = 0u64;
+
+    fn pop(pools: &mut [Vec<i64>], pool: usize) -> Option<i64> {
+        if pools[pool].is_empty() {
+            return None;
+        }
+        Some(if pool == VAL_QUEUE {
+            pools[pool].remove(0)
+        } else {
+            pools[pool].pop().unwrap()
+        })
+    }
+
+    while pc < program.size {
+        steps += 1;
+        if steps > step_budget {
+            return None;
+        }
+        let op = program.get_op(pc);
+        let operand = program.get_operand(pc);
+        let mut push = |pools: &mut [Vec<i64>], maxd: &mut [u32; STORAGE_COUNT], pool: usize, v: i64| {
+            pools[pool].push(v);
+            maxd[pool] = maxd[pool].max(pools[pool].len() as u32);
+        };
+        match op {
+            OP_HALT => break,
+            OP_JMP => {
+                pc = program.get_label(pc);
+                if pc >= program.size {
+                    return None;
+                }
+                continue;
+            }
+            OP_BRZ => {
+                let v = pop(&mut pools, selected)?;
+                if v == 0 {
+                    pc = program.get_label(pc);
+                    if pc >= program.size {
+                        return None;
+                    }
+                    continue;
+                }
+            }
+            OP_BRPOP1 | OP_BRPOP2 => {
+                let need = if op == OP_BRPOP1 { 1 } else { 2 };
+                if pools[selected].len() < need {
+                    pc = program.get_label(pc);
+                    if pc >= program.size {
+                        return None;
+                    }
+                    continue;
+                }
+            }
+            OP_SEL => {
+                selected = operand as usize;
+                if selected >= STORAGE_COUNT {
+                    return None;
+                }
+            }
+            OP_MOV => {
+                let v = pop(&mut pools, selected)?;
+                let target = operand as usize;
+                if target >= STORAGE_COUNT {
+                    return None;
+                }
+                push(&mut pools, &mut maxd, target, v);
+            }
+            OP_PUSH => push(&mut pools, &mut maxd, selected, operand as i64),
+            OP_DUP => {
+                if pools[selected].is_empty() {
+                    return None;
+                }
+                if selected == VAL_QUEUE {
+                    let v = pools[selected][0];
+                    pools[selected].insert(0, v);
+                    maxd[selected] = maxd[selected].max(pools[selected].len() as u32);
+                } else {
+                    let v = *pools[selected].last().unwrap();
+                    push(&mut pools, &mut maxd, selected, v);
+                }
+            }
+            OP_SWAP => {
+                let n = pools[selected].len();
+                if n < 2 {
+                    return None;
+                }
+                if selected == VAL_QUEUE {
+                    pools[selected].swap(0, 1);
+                } else {
+                    pools[selected].swap(n - 1, n - 2);
+                }
+            }
+            OP_POP | OP_POPNUM | OP_POPCHAR => {
+                pop(&mut pools, selected)?;
+            }
+            OP_ADD | OP_SUB | OP_MUL | OP_DIV | OP_MOD | OP_CMP => {
+                let b = pop(&mut pools, selected)?;
+                let a = pop(&mut pools, selected)?;
+                let r = match op {
+                    OP_ADD => a.checked_add(b)?,
+                    OP_SUB => a.checked_sub(b)?,
+                    OP_MUL => a.checked_mul(b)?,
+                    OP_DIV | OP_MOD => {
+                        if b == 0 || (a == i64::MIN && b == -1) {
+                            return None;
+                        }
+                        if op == OP_DIV {
+                            floor_div_i64(a, b)
+                        } else {
+                            floor_mod_i64(a, b)
+                        }
+                    }
+                    _ => (a >= b) as i64,
+                };
+                push(&mut pools, &mut maxd, selected, r);
+            }
+            _ => {}
+        }
+        pc += 1;
+    }
+    Some(maxd)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +435,39 @@ mod tests {
         let d = max_pool_depths(&program);
         assert_eq!(d[1], DepthBound::Bounded(1));
         assert_eq!(d[2], DepthBound::Bounded(1));
+    }
+
+    #[test]
+    fn a_finished_run_measures_the_exact_peak() {
+        let program = crate::compile("반반반희", OptimizationLevel::O1);
+        let d = measured_pool_depths(&program, 1_000).unwrap();
+        assert_eq!(d[0], 3);
+        assert_eq!(d[1], 0);
+    }
+
+    #[test]
+    fn an_input_opcode_declines_the_measurement() {
+        // 방 reads a number from input.
+        let program = crate::compile("방희", OptimizationLevel::O0);
+        assert!(measured_pool_depths(&program, 1_000).is_none());
+    }
+
+    #[test]
+    fn a_budget_overrun_declines_the_measurement() {
+        // A bare wrapping row of pushes never halts.
+        let program = crate::compile("반반반", OptimizationLevel::O1);
+        assert!(measured_pool_depths(&program, 10_000).is_none());
+    }
+
+    #[test]
+    fn a_zero_divisor_declines_the_measurement() {
+        let mut program = Program {
+            opcodes: vec![OP_PUSH, OP_PUSH, OP_DIV, OP_HALT],
+            values: vec![4, 0, 0, 0],
+            labels: Default::default(),
+            size: 4,
+        };
+        program.resolve_jump_targets();
+        assert!(measured_pool_depths(&program, 1_000).is_none());
     }
 }

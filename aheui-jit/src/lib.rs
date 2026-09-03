@@ -849,14 +849,30 @@ fn proven_cap(program: &Program) -> Option<usize> {
     let bands = banded_pool_count(program);
     let bounds = ahsembler::depth::max_pool_depths(program);
     let mut deepest: usize = 0;
+    let mut measured: Option<[u32; STORAGE_COUNT]> = None;
     for (pool, bound) in bounds.iter().enumerate().take(bands) {
         if pool == VAL_QUEUE || pool == VAL_PORT {
             continue;
         }
-        match bound {
-            ahsembler::depth::DepthBound::Bounded(b) => deepest = deepest.max(*b as usize),
-            ahsembler::depth::DepthBound::Unbounded => return None,
-        }
+        let bound = match bound {
+            ahsembler::depth::DepthBound::Bounded(b) => *b as usize,
+            // The static lattice cannot count loop trips, so a counted loop
+            // that nets a push is Unbounded there even when the real peak is
+            // small. An input-free program is deterministic, so the exact
+            // peak is measurable by running it; the budget (~1ms of
+            // interpretation) keeps that from taxing the start of a long
+            // program, which simply keeps the default. A `Some` is the real
+            // run's exact peak — see `measured_pool_depths` — so the ring
+            // this sizes can never evict.
+            ahsembler::depth::DepthBound::Unbounded => {
+                if measured.is_none() {
+                    measured =
+                        Some(ahsembler::depth::measured_pool_depths(program, 250_000)?);
+                }
+                measured.unwrap()[pool] as usize
+            }
+        };
+        deepest = deepest.max(bound);
     }
     let cap = deepest.next_power_of_two().max(2);
     (cap < CAP_DEFAULT).then_some(cap)
