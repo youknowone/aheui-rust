@@ -23,10 +23,14 @@ fn parse_opt_level(value: &str) -> Result<ahsembler::OptimizationLevel, String> 
 
 #[derive(ClapArgs, Debug)]
 struct RunArgs {
-    #[cfg(all(feature = "naive", feature = "jit"))]
-    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_jit",
-        help = "Force JIT execution (default)")]
-    jit: bool,
+    #[cfg(feature = "jit")]
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "",
+        value_name = "PARAMS",
+        help = "Force JIT execution (default). `--jit=name=value,...` sets JIT \
+                parameters (e.g. `--jit=stack_cap=16,trace_limit=20000`); \
+                `--jit=off` disables the JIT")]
+    #[cfg_attr(all(feature = "naive", feature = "jit"), arg(conflicts_with = "no_jit"))]
+    jit: Option<String>,
 
     #[cfg(all(feature = "naive", feature = "jit"))]
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "jit",
@@ -62,7 +66,10 @@ impl RunArgs {
     fn use_jit(&self) -> bool {
         #[cfg(all(feature = "naive", feature = "jit"))]
         {
-            self.jit || !self.no_jit
+            if self.jit.as_deref() == Some("off") {
+                return false;
+            }
+            self.jit.is_some() || !self.no_jit
         }
         #[cfg(all(feature = "jit", not(feature = "naive")))]
         {
@@ -240,6 +247,16 @@ fn maybe_print_jit_stats() {
 fn run_program(args: RunArgs) -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "jit")]
     aheui_jit::init_gc_subsystem();
+
+    #[cfg(feature = "jit")]
+    match args.jit.as_deref() {
+        Some("off") => {
+            #[cfg(not(feature = "naive"))]
+            return Err("--jit=off needs a binary built with the naive interpreter".into());
+        }
+        Some(params) if !params.is_empty() => aheui_jit::set_user_jit_params(params)?,
+        _ => {}
+    }
 
     let contents = args.input()?;
     let program = compile_program(&contents, args.opt_level);

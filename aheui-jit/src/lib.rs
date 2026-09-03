@@ -92,6 +92,77 @@ fn trace_eagerness_override() -> Option<i64> {
         .and_then(|v| v.parse().ok())
 }
 
+/// `--jit name=value,...` pairs, staged by [`set_user_jit_params`] before
+/// [`mainloop`] builds the driver that consumes them.
+static USER_JIT_PARAMS: std::sync::Mutex<Vec<(String, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The names forwarded verbatim to the driver's `set_param`. The list mirrors
+/// the names `warmstate` dispatches on; a name outside it is refused at the
+/// command line instead of silently doing nothing.
+const DRIVER_PARAM_NAMES: &[&str] = &[
+    "threshold",
+    "function_threshold",
+    "trace_eagerness",
+    "decay",
+    "trace_limit",
+    "inlining",
+    "loop_longevity",
+    "retrace_limit",
+    "pureop_historylength",
+    "max_retrace_guards",
+    "max_unroll_loops",
+    "disable_unrolling",
+    "max_unroll_recursion",
+    "max_inline_depth",
+    "vec",
+    "vectorize",
+    "vec_all",
+    "vec_cost",
+];
+
+/// Stage the tunable JIT parameters from a user-supplied string in the
+/// `set_user_param` format: `name=value` pairs separated by commas. `off` is
+/// the caller's to handle (it decides which interpreter runs at all), and
+/// `default` stages nothing — at startup nothing has been changed yet.
+///
+/// Two names are not driver parameters: `enable_opts` (string-valued pass
+/// list) and `stack_cap` (the band ring size, consumed by `mainloop` before
+/// the state arrays are sized, where a non-power-of-two would break the
+/// `& (cap - 1)` ring indexing — hence the shape check here).
+pub fn set_user_jit_params(text: &str) -> Result<(), String> {
+    if text == "default" {
+        return Ok(());
+    }
+    let mut staged = Vec::new();
+    for part in text.split(',') {
+        let part = part.trim();
+        let Some((name, value)) = part.split_once('=') else {
+            return Err(format!("--jit parameter without '=': `{part}`"));
+        };
+        match name {
+            "stack_cap" => {
+                let cap = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("stack_cap is not a number: `{value}`"))?;
+                if !cap.is_power_of_two() || cap < 2 {
+                    return Err(format!("stack_cap must be a power of two >= 2: {cap}"));
+                }
+            }
+            "enable_opts" => {}
+            _ if DRIVER_PARAM_NAMES.contains(&name) => {
+                value
+                    .parse::<i64>()
+                    .map_err(|_| format!("{name} is not a number: `{value}`"))?;
+            }
+            _ => return Err(format!("unknown --jit parameter: `{name}`")),
+        }
+        staged.push((name.to_string(), value.to_string()));
+    }
+    USER_JIT_PARAMS.lock().unwrap().extend(staged);
+    Ok(())
+}
+
 /// The last [`mainloop`] run's cumulative JIT counters.
 ///
 /// `mainloop` owns its `JitDriver` for the length of the run and drops it on
@@ -763,7 +834,8 @@ thread_local! {
 /// which is why the size is selectable per run rather than fixed.
 pub const CAP_DEFAULT: usize = 64;
 /// The ring size of the running program: [`CAP_DEFAULT`], or the power of two
-/// `AHEUI_CAP` named. Stored once before the state arrays are sized and read
+/// `--jit=stack_cap=N` or `AHEUI_CAP` named — the argument outranks the
+/// variable. Stored once before the state arrays are sized and read
 /// through [`cap_selected`] / [`jit_cap`] everywhere else, so the array length,
 /// the traced index arithmetic and the root walk cannot disagree.
 static CAP_SELECTED: std::sync::atomic::AtomicUsize =
@@ -1724,6 +1796,18 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         Err(_) => driver.set_param_enable_opts(ENABLE_OPTS),
     }
 
+    // `--jit` pairs land after the environment-derived settings above: an
+    // argument on the command line outranks an ambient variable. `stack_cap`
+    // is not a driver parameter — it is consumed below, before the state
+    // arrays are sized.
+    for (name, value) in USER_JIT_PARAMS.lock().unwrap().iter() {
+        match name.as_str() {
+            "stack_cap" => {}
+            "enable_opts" => driver.set_param_enable_opts(value),
+            _ => driver.set_param(name, value.parse().unwrap_or(0)),
+        }
+    }
+
     let mut pc: usize = 0;
     // Resolved before the arrays are sized: everything downstream — the
     // traced index arithmetic, the deopt writeback length, the root walk —
@@ -1732,11 +1816,19 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // indexing, so it is refused rather than rounded. 1 is refused too: a
     // one-slot ring evicts on every push and refills on every pop, which
     // multiplies runtime past any measured budget.
-    if let Some(cap) = std::env::var("AHEUI_CAP")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .filter(|c| c.is_power_of_two() && *c >= 2)
-    {
+    let user_cap = USER_JIT_PARAMS
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(name, _)| name == "stack_cap")
+        .and_then(|(_, value)| value.parse::<usize>().ok());
+    if let Some(cap) = user_cap.or_else(|| {
+        std::env::var("AHEUI_CAP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|c| c.is_power_of_two() && *c >= 2)
+    }) {
         CAP_SELECTED.store(cap, std::sync::atomic::Ordering::Relaxed);
     } else if let Some(cap) = proven_cap(program) {
         CAP_SELECTED.store(cap, std::sync::atomic::Ordering::Relaxed);
