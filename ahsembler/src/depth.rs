@@ -260,7 +260,7 @@ pub fn measured_pool_depths(
         }
         let op = program.get_op(pc);
         let operand = program.get_operand(pc);
-        let mut push = |pools: &mut [Vec<i64>], maxd: &mut [u32; STORAGE_COUNT], pool: usize, v: i64| {
+        let push = |pools: &mut [Vec<i64>], maxd: &mut [u32; STORAGE_COUNT], pool: usize, v: i64| {
             pools[pool].push(v);
             maxd[pool] = maxd[pool].max(pools[pool].len() as u32);
         };
