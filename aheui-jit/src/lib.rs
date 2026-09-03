@@ -826,8 +826,14 @@ thread_local! {
 /// than the bottom is what keeps both operands of a binary op on the same tier
 /// at every depth.
 ///
-/// A power of two, so the ring index is a mask. 64 covers the depth programs
-/// actually reach without paying for slots they never use — the declared length
+/// A power of two, so the ring index is a mask. It is the size a program gets
+/// when neither the static bound nor the measurement names one — an
+/// input-dependent program, whose depth is a property of the input as much as
+/// of the code. Running `aheui.aheui` is that case, and its own scratch pool
+/// stays eight deep whichever guest it interprets, so `--jit=stack_cap=8` is
+/// worth naming there; the default has to cover the programs that go deeper
+/// instead. 64 covers the depth programs actually reach without paying for
+/// slots they never use — the declared length
 /// of a virtualizable array is what its per-compile cost scales with, and every
 /// deopt decodes and writes the whole array back. Programs whose stacks stay
 /// shallow pay that full length per guard failure for slots they never fill,
