@@ -4,6 +4,7 @@ pub mod cfg_linearize;
 pub mod cfg_optimize;
 pub mod compiler;
 pub mod consts;
+pub mod depth;
 pub mod stackify;
 
 use compiler::{Compiler, Program};
