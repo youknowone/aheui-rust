@@ -8,6 +8,15 @@
 //! whose body nets a push grows without limit — and every imprecision in the
 //! analysis widens toward that answer, never below the true depth.
 //!
+//! Two things carry the precision. The analysis is polyvariant in the
+//! selected pool — a state is keyed by `(pc, selected)` rather than joining a
+//! set of candidates — so every push and pop names one pool and a loop over
+//! one pool cannot inflate another. And `OP_BRPOP*` is read as what the
+//! mainloop does with it: the branch is taken exactly when the selected pool
+//! holds fewer than `OP_REQSIZE` elements, which is the only statement about
+//! an upper bound a stack machine ever makes, so the taken edge carries that
+//! bound and the fall-through is dropped where the bound cannot reach it.
+//!
 //! Runs on the final linear program, after `resolve_jump_targets`: jump
 //! operands must already be program counters. An operand outside the program
 //! makes the whole result unbounded rather than a panic.
@@ -16,6 +25,7 @@
 
 use crate::compiler::Program;
 use crate::consts::*;
+use std::collections::HashMap;
 
 /// An upper bound on a pool's element count, or the admission that none was
 /// proven.
@@ -37,11 +47,11 @@ impl DepthBound {
     /// [`WIDEN_LIMIT`] stops growing by becoming unbounded, which is what
     /// makes the fixpoint finite: masks only gain bits and bounds only move
     /// up a finite lattice.
-    fn add(self, delta: i32) -> Self {
+    fn add(self, delta: i32, ceiling: u32) -> Self {
         match self {
             Self::Bounded(b) => {
                 let next = (b as i64 + delta as i64).max(0);
-                if next > WIDEN_LIMIT as i64 {
+                if next > ceiling as i64 {
                     Self::Unbounded
                 } else {
                     Self::Bounded(next as u32)
@@ -50,125 +60,154 @@ impl DepthBound {
             Self::Unbounded => Self::Unbounded,
         }
     }
-}
 
-/// Bounds above this are as good as none: the consumer sizes small per-pool
-/// buffers, and a four-figure depth already exceeds every size worth
-/// declaring.
-const WIDEN_LIMIT: u32 = 4096;
-
-/// Abstract state at a program counter: which pools `OP_SEL` may have
-/// selected on some path here (a bitmask over the pool index), and each
-/// pool's depth upper bound.
-#[derive(Clone, PartialEq)]
-struct State {
-    selected: u32,
-    depths: [DepthBound; STORAGE_COUNT],
-}
-
-impl State {
-    fn join(&self, other: &Self) -> Self {
-        let mut depths = self.depths;
-        for (d, o) in depths.iter_mut().zip(other.depths.iter()) {
-            *d = d.join(*o);
+    /// Meet with a known upper bound. An unbounded value becomes `hi`: the
+    /// caller states a limit that holds on every path it applies this to.
+    fn at_most(self, hi: u32) -> Self {
+        match self {
+            Self::Bounded(b) => Self::Bounded(b.min(hi)),
+            Self::Unbounded => Self::Bounded(hi),
         }
-        State {
-            selected: self.selected | other.selected,
-            depths,
+    }
+
+    /// Whether this bound admits a depth of `n` or more.
+    fn can_reach(self, n: u32) -> bool {
+        match self {
+            Self::Bounded(b) => b >= n,
+            Self::Unbounded => true,
         }
     }
 }
 
-/// The sound direction for every ambiguity is "the pool got deeper":
+/// The default ceiling a bound widens at — see [`max_pool_depths_up_to`] for
+/// the caller-supplied one. Bounds above this are as good as none: the
+/// consumers size small per-pool buffers, and a four-figure depth already
+/// exceeds every size worth declaring.
+const WIDEN_LIMIT: u32 = 4096;
+
+/// Depth bounds for every pool at one program point.
+type Depths = [DepthBound; STORAGE_COUNT];
+
+/// The sound direction for every ambiguity is "the pool got deeper", and the
+/// one ambiguity the analysis refuses to carry is *which* pool is selected.
 ///
-/// * A push under an ambiguous `selected` adds one to every pool the mask
-///   names — whichever pool really received it stays covered.
-/// * A pop under an ambiguous `selected` subtracts from nothing: a pool that
-///   was not the one popped keeps its old depth, so the old bound must stand.
-/// * A pop under a unique `selected` does subtract — the pool's true depth
-///   fell by exactly one on every path through this op.
-fn transfer(state: &mut State, op: u8, operand: i32) {
+/// Joining states that reached a program counter under different `OP_SEL`
+/// values would force every push to credit each candidate pool — a loop that
+/// pushes onto one pool would then look like it grows every other one too, and
+/// a pool the loop never touches comes out unbounded. So the analysis is
+/// polyvariant in the selected pool instead: a state is keyed by the pair
+/// `(pc, selected)`, every push and pop names exactly one pool, and joins only
+/// ever merge states that agree about what is selected. `OP_SEL` operands are
+/// program constants, so the number of keys is bounded by the program size
+/// times the pool count.
+fn transfer(depths: &mut Depths, selected: usize, op: u8, operand: i32, ceiling: u32) {
     match op {
-        OP_SEL => {
-            let pool = operand as usize;
-            state.selected = if pool < STORAGE_COUNT {
-                1 << pool
-            } else {
-                (1 << STORAGE_COUNT) - 1
-            };
-        }
+        OP_SEL => {}
         OP_MOV => {
-            if state.selected.count_ones() == 1 {
-                let s = state.selected.trailing_zeros() as usize;
-                state.depths[s] = state.depths[s].add(-1);
-            }
+            depths[selected] = depths[selected].add(-1, ceiling);
             let target = operand as usize;
-            if target < STORAGE_COUNT {
-                state.depths[target] = state.depths[target].add(1);
-            } else {
-                for d in state.depths.iter_mut() {
-                    *d = d.add(1);
-                }
-            }
+            depths[target] = depths[target].add(1, ceiling);
         }
         _ => {
             let delta = OP_STACKADD[op as usize] - OP_STACKDEL[op as usize];
-            if state.selected.count_ones() == 1 {
-                let s = state.selected.trailing_zeros() as usize;
-                state.depths[s] = state.depths[s].add(delta);
-            } else if delta > 0 {
-                for pool in 0..STORAGE_COUNT {
-                    if state.selected & (1 << pool) != 0 {
-                        state.depths[pool] = state.depths[pool].add(delta);
-                    }
-                }
-            }
+            depths[selected] = depths[selected].add(delta, ceiling);
         }
     }
 }
+
+/// States expanded before the analysis gives up and answers unbounded.
+///
+/// The lattice is finite on its own, but a program whose bounds crawl toward
+/// the ceiling one push at a time can visit a key once per value it passes
+/// through. This bounds the price of an answer the way `measured_pool_depths`
+/// bounds the price of the exact one.
+const STATE_BUDGET: usize = 16_384;
 
 /// Per-pool depth upper bounds for `program`, or [`DepthBound::Unbounded`]
 /// where no bound was proven.
 pub fn max_pool_depths(program: &Program) -> [DepthBound; STORAGE_COUNT] {
+    max_pool_depths_up_to(program, WIDEN_LIMIT)
+}
+
+/// [`max_pool_depths`] widening at `ceiling` instead of [`WIDEN_LIMIT`].
+///
+/// A caller that will not use a bound above some size — one sizing a buffer it
+/// caps anyway — pays for the precision it can use and no more: the lattice is
+/// as tall as the ceiling, so a lower one converges in fewer steps. A pool
+/// whose true depth is above the ceiling comes back unbounded.
+pub fn max_pool_depths_up_to(program: &Program, ceiling: u32) -> [DepthBound; STORAGE_COUNT] {
     let mut result = [DepthBound::Bounded(0); STORAGE_COUNT];
     if program.size == 0 {
         return result;
     }
 
-    let mut states: Vec<Option<State>> = vec![None; program.size];
-    states[0] = Some(State {
-        selected: 1,
-        depths: [DepthBound::Bounded(0); STORAGE_COUNT],
-    });
-    let mut worklist: Vec<usize> = vec![0];
+    // Keyed by `(pc, selected)` — see `transfer`.
+    let mut states: HashMap<(usize, usize), Depths> = HashMap::new();
+    let mut worklist: Vec<(usize, usize)> = Vec::new();
 
-    let propagate =
-        |states: &mut Vec<Option<State>>, worklist: &mut Vec<usize>, pc: usize, state: &State| {
-            match &states[pc] {
-                Some(old) => {
-                    let joined = old.join(state);
-                    if joined != *old {
-                        states[pc] = Some(joined);
-                        worklist.push(pc);
+    fn propagate(
+        states: &mut HashMap<(usize, usize), Depths>,
+        worklist: &mut Vec<(usize, usize)>,
+        key: (usize, usize),
+        depths: &Depths,
+    ) {
+        match states.get_mut(&key) {
+            Some(old) => {
+                let mut changed = false;
+                for (o, n) in old.iter_mut().zip(depths.iter()) {
+                    let joined = o.join(*n);
+                    if joined != *o {
+                        *o = joined;
+                        changed = true;
                     }
                 }
-                None => {
-                    states[pc] = Some(state.clone());
-                    worklist.push(pc);
+                if changed {
+                    worklist.push(key);
                 }
             }
-        };
+            None => {
+                states.insert(key, *depths);
+                worklist.push(key);
+            }
+        }
+    }
 
-    while let Some(pc) = worklist.pop() {
-        let Some(entry) = states[pc].clone() else {
+    // `mainloop` starts on pool 0 with every pool empty.
+    propagate(
+        &mut states,
+        &mut worklist,
+        (0, 0),
+        &[DepthBound::Bounded(0); STORAGE_COUNT],
+    );
+
+    let mut expanded = 0usize;
+    while let Some(key) = worklist.pop() {
+        expanded += 1;
+        if expanded > STATE_BUDGET {
+            return [DepthBound::Unbounded; STORAGE_COUNT];
+        }
+        let (pc, selected) = key;
+        let Some(entry) = states.get(&key).copied() else {
             continue;
         };
         let op = program.get_op(pc);
         let operand = program.get_operand(pc);
 
-        let mut state = entry;
-        transfer(&mut state, op, operand);
-        for (r, d) in result.iter_mut().zip(state.depths.iter()) {
+        // A pool index outside the storage is not something the analysis can
+        // name a bound for, and it cannot happen on a program the compiler
+        // produced; answering unbounded keeps the surface total.
+        if matches!(op, OP_SEL | OP_MOV) && operand as usize >= STORAGE_COUNT {
+            return [DepthBound::Unbounded; STORAGE_COUNT];
+        }
+        let next_selected = if op == OP_SEL {
+            operand as usize
+        } else {
+            selected
+        };
+
+        let mut depths = entry;
+        transfer(&mut depths, selected, op, operand, ceiling);
+        for (r, d) in result.iter_mut().zip(depths.iter()) {
             *r = r.join(*d);
         }
 
@@ -176,26 +215,59 @@ pub fn max_pool_depths(program: &Program) -> [DepthBound; STORAGE_COUNT] {
             OP_HALT => {}
             OP_JMP => {
                 let target = program.get_label(pc);
-                if target < program.size {
-                    propagate(&mut states, &mut worklist, target, &state);
-                } else {
+                if target >= program.size {
                     return [DepthBound::Unbounded; STORAGE_COUNT];
+                }
+                propagate(&mut states, &mut worklist, (target, next_selected), &depths);
+            }
+            // `mainloop` takes the branch when `!stackok`, that is when the
+            // selected pool holds fewer than `OP_REQSIZE[op]` elements. So the
+            // taken edge carries a state whose depth is at most one below that
+            // requirement — the guard is where a bound comes from at all, since
+            // nothing else in a stack machine states an upper bound — and the
+            // fall-through carries one whose depth is at least it, which makes
+            // the fall-through unreachable when the bound cannot reach it.
+            OP_BRPOP1 | OP_BRPOP2 => {
+                let need = OP_REQSIZE[op as usize] as u32;
+                let target = program.get_label(pc);
+                if target >= program.size {
+                    return [DepthBound::Unbounded; STORAGE_COUNT];
+                }
+                let mut taken = depths;
+                taken[selected] = taken[selected].at_most(need - 1);
+                propagate(&mut states, &mut worklist, (target, next_selected), &taken);
+                if depths[selected].can_reach(need) && pc + 1 < program.size {
+                    propagate(
+                        &mut states,
+                        &mut worklist,
+                        (pc + 1, next_selected),
+                        &depths,
+                    );
                 }
             }
-            OP_BRZ | OP_BRPOP1 | OP_BRPOP2 => {
+            OP_BRZ => {
                 let target = program.get_label(pc);
-                if target < program.size {
-                    propagate(&mut states, &mut worklist, target, &state);
-                } else {
+                if target >= program.size {
                     return [DepthBound::Unbounded; STORAGE_COUNT];
                 }
+                propagate(&mut states, &mut worklist, (target, next_selected), &depths);
                 if pc + 1 < program.size {
-                    propagate(&mut states, &mut worklist, pc + 1, &state);
+                    propagate(
+                        &mut states,
+                        &mut worklist,
+                        (pc + 1, next_selected),
+                        &depths,
+                    );
                 }
             }
             _ => {
                 if pc + 1 < program.size {
-                    propagate(&mut states, &mut worklist, pc + 1, &state);
+                    propagate(
+                        &mut states,
+                        &mut worklist,
+                        (pc + 1, next_selected),
+                        &depths,
+                    );
                 }
             }
         }
@@ -417,9 +489,10 @@ mod tests {
     }
 
     #[test]
-    fn an_ambiguous_selected_keeps_every_candidates_old_bound_on_a_pop() {
-        // Two SEL paths join, then a pop and a halt: neither pool 1 nor
-        // pool 2 may take the credit, so both keep the pushed depth.
+    fn two_selected_paths_that_join_keep_their_own_depths() {
+        // Two SEL paths join, then a push and a pop: each path is its own
+        // state, so the push credits the pool that path selected and nothing
+        // else.
         //   0: BRZ -> 3    1: SEL 1    2: JMP -> 4
         //   3: SEL 2       4: PUSH     5: POP      6: HALT
         let mut labels = std::collections::HashMap::new();
@@ -435,6 +508,80 @@ mod tests {
         let d = max_pool_depths(&program);
         assert_eq!(d[1], DepthBound::Bounded(1));
         assert_eq!(d[2], DepthBound::Bounded(1));
+    }
+
+    #[test]
+    fn a_loop_after_a_join_credits_only_the_pool_its_path_selected() {
+        // Two paths select different pools and join on a push/pop loop. Both
+        // pools stay one deep: joining the two selected values instead would
+        // credit each pool for the other's push and debit neither on the
+        // ambiguous pop, making both unbounded.
+        //   0: PUSH   1: BRZ -> 4   2: SEL 1   3: JMP -> 5
+        //   4: SEL 2  5: PUSH       6: POP     7: JMP -> 5
+        let mut labels = std::collections::HashMap::new();
+        labels.insert(0, 4usize);
+        labels.insert(1, 5usize);
+        labels.insert(2, 5usize);
+        let mut program = Program {
+            opcodes: vec![
+                OP_PUSH, OP_BRZ, OP_SEL, OP_JMP, OP_SEL, OP_PUSH, OP_POP, OP_JMP,
+            ],
+            values: vec![4, 0, 1, 1, 2, 4, 0, 2],
+            labels,
+            size: 8,
+        };
+        program.resolve_jump_targets();
+        let d = max_pool_depths(&program);
+        assert_eq!(d[1], DepthBound::Bounded(1));
+        assert_eq!(d[2], DepthBound::Bounded(1));
+    }
+
+    #[test]
+    fn a_guard_that_cannot_pass_prunes_its_fall_through() {
+        // BRPOP1 on an empty pool always jumps, so the push behind it never
+        // runs and pool 0 never holds anything.
+        //   0: BRPOP1 -> 2   1: PUSH   2: HALT
+        let mut labels = std::collections::HashMap::new();
+        labels.insert(0, 2usize);
+        let mut program = Program {
+            opcodes: vec![OP_BRPOP1, OP_PUSH, OP_HALT],
+            values: vec![0, 4, 0],
+            labels,
+            size: 3,
+        };
+        program.resolve_jump_targets();
+        let d = max_pool_depths(&program);
+        assert_eq!(d[0], DepthBound::Bounded(0));
+    }
+
+    #[test]
+    fn a_taken_guard_carries_the_depth_it_proves() {
+        // Four pushes, then a guard whose taken edge means the pool holds
+        // nothing: the push behind that edge lands on an empty pool, so the
+        // peak stays the four from before the guard.
+        //   0..3: PUSH   4: BRPOP1 -> 6   5: HALT   6: PUSH   7: HALT
+        let mut labels = std::collections::HashMap::new();
+        labels.insert(0, 6usize);
+        let mut program = Program {
+            opcodes: vec![
+                OP_PUSH, OP_PUSH, OP_PUSH, OP_PUSH, OP_BRPOP1, OP_HALT, OP_PUSH, OP_HALT,
+            ],
+            values: vec![4, 4, 4, 4, 0, 0, 4, 0],
+            labels,
+            size: 8,
+        };
+        program.resolve_jump_targets();
+        let d = max_pool_depths(&program);
+        assert_eq!(d[0], DepthBound::Bounded(4));
+    }
+
+    #[test]
+    fn a_ceiling_widens_a_bound_it_cannot_hold() {
+        // Ten pushes then halt: proven at a ceiling that fits them, widened
+        // to unbounded at one that does not.
+        let program = crate::compile("반반반반반반반반반반희", OptimizationLevel::O1);
+        assert_eq!(max_pool_depths_up_to(&program, 64)[0], DepthBound::Bounded(10));
+        assert_eq!(max_pool_depths_up_to(&program, 4)[0], DepthBound::Unbounded);
     }
 
     #[test]

@@ -919,7 +919,11 @@ extern "C" fn jit_band_count() -> i64 {
 /// savings.
 fn proven_cap(program: &Program) -> Option<usize> {
     let bands = banded_pool_count(program);
-    let bounds = ahsembler::depth::max_pool_depths(program);
+    // Widening at the largest ring this will ever pick keeps the lattice as
+    // short as the answer needs to be: a pool deeper than the default gets
+    // the default anyway, so proving how much deeper is work with no
+    // consumer.
+    let bounds = ahsembler::depth::max_pool_depths_up_to(program, CAP_DEFAULT as u32);
     let mut deepest: usize = 0;
     let mut measured: Option<[u32; STORAGE_COUNT]> = None;
     for (pool, bound) in bounds.iter().enumerate().take(bands) {
