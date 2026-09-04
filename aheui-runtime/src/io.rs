@@ -196,10 +196,30 @@ pub fn write_utf8(value: &Val, writer: &mut impl Write) {
     }
 }
 
+/// Every byte of stdin, read once.
+///
+/// The interpreter used to read stdin at its first input opcode and nothing
+/// else ever read it, so one buffer owned it. A caller that wants to know what
+/// the program will do before running it needs the same bytes, so the read
+/// moved here and every reader takes a copy of the result. It stays lazy: the
+/// read still happens at whichever of them asks first.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn stdin_bytes() -> &'static [u8] {
+    static BYTES: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    BYTES.get_or_init(|| {
+        let mut buffer = Vec::new();
+        let stdin = io::stdin();
+        let _ = stdin.lock().read_to_end(&mut buffer);
+        buffer
+    })
+}
+
 /// Buffered input for Aheui I/O operations.
 pub struct InputBuffer {
     buffer: Vec<u8>,
     pos: usize,
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    filled: bool,
 }
 
 impl Default for InputBuffer {
@@ -213,6 +233,8 @@ impl InputBuffer {
         InputBuffer {
             buffer: Vec::new(),
             pos: 0,
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            filled: false,
         }
     }
 
@@ -227,9 +249,13 @@ impl InputBuffer {
     fn fill_line(&mut self) {
         self.buffer.clear();
         self.pos = 0;
-        let stdin = io::stdin();
-        let mut handle = stdin.lock();
-        let _ = handle.read_to_end(&mut self.buffer);
+        // `stdin_bytes` reads to end, so there is nothing left to fill from
+        // after the first time — the same shape as reading stdin here twice,
+        // where the second read returns nothing.
+        if !self.filled {
+            self.filled = true;
+            self.buffer.extend_from_slice(stdin_bytes());
+        }
     }
 
     fn ensure_data(&mut self) {

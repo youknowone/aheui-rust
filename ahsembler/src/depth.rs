@@ -298,9 +298,44 @@ pub fn measured_pool_depths(
     program: &Program,
     step_budget: u64,
 ) -> Option<[u32; STORAGE_COUNT]> {
+    run_pool_depths(program, step_budget, None)
+}
+
+/// The peaks a bounded prefix of the run reaches, reading input through
+/// `read`.
+///
+/// This is the answer for a program [`measured_pool_depths`] must decline: one
+/// that reads input, so it is not deterministic from the program alone, or one
+/// too long to finish inside a budget worth paying at startup. Both mean the
+/// exact peak is out of reach, and what is left is an observation — the
+/// deepest each pool got over the prefix, which the rest of the run may
+/// exceed.
+///
+/// So this is not a proof and a consumer must not treat it as one. The consumer
+/// this exists for sizes a ring that spills to a chain when it overflows, where
+/// an observation that comes in low costs traffic rather than an answer.
+///
+/// `read` is handed `true` for `OP_PUSHNUM` and `false` for `OP_PUSHCHAR` and
+/// must decode exactly as the interpreter's own input does, or the branches
+/// this walks are not the ones the real run takes. Everything else keeps
+/// [`measured_pool_depths`]'s rule: leaving ground the simulation models
+/// exactly answers `None` rather than a guess.
+pub fn observed_pool_depths(
+    program: &Program,
+    step_budget: u64,
+    read: &mut dyn FnMut(bool) -> i64,
+) -> Option<[u32; STORAGE_COUNT]> {
+    run_pool_depths(program, step_budget, Some(read))
+}
+
+fn run_pool_depths(
+    program: &Program,
+    step_budget: u64,
+    mut read: Option<&mut dyn FnMut(bool) -> i64>,
+) -> Option<[u32; STORAGE_COUNT]> {
     for pc in 0..program.size {
         let op = program.get_op(pc);
-        if matches!(op, OP_PUSHNUM | OP_PUSHCHAR) {
+        if matches!(op, OP_PUSHNUM | OP_PUSHCHAR) && read.is_none() {
             return None;
         }
         if matches!(op, OP_SEL | OP_MOV) && program.get_operand(pc) as usize == VAL_PORT {
@@ -328,7 +363,9 @@ pub fn measured_pool_depths(
     while pc < program.size {
         steps += 1;
         if steps > step_budget {
-            return None;
+            // An exact answer needs the whole run; an observation is whatever
+            // the prefix reached.
+            return read.is_some().then_some(maxd);
         }
         let op = program.get_op(pc);
         let operand = program.get_operand(pc);
@@ -380,6 +417,10 @@ pub fn measured_pool_depths(
                 push(&mut pools, &mut maxd, target, v);
             }
             OP_PUSH => push(&mut pools, &mut maxd, selected, operand as i64),
+            OP_PUSHNUM | OP_PUSHCHAR => {
+                let v = read.as_mut()?(op == OP_PUSHNUM);
+                push(&mut pools, &mut maxd, selected, v);
+            }
             OP_DUP => {
                 if pools[selected].is_empty() {
                     return None;
@@ -604,6 +645,46 @@ mod tests {
         // A bare wrapping row of pushes never halts.
         let program = crate::compile("반반반", OptimizationLevel::O1);
         assert!(measured_pool_depths(&program, 10_000).is_none());
+    }
+
+    #[test]
+    fn an_observed_run_reads_its_input() {
+        // 방방방희: three numbers read onto pool 0, then halt.
+        let program = crate::compile("방방방희", OptimizationLevel::O1);
+        let mut next = 0i64;
+        let mut read = |as_number: bool| {
+            assert!(as_number);
+            next += 1;
+            next
+        };
+        let d = observed_pool_depths(&program, 1_000, &mut read).unwrap();
+        assert_eq!(d[0], 3);
+    }
+
+    #[test]
+    fn a_budget_overrun_reports_the_prefix_peak_when_observing() {
+        // A bare wrapping row of pushes never halts. There is no exact peak to
+        // measure, but the prefix reached one worth reporting.
+        let program = crate::compile("반반반", OptimizationLevel::O1);
+        assert!(measured_pool_depths(&program, 10_000).is_none());
+        let mut read = |_| 0;
+        let d = observed_pool_depths(&program, 10_000, &mut read).unwrap();
+        assert!(d[0] > 0);
+    }
+
+    #[test]
+    fn observing_still_declines_ground_it_does_not_model() {
+        // A zero divisor is not something the simulation follows, with or
+        // without an input to read.
+        let mut program = Program {
+            opcodes: vec![OP_PUSH, OP_PUSH, OP_DIV, OP_HALT],
+            values: vec![4, 0, 0, 0],
+            labels: Default::default(),
+            size: 4,
+        };
+        program.resolve_jump_targets();
+        let mut read = |_| 0;
+        assert!(observed_pool_depths(&program, 1_000, &mut read).is_none());
     }
 
     #[test]

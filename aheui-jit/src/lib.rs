@@ -919,10 +919,8 @@ extern "C" fn jit_band_count() -> i64 {
 /// `co_stacksize` consumption: when every banded pool has a proven depth
 /// bound under [`CAP_DEFAULT`], a ring that big never evicts, so the array
 /// carries — and every deopt writes back — only the slots the program can
-/// fill. An unbounded pool keeps the default: the bound is about the peak,
-/// and the peak says nothing about how much of it is hot, so shrinking on
-/// anything less than a proof risks trading eviction traffic for the deopt
-/// savings.
+/// fill. A pool the lattice cannot bound falls to `depths_by_running`, which
+/// answers exactly where it can and observes where it cannot.
 fn proven_cap(program: &Program) -> Option<usize> {
     let bands = banded_pool_count(program);
     // Widening at the largest ring this will ever pick keeps the lattice as
@@ -948,8 +946,7 @@ fn proven_cap(program: &Program) -> Option<usize> {
             // this sizes can never evict.
             ahsembler::depth::DepthBound::Unbounded => {
                 if measured.is_none() {
-                    measured =
-                        Some(ahsembler::depth::measured_pool_depths(program, 250_000)?);
+                    measured = Some(depths_by_running(program)?);
                 }
                 measured.unwrap()[pool] as usize
             }
@@ -958,6 +955,47 @@ fn proven_cap(program: &Program) -> Option<usize> {
     }
     let cap = deepest.next_power_of_two().max(2);
     (cap < CAP_DEFAULT).then_some(cap)
+}
+
+/// The peaks a bounded prefix of the run reaches, for the pools the lattice
+/// could not bound.
+///
+/// The exact answer comes first: a program that reads no input is
+/// deterministic from its own text, and one that finishes inside the budget
+/// gives its true peak, so a ring sized to that never evicts.
+///
+/// A program that reads input has no such answer — its depths belong to the
+/// input as much as to the code — and the self-interpreter is that program.
+/// So it gets observed instead: the interpreter's own input decoding feeds a
+/// prefix of the run, and the deepest each pool got over that prefix is the
+/// estimate. It is an estimate and the rest of the run may go deeper; what
+/// makes it worth taking is that overflowing the ring spills to the node
+/// chain, so an estimate that comes in low costs traffic rather than an
+/// answer, and rounding it up to a power of two absorbs a shallow miss.
+///
+/// Reading stdin this early is the one thing a caller can notice, so it is
+/// asked for only when stdin is not a terminal — a redirect or a pipe holds
+/// the same bytes whoever reads them first, an interactive session does not.
+fn depths_by_running(program: &Program) -> Option<[u32; STORAGE_COUNT]> {
+    const STEP_BUDGET: u64 = 250_000;
+    if let Some(exact) = ahsembler::depth::measured_pool_depths(program, STEP_BUDGET) {
+        return Some(exact);
+    }
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return None;
+    }
+    // The interpreter's own buffer, over the same bytes the run will read:
+    // observing through a second decoder would walk branches the real run
+    // does not.
+    let mut input = aheui_runtime::io::InputBuffer::new();
+    let mut read = |as_number: bool| {
+        if as_number {
+            input.read_number()
+        } else {
+            input.read_utf8()
+        }
+    };
+    ahsembler::depth::observed_pool_depths(program, STEP_BUDGET, &mut read)
 }
 
 /// Highest stack pool index a program selects or moves into, plus one.
