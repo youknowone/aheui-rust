@@ -196,32 +196,11 @@ fn main() {
     let json = serde_json::to_string_pretty(&pipeline).unwrap();
     std::fs::write(format!("{out_dir}/jit_metadata.json"), &json).unwrap();
 
-    // Persist `pipeline.jitcodes` (the codewriter's `make_jitcodes()` output:
-    // the `mainloop` portal + per-storage-method sub-jitcodes, inter-linked via
-    // the shared descr pool) as a bincode blob the runtime deserializes into
-    // `Vec<Arc<JitCode>>`. Same single-store model as
-    // `pyre-jit-trace/build.rs` `opcode_jitcodes.bin`.
-    let jitcodes_bin = bincode::serialize(&pipeline.jitcodes).unwrap();
-    std::fs::write(format!("{out_dir}/opcode_jitcodes.bin"), &jitcodes_bin).unwrap();
-
-    // Persist the shared descr pool (`Assembler.descrs`, assembler.py /
-    // blackhole.py `setup_descrs`). Each 'd'/'j' argcode in a
-    // `JitCode.code` byte stream is a 2-byte index into this pool; the 'j'
-    // (BC_INLINE_CALL) entries carry the inter-jitcode links. Same as
-    // `pyre-jit-trace/build.rs` `opcode_descrs.bin`.
-    let descrs_bin = bincode::serialize(&pipeline.descrs).unwrap();
-    std::fs::write(format!("{out_dir}/opcode_descrs.bin"), &descrs_bin).unwrap();
-
-    let symbolic_fnaddrs_bin = bincode::serialize(&pipeline.symbolic_fnaddr_paths).unwrap();
+    let artifacts = majit_translate::artifacts::EmbeddedArtifacts::from_pipeline(&pipeline)
+        .expect("encode Aheui pipeline artifacts");
     std::fs::write(
-        format!("{out_dir}/opcode_symbolic_fnaddrs.bin"),
-        &symbolic_fnaddrs_bin,
-    )
-    .unwrap();
-
-    std::fs::write(
-        format!("{out_dir}/opcode_liveness.bin"),
-        &pipeline.all_liveness,
+        format!("{out_dir}/jitcode_artifacts.bin"),
+        artifacts.encode().unwrap(),
     )
     .unwrap();
 

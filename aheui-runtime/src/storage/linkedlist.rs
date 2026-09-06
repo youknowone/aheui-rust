@@ -1,22 +1,9 @@
-//! Line-by-line port of `rpaheui/aheui/storage/linkedlist.py`.
-//!
-//! In RPython this is the only storage backend (CPython-only `array.py`
-//! is excluded by the `aheui._compat.PYR` guard). The Python source has
-//! a shared `LinkedList` base class and three subclasses `Stack`,
-//! `Queue`, `Port` that inherit from it. Rust emulates the inheritance
-//! via the [`LinkedList`] trait: each subclass provides the `__slots__`
-//! fields and overrides `push` / `dup` / `_get_2_values` / `_put_value`,
-//! while the trait supplies the shared `pop` / `swap` / `add` / `sub` /
-//! `mul` / `div` / `modulo` / `cmp` implementations.
+//! Storage objects from `rpaheui/aheui/storage/linkedlist.py`.
+//! `LinkedList` supplies the shared methods; Stack, Queue and Port embed
+//! `ListBase` and override push, dup, _get_2_values and _put_value.
 use super::{alloc_node, free_node};
 use crate::value::*;
 
-// class Node(object):
-//     """Element unit for stack and queue."""
-//     __slots__ = ('value', 'next')
-//     def __init__(self, next, value=bigint.MINUS1):
-//         self.value = value
-//         self.next = next
 #[repr(C)]
 pub struct Node {
     pub value: Val,
@@ -52,27 +39,6 @@ pub const NODE_SIZE: usize = std::mem::size_of::<Node>();
 pub const NODE_VALUE_OFFSET: usize = 0;
 pub const NODE_NEXT_OFFSET: usize = 8;
 
-// class LinkedList(object):
-//     """Common linked list for storages"""
-//     __slots__ = ('head', 'size')
-//
-// Rust emulates Python inheritance by requiring subclasses to expose
-// `head`/`size` accessors and the two `_get_2_values`/`_put_value`
-// hooks. The arithmetic methods (`add` ... `cmp`), `pop`, `swap` and
-// `__len__` follow the Python default implementations.
-/// The fields `LinkedList` declares, as a struct the subclasses embed.
-///
-/// `linkedlist.py` puts `head` and `size` on `LinkedList` itself, and
-/// `rclass.py` lays a subclass out as `MkStruct(name, ('super',
-/// rbase.object_type), *own_fields)` — the base is a real type inlined as the
-/// leading field, not a layout the subclasses each happen to repeat.  Spelling
-/// it that way here is what lets one physical `head` word carry one field
-/// descriptor for all three storages: `rclass.py` resolves a field
-/// against the struct that DECLARES it, so `Stack`, `Queue` and `Port` accesses
-/// all name this type.
-///
-/// Named `ListBase` rather than `LinkedList` because that name is taken by the
-/// trait below, which carries the other half of the Python class — its methods.
 #[repr(C)]
 pub struct ListBase {
     pub head: *mut Node,
@@ -156,35 +122,18 @@ pub trait LinkedList {
     fn _get_2_values(&mut self) -> (Val, Val);
     fn _put_value(&mut self, value: Val);
 
-    // def __len__(self): return self.size
     fn __len__(&self) -> usize {
         self.size()
     }
 
-    // def pop(self):
-    //     node = self.head
-    //     self.head = node.next
-    //     value = node.value
-    //     del node
-    //     self.size -= 1
-    //     return value
     fn pop(&mut self) -> Val {
         pop_base(self.base_mut())
     }
 
-    // def swap(self):
-    //     node1 = self.head
-    //     node2 = node1.next
-    //     node1.value, node2.value = node2.value, node1.value
     fn swap(&mut self) {
         swap_base(self.base_mut());
     }
 
-    // def add(self): r1, r2 = self._get_2_values(); r = bigint.add(r2, r1); self._put_value(r)
-    //
-    // The combining half lives in `crate::band`, which is also where a caller
-    // holding its operands outside a chain reaches it. Same fast paths, one
-    // implementation.
     fn add(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(crate::band::band_val_add(r2, r1));
@@ -211,20 +160,12 @@ pub trait LinkedList {
         self._put_value(crate::band::band_val_mod(r2, r1));
     }
 
-    // def cmp(self):
-    //     r1, r2 = self._get_2_values()
-    //     r = int(bigint.ge(r2, r1))
-    //     big_r = bigint.fromint(r)
-    //     self._put_value(big_r)
     fn cmp(&mut self) {
         let (r1, r2) = self._get_2_values();
         self._put_value(crate::band::band_val_cmp(r2, r1));
     }
 }
 
-// class Stack(LinkedList):
-//     """Base data storage for Aheui, except for ieung and hieuh."""
-//     __slots__ = ('head', 'size')
 #[repr(C)]
 pub struct Stack {
     pub base: ListBase,
@@ -237,9 +178,6 @@ impl Default for Stack {
 }
 
 impl Stack {
-    // def __init__(self):
-    //     self.head = None
-    //     self.size = 0
     pub fn new() -> Self {
         Stack {
             base: ListBase::new(),
@@ -255,10 +193,6 @@ impl LinkedList for Stack {
         &mut self.base
     }
 
-    // def push(self, value):
-    //     node = Node(self.head, value)
-    //     self.head = node
-    //     self.size += 1
     fn push(&mut self, value: Val) {
         let rooted = value;
         let mut root = rooted;
@@ -270,14 +204,12 @@ impl LinkedList for Stack {
         });
     }
 
-    // def dup(self): self.push(self.head.value)
     fn dup(&mut self) {
         assert!(!self.base.head.is_null(), "dup on empty stack");
         let top = unsafe { (*self.base.head).value };
         self.push(top);
     }
 
-    // def _get_2_values(self): return self.pop(), self.head.value
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
         assert!(!self.base.head.is_null(), "_get_2_values on <2 elements");
@@ -285,7 +217,6 @@ impl LinkedList for Stack {
         (r1, r2)
     }
 
-    // def _put_value(self, value): self.head.value = value
     fn _put_value(&mut self, value: Val) {
         let rooted = value;
         let mut root = rooted;
@@ -298,8 +229,6 @@ impl LinkedList for Stack {
     }
 }
 
-// class Queue(LinkedList):
-//     __slots__ = ('head', 'tail', 'size')
 #[repr(C)]
 pub struct Queue {
     pub base: ListBase,
@@ -313,10 +242,6 @@ impl Default for Queue {
 }
 
 impl Queue {
-    // def __init__(self):
-    //     self.tail = Node(None)
-    //     self.head = self.tail
-    //     self.size = 0
     pub fn new() -> Self {
         let sentinel = alloc_node(val_from_i32(0), std::ptr::null_mut());
         Queue {
@@ -337,13 +262,6 @@ impl LinkedList for Queue {
         &mut self.base
     }
 
-    // def push(self, value):
-    //     tail = self.tail
-    //     tail.value = value
-    //     new = Node(None)
-    //     tail.next = new
-    //     self.tail = new
-    //     self.size += 1
     fn push(&mut self, value: Val) {
         let rooted = value;
         let mut root = rooted;
@@ -367,11 +285,6 @@ impl LinkedList for Queue {
         });
     }
 
-    // def dup(self):
-    //     head = self.head
-    //     node = Node(head, head.value)
-    //     self.head = node
-    //     self.size += 1
     fn dup(&mut self) {
         let head = self.base.head;
         assert!(!head.is_null(), "dup on empty queue");
@@ -381,21 +294,17 @@ impl LinkedList for Queue {
         self.base.size += 1;
     }
 
-    // def _get_2_values(self): return self.pop(), self.pop()
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
         let r2 = self.pop();
         (r1, r2)
     }
 
-    // def _put_value(self, value): self.push(value)
     fn _put_value(&mut self, value: Val) {
         self.push(value);
     }
 }
 
-// class Port(LinkedList):
-//     __slots__ = ('head', 'size', 'last_push')
 #[repr(C)]
 pub struct Port {
     pub base: ListBase,
@@ -425,10 +334,6 @@ impl Default for Port {
 }
 
 impl Port {
-    // def __init__(self):
-    //     self.head = None
-    //     self.size = 0
-    //     self.last_push = bigint.fromint(0)
     pub fn new() -> Self {
         Port {
             base: ListBase::new(),
@@ -445,11 +350,6 @@ impl LinkedList for Port {
         &mut self.base
     }
 
-    // def push(self, value):
-    //     node = Node(self.head, value)
-    //     self.head = node
-    //     self.size += 1
-    //     self.last_push = value
     fn push(&mut self, value: Val) {
         let rooted = value;
         let mut root = rooted;
@@ -462,12 +362,10 @@ impl LinkedList for Port {
         });
     }
 
-    // def dup(self): self.push(self.last_push)
     fn dup(&mut self) {
         self.push(self.last_push);
     }
 
-    // def _get_2_values(self): return self.pop(), self.head.value
     fn _get_2_values(&mut self) -> (Val, Val) {
         let r1 = self.pop();
         assert!(!self.base.head.is_null(), "_get_2_values on <2 elements");
@@ -475,7 +373,6 @@ impl LinkedList for Port {
         (r1, r2)
     }
 
-    // def _put_value(self, value): self.head.value = value
     fn _put_value(&mut self, value: Val) {
         unsafe {
             (*self.base.head).value = value;

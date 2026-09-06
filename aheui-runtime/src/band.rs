@@ -1,35 +1,13 @@
-//! Arithmetic over operand words held outside a node chain.
-//!
-//! `linkedlist_jit.rs`'s helpers each do two things: reach the top two nodes of
-//! a chain, and combine their values. When the operands already sit in a
-//! virtualizable band there is no chain to reach through, so only the second
-//! half is wanted. These are that half — the same fast paths, over the packed
-//! `Val` word rather than over `Node.value`.
-//!
-//! Every entry takes and returns the packed word, never a `Val`. A `Val` is
-//! `#[repr(transparent)]` over that word, so the two are the same bits; taking
-//! the word is what keeps the fast paths free of a conversion the lowerer would
-//! have to spell as a call. The slow paths, reached only when an operand is a
-//! heap value or the result leaves the fast range, convert and call the shared
-//! `val_*` implementation.
-//!
-//! Each operation comes in a mode-1 form, which works on the tagged encoding,
-//! and a mode-0 `_raw` twin, which works on the plain machine word. The caller
-//! picks on the same `bigint_mode` green the chain helpers are picked on.
-//!
-//! These carry no `#[jit_inline]` attribute. A helper that returns a value
-//! reaches the trace through the graph pipeline instead, the way
-//! `linkedlist::pop_base_known_nonempty` does; the caller names the policy.
+//! Shared arithmetic for LinkedList values and virtualizable operand bands.
+//! Word-level helpers are translated from this source; `band_val_*` adapts
+//! ordinary interpreter values. The caller selects raw/tagged mode on a green.
 
+#[cfg(feature = "bigint-backend")]
 use crate::value::*;
+#[cfg(feature = "bigint-backend")]
 use crate::value::{floor_div_i64, floor_mod_i64};
 
-/// Tag a value known to fit the small range.
-///
-/// `Val::from_small`'s encoding, written out: the low bit marks a small
-/// integer, so the value shifts up one and the marker goes in underneath.
-/// Spelling it here rather than calling the constructor keeps the fast path
-/// free of a call the lowerer would otherwise have to emit or fold.
+/// `Val::from_small` encoding, over the word used by the graph pipeline.
 #[cfg(feature = "bigint-backend")]
 macro_rules! tag_small {
     ($v:expr) => {
@@ -38,8 +16,6 @@ macro_rules! tag_small {
 }
 
 /// Both operands are tagged small integers.
-///
-/// The tag bit is the low bit of each word, so one AND tests both at once.
 #[cfg(feature = "bigint-backend")]
 macro_rules! both_small {
     ($a:expr, $b:expr) => {
@@ -196,18 +172,8 @@ pub fn band_cmp_raw(r2: i64, r1: i64) -> i64 {
     (r2 >= r1) as i64
 }
 
-// The escapes every band operation leaves through when its fast path does not
-// apply.
-//
-// Each is `#[inline(never)]` so the graph pipeline emits a call to it by path
-// rather than lowering `val_*` — which reaches closures and generic helpers the
-// pipeline has no address for. A host that names a band helper is therefore
-// binding exactly these six paths, and nothing below them.
-//
-// Each carries a `_jit_look_inside_*` marker const: what `@jit.dont_look_inside`
-// would emit, spelled out so it survives without the `jit` feature's proc macros
-// in scope. It is what tells the pipeline to call the function rather than lower
-// it.
+// Residual escapes stop translation at the value-layer boundary. Marker
+// constants preserve `dont_look_inside` even without the proc-macro feature.
 
 /// `@jit.dont_look_inside` for [`promote_add`].
 #[doc(hidden)]
@@ -307,3 +273,16 @@ band_val_op!(band_val_div, band_div, band_div_raw);
 band_val_op!(band_val_mod, band_mod, band_mod_raw);
 #[cfg(feature = "bigint-backend")]
 band_val_op!(band_val_cmp, band_cmp, band_cmp_raw);
+
+// With no bigint backend, LinkedList uses the existing smallint operations.
+#[cfg(not(feature = "bigint-backend"))]
+pub use crate::value::{
+    val_add as band_val_add, val_div as band_val_div, val_mod as band_val_mod,
+    val_mul as band_val_mul, val_sub as band_val_sub,
+};
+
+#[cfg(not(feature = "bigint-backend"))]
+#[inline(always)]
+pub fn band_val_cmp(a: crate::value::Val, b: crate::value::Val) -> crate::value::Val {
+    crate::value::val_from_i32(crate::value::val_ge(&a, &b) as i32)
+}

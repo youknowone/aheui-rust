@@ -26,58 +26,7 @@ pub use bigint::*;
 #[cfg(not(feature = "bigint-backend"))]
 pub use smallint::*;
 
-// Floored division shared by both value backends.
-// Both backends divide the same way, because both upstream files do:
-// `smallint.py` spells division `r1 // r2` and `bigint.py` calls
-// `rbigint.div`, and those are the same convention — the quotient rounds
-// toward negative infinity and the remainder carries the divisor's sign
-// (`rbigint.divmod`: "a mod b has the value a - b*floor(a/b)").
-//
-// Rust's `/`, `wrapping_div` and `wrapping_rem` truncate toward zero
-// instead, so a pair whose signs differ needs the correction below. The two
-// conventions agree whenever the signs match or the division is exact, which
-// is why they are told apart only by a mixed-sign inexact pair.
-//
-// `div_euclid`/`rem_euclid` are a *third* convention, not this one: they
-// force a non-negative remainder, so they answer `7 / -2` with `-3` where
-// flooring answers `-4`.
-
-/// All ones when a truncating division of `a` by `b` needs the floor
-/// correction, zero otherwise. `r` is the truncated remainder, which carries
-/// `a`'s sign.
-///
-/// A mask rather than a `bool` because the caller adds it: spelled as a branch,
-/// the correction is a run-time test on the remainder, and a JIT compiling the
-/// division records one arm of it and guards the other. logo's banded DIV made
-/// that guard fail 62115 times. Bit 63 of `r | -r` is set exactly when `r` is
-/// non-zero, and bit 63 of `r ^ b` exactly when the two signs differ, so the
-/// arithmetic shift broadcasts their conjunction with nothing to guard.
-///
-/// The negation is spelled as a subtraction because the graph pipeline lowers
-/// binary integer arithmetic to IR ops but leaves `wrapping_neg` a call to a
-/// path no host binds, which reaches compiled code as an unresolved target.
-#[inline(always)]
-pub(crate) fn floor_correction_mask(r: i64, b: i64) -> i64 {
-    ((r | 0i64.wrapping_sub(r)) & (r ^ b)) >> 63
-}
-
-/// `a // b` for a non-zero `b`, floored.
-#[inline(always)]
-pub(crate) fn floor_div_i64(a: i64, b: i64) -> i64 {
-    let q = a.wrapping_div(b);
-    let r = a.wrapping_rem(b);
-    q.wrapping_add(floor_correction_mask(r, b))
-}
-
-/// `a % b` for a non-zero `b`, floored.
-///
-/// The corrected remainder cannot overflow: it is only computed when `r` and
-/// `b` have opposite signs, so `|r + b| < |b|`.
-#[inline(always)]
-pub(crate) fn floor_mod_i64(a: i64, b: i64) -> i64 {
-    let r = a.wrapping_rem(b);
-    r.wrapping_add(b & floor_correction_mask(r, b))
-}
+pub use ahsembler::consts::{floor_correction_mask, floor_div_i64, floor_mod_i64};
 
 #[cfg(test)]
 mod tests {

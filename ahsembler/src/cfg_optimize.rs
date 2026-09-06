@@ -578,33 +578,7 @@ fn fold_constant_branch(block: &mut CfgBlock, folds: &mut usize) {
 }
 
 fn eval_binop(kind: BinOpKind, lhs: i64, rhs: i64) -> Option<i64> {
-    Some(match kind {
-        BinOpKind::Add => lhs.checked_add(rhs)?,
-        BinOpKind::Sub => lhs.checked_sub(rhs)?,
-        BinOpKind::Mul => lhs.checked_mul(rhs)?,
-        BinOpKind::Div => {
-            if rhs != 0 {
-                lhs.checked_div(rhs)?;
-                crate::consts::floor_div_i64(lhs, rhs)
-            } else {
-                0
-            }
-        }
-        BinOpKind::Mod => {
-            if rhs != 0 {
-                crate::consts::floor_mod_i64(lhs, rhs)
-            } else {
-                0
-            }
-        }
-        BinOpKind::Cmp => {
-            if lhs >= rhs {
-                1
-            } else {
-                0
-            }
-        }
-    })
+    crate::consts::checked_binary_i64(kind.opcode(), lhs, rhs)
 }
 
 // ── Pass 4b: Peephole instruction cleanup ───────────────────────────

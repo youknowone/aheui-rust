@@ -564,54 +564,10 @@ impl Compiler {
                 continue;
             }
 
-            let result = match actual_op {
-                OP_ADD => match v2.checked_add(effective_v1) {
-                    Some(r) => r,
-                    None => continue, // overflow — skip folding
-                },
-                OP_SUB => match v2.checked_sub(effective_v1) {
-                    Some(r) => r,
-                    None => continue,
-                },
-                OP_MUL => match v2.checked_mul(effective_v1) {
-                    Some(r) => r,
-                    None => continue,
-                },
-                OP_DIV => {
-                    if effective_v1 != 0 {
-                        // `checked_div` is asked only whether the quotient fits
-                        // the operand width: `i32::MIN / -1` does not, and a
-                        // run-time division promotes there rather than
-                        // wrapping, so the folder declines instead of
-                        // answering. Flooring in `i64` cannot leave the range
-                        // for a pair that clears that check — the correction
-                        // only fires when `|divisor| >= 2`, which halves the
-                        // quotient's magnitude.
-                        match v2.checked_div(effective_v1) {
-                            Some(_) => floor_div_i64(v2 as i64, effective_v1 as i64) as i32,
-                            None => continue,
-                        }
-                    } else {
-                        0
-                    }
-                }
-                OP_MOD => {
-                    // `|remainder| < |divisor|`, floored or not, so this always
-                    // fits the operand width.
-                    if effective_v1 != 0 {
-                        floor_mod_i64(v2 as i64, effective_v1 as i64) as i32
-                    } else {
-                        0
-                    }
-                }
-                OP_CMP => {
-                    if v2 >= effective_v1 {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                _ => continue,
+            let Some(result) = checked_binary_i64(actual_op, v2 as i64, effective_v1 as i64)
+                .and_then(|value| i32::try_from(value).ok())
+            else {
+                continue;
             };
 
             if op == OP_JMP {

@@ -1,31 +1,15 @@
-//! Static per-pool depth upper bounds over a linearized [`Program`].
+//! Per-pool depth analysis of a linearized [`Program`].
 //!
-//! The stack-machine analog of a code object's `co_stacksize`: the compiler
-//! proves, per storage pool, how deep the pool can ever get, so a consumer
-//! sizing a per-pool buffer at frame-creation time can size it to the proof
-//! instead of to a worst-case constant. Aheui has no static stack discipline,
-//! so unlike `co_stacksize` the answer is allowed to be "unbounded" — a loop
-//! whose body nets a push grows without limit — and every imprecision in the
-//! analysis widens toward that answer, never below the true depth.
+//! Static states are keyed by `(pc, selected)`; joins widen upward, and
+//! `OP_BRPOP*` constrains the underflow edge. Unbounded or invalid control
+//! flow never produces a finite proof. Run after `resolve_jump_targets`.
 //!
-//! Two things carry the precision. The analysis is polyvariant in the
-//! selected pool — a state is keyed by `(pc, selected)` rather than joining a
-//! set of candidates — so every push and pop names one pool and a loop over
-//! one pool cannot inflate another. And `OP_BRPOP*` is read as what the
-//! mainloop does with it: the branch is taken exactly when the selected pool
-//! holds fewer than `OP_REQSIZE` elements, which is the only statement about
-//! an upper bound a stack machine ever makes, so the taken edge carries that
-//! bound and the fall-through is dropped where the bound cannot reach it.
-//!
-//! Runs on the final linear program, after `resolve_jump_targets`: jump
-//! operands must already be program counters. An operand outside the program
-//! makes the whole result unbounded rather than a panic.
-//!
-//! [`Program`]: crate::compiler::Program
+//! Bounded evaluation separately measures input-free runs or observes an
+//! input-dependent prefix. An observation is a sizing hint, not a proof.
 
 use crate::compiler::Program;
 use crate::consts::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// An upper bound on a pool's element count, or the admission that none was
 /// proven.
@@ -237,12 +221,7 @@ pub fn max_pool_depths_up_to(program: &Program, ceiling: u32) -> [DepthBound; ST
                 taken[selected] = taken[selected].at_most(need - 1);
                 propagate(&mut states, &mut worklist, (target, next_selected), &taken);
                 if depths[selected].can_reach(need) && pc + 1 < program.size {
-                    propagate(
-                        &mut states,
-                        &mut worklist,
-                        (pc + 1, next_selected),
-                        &depths,
-                    );
+                    propagate(&mut states, &mut worklist, (pc + 1, next_selected), &depths);
                 }
             }
             OP_BRZ => {
@@ -252,22 +231,12 @@ pub fn max_pool_depths_up_to(program: &Program, ceiling: u32) -> [DepthBound; ST
                 }
                 propagate(&mut states, &mut worklist, (target, next_selected), &depths);
                 if pc + 1 < program.size {
-                    propagate(
-                        &mut states,
-                        &mut worklist,
-                        (pc + 1, next_selected),
-                        &depths,
-                    );
+                    propagate(&mut states, &mut worklist, (pc + 1, next_selected), &depths);
                 }
             }
             _ => {
                 if pc + 1 < program.size {
-                    propagate(
-                        &mut states,
-                        &mut worklist,
-                        (pc + 1, next_selected),
-                        &depths,
-                    );
+                    propagate(&mut states, &mut worklist, (pc + 1, next_selected), &depths);
                 }
             }
         }
@@ -294,10 +263,7 @@ pub fn max_pool_depths_up_to(program: &Program, ceiling: u32) -> [DepthBound; ST
 ///
 /// Every one of those answers `None` — never an approximation — so a `Some`
 /// is the true peak of the real run and a ring sized to it can never evict.
-pub fn measured_pool_depths(
-    program: &Program,
-    step_budget: u64,
-) -> Option<[u32; STORAGE_COUNT]> {
+pub fn measured_pool_depths(program: &Program, step_budget: u64) -> Option<[u32; STORAGE_COUNT]> {
     run_pool_depths(program, step_budget, None)
 }
 
@@ -343,21 +309,18 @@ fn run_pool_depths(
         }
     }
 
-    let mut pools: Vec<Vec<i64>> = vec![Vec::new(); STORAGE_COUNT];
+    let mut pools: [VecDeque<i64>; STORAGE_COUNT] = std::array::from_fn(|_| VecDeque::new());
     let mut maxd = [0u32; STORAGE_COUNT];
     let mut selected = 0usize;
     let mut pc = 0usize;
     let mut steps = 0u64;
 
-    fn pop(pools: &mut [Vec<i64>], pool: usize) -> Option<i64> {
-        if pools[pool].is_empty() {
-            return None;
-        }
-        Some(if pool == VAL_QUEUE {
-            pools[pool].remove(0)
+    fn pop(pools: &mut [VecDeque<i64>], pool: usize) -> Option<i64> {
+        if pool == VAL_QUEUE {
+            pools[pool].pop_front()
         } else {
-            pools[pool].pop().unwrap()
-        })
+            pools[pool].pop_back()
+        }
     }
 
     while pc < program.size {
@@ -369,10 +332,11 @@ fn run_pool_depths(
         }
         let op = program.get_op(pc);
         let operand = program.get_operand(pc);
-        let push = |pools: &mut [Vec<i64>], maxd: &mut [u32; STORAGE_COUNT], pool: usize, v: i64| {
-            pools[pool].push(v);
-            maxd[pool] = maxd[pool].max(pools[pool].len() as u32);
-        };
+        let push =
+            |pools: &mut [VecDeque<i64>], maxd: &mut [u32; STORAGE_COUNT], pool: usize, v: i64| {
+                pools[pool].push_back(v);
+                maxd[pool] = maxd[pool].max(pools[pool].len() as u32);
+            };
         match op {
             OP_HALT => break,
             OP_JMP => {
@@ -427,10 +391,10 @@ fn run_pool_depths(
                 }
                 if selected == VAL_QUEUE {
                     let v = pools[selected][0];
-                    pools[selected].insert(0, v);
+                    pools[selected].push_front(v);
                     maxd[selected] = maxd[selected].max(pools[selected].len() as u32);
                 } else {
-                    let v = *pools[selected].last().unwrap();
+                    let v = *pools[selected].back().unwrap();
                     push(&mut pools, &mut maxd, selected, v);
                 }
             }
@@ -451,22 +415,10 @@ fn run_pool_depths(
             OP_ADD | OP_SUB | OP_MUL | OP_DIV | OP_MOD | OP_CMP => {
                 let b = pop(&mut pools, selected)?;
                 let a = pop(&mut pools, selected)?;
-                let r = match op {
-                    OP_ADD => a.checked_add(b)?,
-                    OP_SUB => a.checked_sub(b)?,
-                    OP_MUL => a.checked_mul(b)?,
-                    OP_DIV | OP_MOD => {
-                        if b == 0 || (a == i64::MIN && b == -1) {
-                            return None;
-                        }
-                        if op == OP_DIV {
-                            floor_div_i64(a, b)
-                        } else {
-                            floor_mod_i64(a, b)
-                        }
-                    }
-                    _ => (a >= b) as i64,
-                };
+                if matches!(op, OP_DIV | OP_MOD) && (b == 0 || (a == i64::MIN && b == -1)) {
+                    return None;
+                }
+                let r = checked_binary_i64(op, a, b)?;
                 push(&mut pools, &mut maxd, selected, r);
             }
             _ => {}
@@ -488,11 +440,7 @@ mod tests {
 
     #[test]
     fn straight_line_pushes_bound_the_selected_pool() {
-        // 반반반: three pushes onto pool 0, then falls off the pane edge and
-        // wraps; the wrap re-executes the row, but each revisit joins into the
-        // same states, so the loop nets zero... it does not: re-running the
-        // pushes grows the pool. The honest expectation is Unbounded for a
-        // bare wrapping row of pushes.
+        // 반반반 wraps and pushes three more values each lap: unbounded.
         let d = depths_of("반반반");
         assert_eq!(d[0], DepthBound::Unbounded);
     }
@@ -621,7 +569,10 @@ mod tests {
         // Ten pushes then halt: proven at a ceiling that fits them, widened
         // to unbounded at one that does not.
         let program = crate::compile("반반반반반반반반반반희", OptimizationLevel::O1);
-        assert_eq!(max_pool_depths_up_to(&program, 64)[0], DepthBound::Bounded(10));
+        assert_eq!(
+            max_pool_depths_up_to(&program, 64)[0],
+            DepthBound::Bounded(10)
+        );
         assert_eq!(max_pool_depths_up_to(&program, 4)[0], DepthBound::Unbounded);
     }
 

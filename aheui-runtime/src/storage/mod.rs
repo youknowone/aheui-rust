@@ -1,21 +1,6 @@
 //! Storage system for Aheui: 28 storage spaces (Stacks, Queue, Port).
 //!
-//! Two backends implement the same three pools, and `backend_equivalence`
-//! pins them to each other:
-//!
-//!   * [`linkedlist`] — a line-by-line port of `linkedlist.py`, and the live
-//!     representation the corpus baselines were recorded against.
-//!   * [`array`] — the same semantics over a flat buffer. No consumer selects
-//!     it yet.
-//!
-//! [`Storage`] below is the aggregate the interpreter selects out of, and the
-//! nursery the linked-list backend allocates its nodes from lives here too.
-
-pub mod array;
-#[cfg(feature = "jit")]
-pub mod array_jit;
-#[cfg(test)]
-mod backend_equivalence;
+//! [`Storage`] selects the linked-list pools from rpaheui's `Storage`.
 pub mod linkedlist;
 #[cfg(feature = "jit")]
 pub mod linkedlist_jit;
@@ -28,12 +13,9 @@ use crate::aheui::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
 use crate::value::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// Nursery bump allocator for `Node`.
-// RPython-style nursery adapted for Rust: a large contiguous buffer
-// where alloc() is a pointer bump and free() returns the node to a
-// singly-linked free list. Python relies on the RPython GC for
-// reclamation; we need an explicit pool because there is no tracing GC
-// in aheui-runtime.
+// Legacy headerless Node collector. Unlike rpaheui's ordinary GC Nodes,
+// this owns a separate heap and forwarding bitmap. Replacing it with majit's
+// typed GC also requires rooting pointer-bearing Val words across JIT resume.
 
 /// Number of `Node` slots per nursery chunk (256K nodes ≈ 4MB at 16 bytes each).
 const NURSERY_SIZE: usize = 256 * 1024;
@@ -251,26 +233,8 @@ impl Nursery {
         if node.is_null() {
             return;
         }
-        // Only a node in the live chunk set may be recycled. A collection
-        // evacuates every live node into to-space and retires from-space as
-        // `spare_chunk`, but a caller can still be holding the pre-collection
-        // address of a node it popped; freeing that puts a dead from-space
-        // address on the free list, and the next `alloc` hands it back as a
-        // live node. The collector then cannot see it — `forward_root`
-        // range-checks against the chunk set — so the link past it survives
-        // the next collection unforwarded, and if the address is in
-        // `spare_chunk` the following collection allocates its copies right on
-        // top of it. A node outside the chunk set is already dead, so dropping
-        // it here loses nothing.
-        //
-        // The test is unconditional. Nodes outside the chunk set also reach
-        // here before the first collection has run — the jitcode tracer's
-        // `BC_NEW` allocates a `Node` with a plain host `alloc_zeroed`
-        // (`pyjitpl/dispatch.rs` `BC_NEW`) rather than through the nursery —
-        // so gating it on having collected lets those through. Membership is a
-        // binary search over `chunk_ranges` because this runs on every pop,
-        // and with `--no-jit` or `AHEUI_GC_DISABLE` nothing is ever retired,
-        // so `chunks` grows to dozens.
+        // Never recycle a retired from-space address or a foreign allocation.
+        // Membership uses the complete live chunk set, even before collection.
         if !self.owns(node) {
             if gc_log_enabled() {
                 static ONCE: std::sync::atomic::AtomicBool =
@@ -435,14 +399,7 @@ impl Nursery {
         copy.add_to_chunk(first_to);
 
         self.forward_root(&mut copy, keep as *mut *mut linkedlist::Node);
-        for i in 0..STORAGE_COUNT {
-            let listp = storage.pools[i];
-            if !listp.is_null() {
-                self.forward_root(&mut copy, unsafe { std::ptr::addr_of_mut!((*listp).head) });
-            }
-        }
-        self.forward_root(&mut copy, std::ptr::addr_of_mut!(storage.queue.tail));
-        self.forward_root(&mut copy, std::ptr::addr_of_mut!(storage.port.base.head));
+        storage.walk_node_roots(&mut |slot| self.forward_root(&mut copy, slot));
 
         let hook_addr = NODE_ROOT_WALK_HOOK.load(Ordering::Relaxed);
         if hook_addr != 0 {
@@ -690,6 +647,42 @@ static COPYING_COLLECT_COUNT_FOR_TESTS: AtomicUsize = AtomicUsize::new(0);
 /// the mainloop after the storage pointers are refreshed.
 pub fn set_gc_roots(storage: *mut Storage) {
     GC_ROOTS.store(storage as usize, Ordering::Relaxed);
+}
+
+/// Keeps the mainloop's root publication within the lifetime of its frame.
+/// RPython's framework root transformer supplies this scope automatically.
+pub struct GcRootsGuard {
+    storage: *mut Storage,
+}
+
+impl GcRootsGuard {
+    /// # Safety
+    /// `storage` must remain at this address until the guard is dropped, and
+    /// no other mainloop may run concurrently. Aheui has one active root set.
+    pub unsafe fn new(storage: *mut Storage) -> Self {
+        assert!(!storage.is_null());
+        assert_eq!(GC_ROOTS.load(Ordering::Relaxed), 0, "nested Aheui mainloop");
+        unsafe { (*storage).refresh_pools() };
+        set_gc_roots(storage);
+        Self { storage }
+    }
+}
+
+impl Drop for GcRootsGuard {
+    fn drop(&mut self) {
+        if GC_ROOTS
+            .compare_exchange(
+                self.storage as usize,
+                0,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            NODE_ROOT_WALK_HOOK.store(0, Ordering::Relaxed);
+            BAND_ROOT_WALK_HOOK.store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 #[cfg(feature = "bigint-backend")]
@@ -992,6 +985,20 @@ impl Default for Storage {
 }
 
 impl Storage {
+    /// Mutable roots owned by `rpaheui`'s Stack, Queue and Port objects.
+    /// Walk the owners, not `pools`: that lookup array contains self-pointers
+    /// which must be refreshed after a Rust move.
+    fn walk_node_roots(&mut self, visit: &mut dyn FnMut(*mut *mut Node)) {
+        for i in 0..STORAGE_COUNT {
+            if i != VAL_QUEUE && i != VAL_PORT {
+                visit(std::ptr::addr_of_mut!(self.stacks[i].base.head));
+            }
+        }
+        visit(std::ptr::addr_of_mut!(self.queue.base.head));
+        visit(std::ptr::addr_of_mut!(self.queue.tail));
+        visit(std::ptr::addr_of_mut!(self.port.base.head));
+    }
+
     pub fn new() -> Self {
         init_nursery();
 
@@ -1268,6 +1275,61 @@ mod tests {
             node = unsafe { (*node).next };
         }
         assert_eq!(seen, expected_len, "{label} chain length changed");
+    }
+
+    #[test]
+    fn node_root_walk_rewrites_every_owner_without_pool_aliases() {
+        let _guard = NurseryTestGuard::new();
+        let mut storage = Storage::new();
+        // Deliberately discard the lookup aliases: the storage fields own roots.
+        storage.pools.fill(std::ptr::null_mut());
+        let sentinel = storage.queue.tail;
+        let mut slots = Vec::new();
+        storage.walk_node_roots(&mut |slot| {
+            assert!(!slots.contains(&slot), "a root slot was visited twice");
+            slots.push(slot);
+            unsafe { *slot = sentinel };
+        });
+        assert_eq!(slots.len(), STORAGE_COUNT + 1);
+        for i in 0..STORAGE_COUNT {
+            assert_eq!(storage.dispatch(i).head(), sentinel);
+        }
+        assert_eq!(storage.queue.tail, sentinel);
+        // These two unused Stack instances are not the queue and port owners.
+        assert!(storage.stacks[VAL_QUEUE].base.head.is_null());
+        assert!(storage.stacks[VAL_PORT].base.head.is_null());
+    }
+
+    #[test]
+    fn root_scope_clears_publications_on_normal_exit_and_unwind() {
+        let _guard = NurseryTestGuard::new();
+        fn node_hook(_: &mut dyn FnMut(*mut *mut Node)) {}
+        fn band_hook(_: &mut dyn FnMut(&mut Val)) {}
+        for unwind in [false, true] {
+            let result = std::panic::catch_unwind(|| {
+                let mut storage = Storage::new();
+                let _roots = unsafe { GcRootsGuard::new(&mut storage) };
+                assert_eq!(
+                    GC_ROOTS.load(Ordering::Relaxed),
+                    &mut storage as *mut _ as usize
+                );
+                for i in 0..STORAGE_COUNT {
+                    let owner = storage.dispatch_mut(i).base_mut() as *mut _;
+                    assert_eq!(storage.pools[i], owner);
+                }
+                NODE_ROOT_WALK_HOOK
+                    .store(node_hook as NodeRootWalkHook as usize, Ordering::Relaxed);
+                BAND_ROOT_WALK_HOOK
+                    .store(band_hook as BandRootWalkHook as usize, Ordering::Relaxed);
+                if unwind {
+                    panic!("exercise root unwinding");
+                }
+            });
+            assert_eq!(result.is_err(), unwind);
+            assert_eq!(GC_ROOTS.load(Ordering::Relaxed), 0);
+            assert_eq!(NODE_ROOT_WALK_HOOK.load(Ordering::Relaxed), 0);
+            assert_eq!(BAND_ROOT_WALK_HOOK.load(Ordering::Relaxed), 0);
+        }
     }
 
     #[test]

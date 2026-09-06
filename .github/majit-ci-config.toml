@@ -1,4 +1,6 @@
 [patch."https://github.com/youknowone/pyre"]
+majit-backend-wasm-host = { path = "../majit/majit-backend-wasm-host" }
+majit-backend-wasm = { path = "../majit/majit-backend-wasm" }
 majit-ir = { path = "../majit/majit-ir" }
 majit-macros = { path = "../majit/majit-macros" }
 majit-metainterp = { path = "../majit/majit-metainterp" }

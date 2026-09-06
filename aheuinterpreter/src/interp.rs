@@ -36,7 +36,8 @@ pub fn mainloop(program: &Program) -> Val {
 
     // The registered storage is what enumerates the live values, both for the
     // node collection and for the dual-mode flip, which cannot run without it.
-    crate::storage::set_gc_roots(&mut storage as *mut Storage);
+    // SAFETY: `storage` is not moved before `_roots` drops on every exit.
+    let _roots = unsafe { crate::storage::GcRootsGuard::new(&mut storage) };
 
     let mut input = aheui_io::InputBuffer::new();
     while pc < program.size {

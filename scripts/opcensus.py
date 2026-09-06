@@ -1,48 +1,10 @@
 #!/usr/bin/env python3
-"""Record and gate how many machine-level ops the JIT backend emits.
+"""Record/check emitted backend operation counts; show one program's census.
 
-Same file format and the same per-field direction idea as `scripts/jitstats.py`,
-so one reading applies to both: a sorted `key=value` text file per program.
-
-What this gates that nothing else does: `jitstats.py` counts *events* —
-how many loops compiled, how many guards failed, how many traces aborted. A
-pass that silently stops firing moves none of them. The loop still compiles,
-the same guards still fail, and the same bytes still come out; the trace just
-gets bigger. `logo` optimizes 24893 ops down to 3289, so there is a factor of
-seven sitting behind counters that would not twitch if it were lost.
-
-Wall clock cannot cover that gap here. This checkout is shared, and a host
-running several sibling builds sits at a load average near 100, where `logo`'s
-wall time swings by more than the factor most codegen changes are worth. The
-op count does not move with load: the same binary censused twice reports the
-same number on an idle host and a saturated one.
-
-    scripts/opcensus.py record [corpus/program ...]
-    scripts/opcensus.py check  [corpus/program ...]
-    scripts/opcensus.py show   <corpus/program>
-
-Direction, per field:
-
-  `op.*`, `total_ops`   may FALL freely — a smaller trace is the goal — and a
-                        RISE is the regression. Clear a deliberate rise with
-                        `record`, the same way a `guard_failures` rise is
-                        cleared, and say in the commit what bought it.
-  `out_bytes`, `exit`   must match EXACTLY, in both directions. An op count
-                        that fell while the output moved is a miscompile
-                        wearing an optimization's clothes.
-  `traces`              reported, gated by nothing: which loops get hot is a
-                        threshold lottery and it moves under ordinary tuning.
-
-The census runs at the same threshold as `pyre/check.py`'s `*_jitstress` axis
-(50) rather than the production one, for coverage: at 1039 only three of the
-pinned corpus programs compile anything at all, and a gate that sees three
-traces cannot grade a backend change that lands in the fourth. At 50 it sees
-ten programs and forty-odd traces.
-
-`MAJIT_LOG=1` is what emits the per-op lines this parses. It does not perturb
-what gets compiled — `loops_compiled`, `bridges_compiled`, `loops_aborted` and
-`guard_failures` are identical with it on and off — so the census describes the
-same compilation the ungated run performs.
+Usage: opcensus.py {record,check,show} [corpus/program ...]. Runs with
+MAJIT_LOG at threshold 50. Counts may fall; rises require investigation.
+Output size and exit status must match exactly. Trace count is informational.
+Baselines live beside the corresponding jitstress .jitstats files.
 """
 
 from __future__ import annotations
@@ -52,6 +14,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+from bench_support import read_int_fields as read_baseline, write_fields as write_baseline
 
 REPO = Path(__file__).resolve().parent.parent
 BINARY = REPO / "target" / "release" / "aheui"
@@ -118,20 +82,6 @@ def census(program: Path) -> dict[str, int]:
             fields["total_ops"] += 1
     fields["out_bytes"] = len(proc.stdout)
     fields["exit"] = proc.returncode
-    return fields
-
-
-def write_baseline(path: Path, fields: dict[str, int]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(f"{k}={v}\n" for k, v in sorted(fields.items())))
-
-
-def read_baseline(path: Path) -> dict[str, int]:
-    fields: dict[str, int] = {}
-    for line in path.read_text().splitlines():
-        key, sep, value = line.partition("=")
-        if sep:
-            fields[key] = int(value)
     return fields
 
 

@@ -29,7 +29,10 @@ struct RunArgs {
         help = "Force JIT execution (default). `--jit=name=value,...` sets JIT \
                 parameters (e.g. `--jit=stack_cap=8,trace_limit=20000`); \
                 `--jit=off` disables the JIT")]
-    #[cfg_attr(all(feature = "naive", feature = "jit"), arg(conflicts_with = "no_jit"))]
+    #[cfg_attr(
+        all(feature = "naive", feature = "jit"),
+        arg(conflicts_with = "no_jit")
+    )]
     jit: Option<String>,
 
     #[cfg(all(feature = "naive", feature = "jit"))]

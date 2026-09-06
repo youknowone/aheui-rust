@@ -3,7 +3,7 @@
 // RPython parity: rpaheui/aheui/aheui.py
 //   greens = [pc, stackok, is_queue, program]
 //   reds   = [stacksize, storage, selected]
-//   storage = linked list stacks (no virtualizable arrays)
+//   storage = linked list stacks
 //
 // `bm` is a fifth green with no counterpart upstream. It carries the dual-mode
 // encoding — pyre runs values as raw machine words until one overflows — and
@@ -36,10 +36,7 @@ pub mod jit;
 /// default (`rlib/jit.py`), so the number has one home.
 pub const JIT_THRESHOLD: u32 = majit_metainterp::jit::PARAMETERS.threshold;
 
-/// JIT threshold honoring the `MAJIT_THRESHOLD` env override (for testing
-/// small hot loops without the production warmup). RPython exposes the
-/// threshold as a configurable jitdriver param (`warmspot.py`); this is
-/// the same knob, read once at startup.
+/// JIT threshold, with a MAJIT_THRESHOLD startup override.
 pub fn jit_threshold() -> u32 {
     std::env::var("MAJIT_THRESHOLD")
         .ok()
@@ -59,9 +56,7 @@ pub fn jit_threshold() -> u32 {
 /// [`trace_limit`] exposes an override for sweeping it.
 pub const TRACE_LIMIT: u32 = 70000;
 
-/// [`TRACE_LIMIT`] honoring a `MAJIT_TRACE_LIMIT` override. `trace_limit` is a
-/// configurable jitdriver param upstream too (`warmspot.py`); this is the same
-/// knob, read once at startup, so the budget can be swept without a rebuild.
+/// Trace budget, with a MAJIT_TRACE_LIMIT startup override.
 pub fn trace_limit() -> u32 {
     std::env::var("MAJIT_TRACE_LIMIT")
         .ok()
@@ -69,23 +64,7 @@ pub fn trace_limit() -> u32 {
         .unwrap_or(TRACE_LIMIT)
 }
 
-/// A sweep override for the guard-failure count a guard must reach before its
-/// bridge is traced.
-///
-/// Unset, the driver keeps the parameter table's default. The reason to be
-/// able to move it is that this driver's guards fail far more often than a
-/// typical one — the self-interpreting corpus reaches five figures of guard
-/// failures against two figures of bridge compilations — so what the default
-/// is worth here is a measurement rather than an inheritance.
-///
-/// The measurement so far says: leave it. Guard failures approximate
-/// `bridges_compiled x eagerness` — an admission toll each bridge pays before
-/// it compiles, not work the run loses — so lowering the value cuts the
-/// counter without moving wall time. Low values used to produce wrong answers
-/// on the self-interpreter; that came from unnormalized constants in the
-/// loop-header virtualizable boxes, and since the header started running
-/// `remove_consts_and_duplicates` the sweep is byte-exact down to 15. The
-/// override remains an instrument rather than a tuning knob.
+/// Optional startup override for the driver's trace_eagerness parameter.
 fn trace_eagerness_override() -> Option<i64> {
     std::env::var("AHEUI_TRACE_EAGERNESS")
         .ok()
@@ -94,73 +73,53 @@ fn trace_eagerness_override() -> Option<i64> {
 
 /// `--jit name=value,...` pairs, staged by [`set_user_jit_params`] before
 /// [`mainloop`] builds the driver that consumes them.
-static USER_JIT_PARAMS: std::sync::Mutex<Vec<(String, String)>> =
-    std::sync::Mutex::new(Vec::new());
+static USER_JIT_PARAMS: std::sync::Mutex<Vec<UserJitSetting>> = std::sync::Mutex::new(Vec::new());
 
-/// The names forwarded verbatim to the driver's `set_param`. The list mirrors
-/// the names `warmstate` dispatches on; a name outside it is refused at the
-/// command line instead of silently doing nothing.
-const DRIVER_PARAM_NAMES: &[&str] = &[
-    "threshold",
-    "function_threshold",
-    "trace_eagerness",
-    "decay",
-    "trace_limit",
-    "inlining",
-    "loop_longevity",
-    "retrace_limit",
-    "pureop_historylength",
-    "max_retrace_guards",
-    "max_unroll_loops",
-    "disable_unrolling",
-    "max_unroll_recursion",
-    "max_inline_depth",
-    "vec",
-    "vectorize",
-    "vec_all",
-    "vec_cost",
-];
+enum UserJitSetting {
+    Driver(String),
+    StackCap(usize),
+}
 
 /// Stage the tunable JIT parameters from a user-supplied string in the
-/// `set_user_param` format: `name=value` pairs separated by commas. `off` is
-/// the caller's to handle (it decides which interpreter runs at all), and
-/// `default` stages nothing — at startup nothing has been changed yet.
-///
-/// Two names are not driver parameters: `enable_opts` (string-valued pass
-/// list) and `stack_cap` (the band ring size, consumed by `mainloop` before
-/// the state arrays are sized, where a non-power-of-two would break the
-/// `& (cap - 1)` ring indexing — hence the shape check here).
+/// `rlib/jit.py set_user_param` format, parsed by majit. The Aheui extension
+/// `stack_cap` sizes the band ring before state allocation; its power-of-two
+/// constraint belongs here. The CLI may handle `off` by selecting the naive
+/// interpreter; the shared parser also supports disabling a live JIT driver.
 pub fn set_user_jit_params(text: &str) -> Result<(), String> {
-    if text == "default" {
-        return Ok(());
-    }
-    let mut staged = Vec::new();
-    for part in text.split(',') {
-        let part = part.trim();
-        let Some((name, value)) = part.split_once('=') else {
-            return Err(format!("--jit parameter without '=': `{part}`"));
-        };
-        match name {
-            "stack_cap" => {
-                let cap = value
-                    .parse::<usize>()
-                    .map_err(|_| format!("stack_cap is not a number: `{value}`"))?;
-                if !cap.is_power_of_two() || cap < 2 {
-                    return Err(format!("stack_cap must be a power of two >= 2: {cap}"));
-                }
-            }
-            "enable_opts" => {}
-            _ if DRIVER_PARAM_NAMES.contains(&name) => {
-                value
-                    .parse::<i64>()
-                    .map_err(|_| format!("{name} is not a number: `{value}`"))?;
-            }
-            _ => return Err(format!("unknown --jit parameter: `{name}`")),
-        }
-        staged.push((name.to_string(), value.to_string()));
-    }
+    let staged = parse_user_jit_settings(text)?;
     USER_JIT_PARAMS.lock().unwrap().extend(staged);
     Ok(())
+}
+
+fn parse_user_jit_settings(text: &str) -> Result<Vec<UserJitSetting>, String> {
+    let mut staged = Vec::new();
+    let mut params = majit_metainterp::jit::PARAMETERS;
+    if text == "off" || text == "default" {
+        majit_metainterp::jit::set_user_param(&mut params, text).map_err(|err| err.to_string())?;
+        return Ok(vec![UserJitSetting::Driver(text.to_string())]);
+    }
+    for part in text.split(',') {
+        let part = part.trim_matches(' ');
+        if let Some(value) = part.strip_prefix("stack_cap=") {
+            let cap = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| format!("stack_cap is not a number: `{value}`"))?;
+            if !cap.is_power_of_two() || cap < 2 {
+                return Err(format!("stack_cap must be a power of two >= 2: {cap}"));
+            }
+            staged.push(UserJitSetting::StackCap(cap));
+        } else {
+            // off/default are whole-string commands, never list entries.
+            if !part.contains('=') {
+                return Err(format!("--jit parameter without '=': `{part}`"));
+            }
+            majit_metainterp::jit::set_user_param(&mut params, part)
+                .map_err(|err| err.to_string())?;
+            staged.push(UserJitSetting::Driver(part.to_string()));
+        }
+    }
+    Ok(staged)
 }
 
 /// The last [`mainloop`] run's cumulative JIT counters.
@@ -381,81 +340,6 @@ mod bigint_gc {
     pub fn init() {}
 }
 
-// Residual-call host trampoline for the wasm32 native-host build.
-//
-// wasm32 `call_indirect` type-checks every call, so the metainterpreter cannot
-// transmute a raw funcptr to a statically-guessed `extern "C" fn` and call it:
-// a callee taking a pointer declares an `i32` parameter where the transmute
-// spells `i64`, and a void callee declares no result where it spells one.
-// Neither mismatch is tolerated the way the SysV/AAPCS C ABI tolerates both, so
-// the call traps with `indirect call type mismatch` before it reaches the
-// callee. A compiled trace already round-trips such calls through the host
-// (`env.jit_call`); this routes the recording and blackhole paths through the
-// symmetric `majit_host.jit_call_host` import, which reflects the callee's real
-// wasm signature and coerces each positional argument to it.
-#[cfg(all(target_arch = "wasm32", feature = "wasm-host"))]
-mod residual_host {
-    use core::cell::UnsafeCell;
-
-    // Call-area layout, taken from the backend that defines it rather than
-    // restated here: the host reads this same block from the other side of the
-    // import, so a layout change has to reach both ends or neither.
-    use majit_backend_wasm::codegen::{
-        CALL_ARGS_OFS as CALL_ARGS_OFS_U64, CALL_FUNC_OFS as CALL_FUNC_OFS_U64,
-        CALL_NARGS_OFS as CALL_NARGS_OFS_U64, CALL_RESULT_OFS as CALL_RESULT_OFS_U64,
-        MAX_CALL_ARGS as MAX_ARGS, MIN_FRAME_BYTES as SCRATCH_LEN,
-    };
-    const CALL_RESULT_OFS: usize = CALL_RESULT_OFS_U64 as usize;
-    const CALL_FUNC_OFS: usize = CALL_FUNC_OFS_U64 as usize;
-    const CALL_NARGS_OFS: usize = CALL_NARGS_OFS_U64 as usize;
-    const CALL_ARGS_OFS: usize = CALL_ARGS_OFS_U64 as usize;
-
-    #[link(wasm_import_module = "majit_host")]
-    unsafe extern "C" {
-        fn jit_call_host(frame_ptr: u32);
-    }
-
-    // A wasm32 module instance is single-threaded, so a shared scratch buffer
-    // needs no synchronization. Residual calls nest synchronously: each level
-    // writes its arguments, the host reads them before invoking the callee, and
-    // each level reads its result immediately after the host returns — so an
-    // inner call that reuses the buffer cannot clobber an outer call's
-    // already-consumed arguments or not-yet-written result.
-    struct Scratch(UnsafeCell<[u8; SCRATCH_LEN]>);
-    unsafe impl Sync for Scratch {}
-    static SCRATCH: Scratch = Scratch(UnsafeCell::new([0u8; SCRATCH_LEN]));
-
-    fn residual_host_call(func_ptr: usize, args: &[i64]) -> i64 {
-        assert!(
-            args.len() <= MAX_ARGS,
-            "residual_host_call: arity {} exceeds {MAX_ARGS}",
-            args.len()
-        );
-        // A target the backend was told is spelled in words needs no host to
-        // reflect its type: the signature the residual call carries is the
-        // signature it has. Every widening shim the jitcode producer mints is
-        // one, and those are the callees this path meets most.
-        if let Some(result) = majit_backend_wasm::direct_word_abi_call(func_ptr, args) {
-            return result;
-        }
-        let base = SCRATCH.0.get() as *mut u8;
-        unsafe {
-            (base.add(CALL_FUNC_OFS) as *mut i64).write_unaligned(func_ptr as i64);
-            (base.add(CALL_NARGS_OFS) as *mut i64).write_unaligned(args.len() as i64);
-            for (i, &a) in args.iter().enumerate() {
-                (base.add(CALL_ARGS_OFS + i * 8) as *mut i64).write_unaligned(a);
-            }
-            jit_call_host(base as u32);
-            (base.add(CALL_RESULT_OFS) as *const i64).read_unaligned()
-        }
-    }
-
-    /// Install the trampoline on the current thread. Idempotent.
-    pub fn install() {
-        majit_backend::call_stub::set_residual_host_call(Some(residual_host_call));
-    }
-}
-
 /// Trace entries, host trace-module materializations, and materializations
 /// served from the byte-identical module cache — all counted inside the guest.
 ///
@@ -494,7 +378,7 @@ pub fn wasm_bridge_diag_summary() -> String {
 pub fn init_gc_subsystem() {
     bigint_gc::init();
     #[cfg(all(target_arch = "wasm32", feature = "wasm-host"))]
-    residual_host::install();
+    majit_backend_wasm::install_residual_host_call();
     #[cfg(target_arch = "wasm32")]
     {
         // The direct-residual-call lowering picks a callee's wasm type from the
@@ -534,11 +418,6 @@ fn word_abi_residual_addrs() -> Vec<i64> {
     const _: fn() -> i64 = jit_bigint_mode;
     const _: extern "C" fn() -> i64 = jit_band_count;
     const _: extern "C" fn() -> i64 = jit_cap;
-    const _: fn(Val, Val) -> Val = val_add;
-    const _: fn(Val, Val) -> Val = val_sub;
-    const _: fn(Val, Val) -> Val = val_mul;
-    const _: fn(Val, Val) -> Val = val_div;
-    const _: fn(Val, Val) -> Val = val_mod;
 
     let mut addrs: Vec<i64> = vec![
         jit_write_number as *const () as usize as i64,
@@ -551,11 +430,6 @@ fn word_abi_residual_addrs() -> Vec<i64> {
         jit_bigint_mode as *const () as usize as i64,
         jit_band_count as *const () as usize as i64,
         jit_cap as *const () as usize as i64,
-        val_add as *const () as usize as i64,
-        val_sub as *const () as usize as i64,
-        val_mul as *const () as usize as i64,
-        val_mod as *const () as usize as i64,
-        val_div as *const () as usize as i64,
     ];
     addrs.extend(jit::jitcode_runtime::word_abi_fnaddrs());
     addrs
@@ -779,30 +653,13 @@ fn register_aheui_copying_gc_jit_roots() {
 fn walk_aheui_jit_node_roots(
     visit_node_slot: &mut dyn FnMut(*mut *mut aheui_runtime::storage::linkedlist::Node),
 ) {
-    let mut visit_gcref_slot = |slot: *mut majit_ir::GcRef| {
-        visit_node_slot(slot as *mut *mut aheui_runtime::storage::linkedlist::Node);
-    };
-
-    majit_gc::shadow_stack::walk_roots(|gcref| {
-        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
+    majit_gc::shadow_stack::walk_jit_roots(|slot| {
+        visit_node_slot(
+            slot as *mut majit_ir::GcRef as *mut *mut aheui_runtime::storage::linkedlist::Node,
+        );
     });
 
-    majit_gc::shadow_stack::walk_jf_roots(|gcref| {
-        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
-        if !gcref.is_null() && majit_gc::shadow_stack::is_libc_jitframe(gcref.0) {
-            majit_gc::shadow_stack::trace_libc_jitframe(gcref.0, &mut visit_gcref_slot);
-        }
-    });
-
-    majit_gc::shadow_stack::walk_bh_regs(|gcref| {
-        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
-    });
-
-    majit_gc::shadow_stack::walk_resume_ref_roots(|gcref| {
-        visit_gcref_slot(gcref as *mut majit_ir::GcRef);
-    });
-
-    // This hook enumerates only shadow-stack node references. MiniMarkGC walks
+    // This hook enumerates JIT stack and deadframe node references. MiniMarkGC walks
     // Aheui bignums held by majit's extra-root set separately.
 }
 
@@ -913,14 +770,8 @@ extern "C" fn jit_band_count() -> i64 {
     BAND_COUNT.load(std::sync::atomic::Ordering::Relaxed) as i64
 }
 
-/// A ring size licensed by the compiler's per-pool depth bounds, or `None`
-/// to keep the default.
-///
-/// `co_stacksize` consumption: when every banded pool has a proven depth
-/// bound under [`CAP_DEFAULT`], a ring that big never evicts, so the array
-/// carries — and every deopt writes back — only the slots the program can
-/// fill. A pool the lattice cannot bound falls to `depths_by_running`, which
-/// answers exactly where it can and observes where it cannot.
+/// Select a smaller ring from static bounds, exact measurement or a bounded
+/// prefix estimate. Estimates may spill to the node chain later in the run.
 fn proven_cap(program: &Program) -> Option<usize> {
     let bands = banded_pool_count(program);
     // Widening at the largest ring this will ever pick keeps the lattice as
@@ -936,14 +787,8 @@ fn proven_cap(program: &Program) -> Option<usize> {
         }
         let bound = match bound {
             ahsembler::depth::DepthBound::Bounded(b) => *b as usize,
-            // The static lattice cannot count loop trips, so a counted loop
-            // that nets a push is Unbounded there even when the real peak is
-            // small. An input-free program is deterministic, so the exact
-            // peak is measurable by running it; the budget (~1ms of
-            // interpretation) keeps that from taxing the start of a long
-            // program, which simply keeps the default. A `Some` is the real
-            // run's exact peak — see `measured_pool_depths` — so the ring
-            // this sizes can never evict.
+            // Measurement handles bounds the static lattice cannot prove.
+            // A bounded prefix is only an estimate; later pushes may spill.
             ahsembler::depth::DepthBound::Unbounded => {
                 if measured.is_none() {
                     measured = Some(depths_by_running(program)?);
@@ -957,25 +802,9 @@ fn proven_cap(program: &Program) -> Option<usize> {
     (cap < CAP_DEFAULT).then_some(cap)
 }
 
-/// The peaks a bounded prefix of the run reaches, for the pools the lattice
-/// could not bound.
-///
-/// The exact answer comes first: a program that reads no input is
-/// deterministic from its own text, and one that finishes inside the budget
-/// gives its true peak, so a ring sized to that never evicts.
-///
-/// A program that reads input has no such answer — its depths belong to the
-/// input as much as to the code — and the self-interpreter is that program.
-/// So it gets observed instead: the interpreter's own input decoding feeds a
-/// prefix of the run, and the deepest each pool got over that prefix is the
-/// estimate. It is an estimate and the rest of the run may go deeper; what
-/// makes it worth taking is that overflowing the ring spills to the node
-/// chain, so an estimate that comes in low costs traffic rather than an
-/// answer, and rounding it up to a power of two absorbs a shallow miss.
-///
-/// Reading stdin this early is the one thing a caller can notice, so it is
-/// asked for only when stdin is not a terminal — a redirect or a pipe holds
-/// the same bytes whoever reads them first, an interactive session does not.
+/// Measure an input-free run, then try a bounded prefix using buffered stdin.
+/// Prefix peaks are estimates; ring overflow must retain the spill path.
+/// Do not read interactive input ahead of the real interpreter.
 fn depths_by_running(program: &Program) -> Option<[u32; STORAGE_COUNT]> {
     const STEP_BUDGET: u64 = 250_000;
     if let Some(exact) = ahsembler::depth::measured_pool_depths(program, STEP_BUDGET) {
@@ -998,17 +827,8 @@ fn depths_by_running(program: &Program) -> Option<[u32; STORAGE_COUNT]> {
     ahsembler::depth::observed_pool_depths(program, STEP_BUDGET, &mut read)
 }
 
-/// Highest stack pool index a program selects or moves into, plus one.
-///
-/// Only pools below this get a band in `vals`, so a program that stays in the
-/// first few pools declares a short array. A band is addressed as `pool * cap`
-/// with no remapping table to read at run time, so the count is a ceiling, not
-/// a population.
-///
-/// Capped at `VAL_QUEUE`, which is what makes `selected < bands` a complete
-/// test: queue and port push and pop at opposite ends, so neither can hold a
-/// band, and capping below them lets one comparison answer both questions.
-/// Pools above the queue trade their band for that single comparison.
+/// Band one pool by default. A numeric AHEUI_BANDS selects a clamped count;
+/// a nonnumeric value derives the count from the program's selected pools.
 fn banded_pool_count(program: &Program) -> usize {
     // One band by default: a declared slot is paid for in compile time and in
     // per-iteration work whether or not the program ever selects its pool, so
@@ -1431,11 +1251,6 @@ fn jit_alloc_node(value: Val, next: usize) -> usize {
     aheui_runtime::storage::linkedlist_jit::alloc_node_jit(value, next)
 }
 
-#[inline(always)]
-fn jit_free_node(node: usize) {
-    aheui_runtime::storage::linkedlist_jit::free_node_jit(node)
-}
-
 /// Pipeline jitcode resolver for `inline_pipeline_*` call policies.
 /// The `#[jit_interp]` macro's dispatch JitCode builder calls this to
 /// resolve a function name (e.g. `"val_add"`) to the pipeline-built
@@ -1512,7 +1327,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
 // JIT mainloop.
 //
 // RPython parity: rpaheui/aheui/aheui.py mainloop()
-// - storage = linked list stacks (no compact arrays, no virtualizable arrays)
+// - storage = linked list stacks with virtualizable top-of-stack bands
 // - selected = red variable dispatched through the live storage index
 // - push/pop = Node allocation/deallocation (OptVirtualize target)
 
@@ -1635,32 +1450,12 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         Program::get_op => elidable_int_cannot_raise,
         Program::get_label => elidable_int_cannot_raise,
         Program::get_operand => elidable_int_cannot_raise,
-        // Monomorphic storage helpers. The hot Stack ops are `#[jit_inline]`,
-        // while the storage-independent pop / swap come from the graph
-        // pipeline's shared `LinkedList` implementation. Queue div/mod stay
-        // residual — a concrete `call_void_args` / `call_int_args` — rather
-        // than silent-skipping the storage op. Their stack twins are not
-        // registered because the arms hand-inline the pop and call
-        // `val_div`/`val_mod` on the operands directly, so there is no
-        // `lj::stack_div` call site left to classify.
-        //
-        // The registered path segments must match the call site verbatim
-        // (the macro compares segment-by-segment); use the `lj::*` alias
-        // here since the mainloop arms call `lj::stack_push(...)` etc.
+        // Storage access specializes on the selected kind. Arithmetic below
+        // always uses the graph-pipeline helpers shared with LinkedList.
         lj::stack_push => inline_void,
-        lj::stack_add => inline_void,
-        lj::stack_sub => inline_void,
-        lj::stack_mul => inline_void,
         lj::stack_dup => inline_void,
-        lj::stack_cmp => inline_void,
         lj::queue_push => inline_void,
-        lj::queue_add => inline_void,
-        lj::queue_sub => inline_void,
-        lj::queue_mul => inline_void,
-        lj::queue_div => residual_void,
-        lj::queue_mod => residual_void,
         lj::queue_dup => inline_void,
-        lj::queue_cmp => inline_void,
         // Named by neither family: their parameter is the base the three
         // storages embed, so one registration covers every selection.
         lj::pop_base_known_nonempty => inline_pipeline_int,
@@ -1680,21 +1475,6 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         bd::band_mod_raw => inline_pipeline_int,
         bd::band_cmp_raw => inline_pipeline_int,
         lj::swap_base_known_two => inline_pipeline_void,
-        // Mode-0 twins of the arithmetic helpers, selected on the `bm` green.
-        // All inline, including div and mod, which are residual above: their
-        // mode-0 form carries a guard that only survives inside the trace.
-        lj::stack_add_raw => inline_void,
-        lj::stack_sub_raw => inline_void,
-        lj::stack_mul_raw => inline_void,
-        lj::stack_div_raw => inline_void,
-        lj::stack_mod_raw => inline_void,
-        lj::stack_cmp_raw => inline_void,
-        lj::queue_add_raw => inline_void,
-        lj::queue_sub_raw => inline_void,
-        lj::queue_mul_raw => inline_void,
-        lj::queue_div_raw => inline_void,
-        lj::queue_mod_raw => inline_void,
-        lj::queue_cmp_raw => inline_void,
         jit_storage_push => residual_void,
         jit_storage_dup => residual_void,
         // `storage[idx]` returns the selected list's object reference; the
@@ -1713,24 +1493,6 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_sel_get_ref => elidable_ref_cannot_raise_wrapped,
         jit_stacksize_delta => elidable_int_cannot_raise,
         jit_effective_stacksize_delta => elidable_int_cannot_raise,
-        // Node frees and value arithmetic are registered so field-level Stack
-        // operations emit concrete IR instead of silently skipping an
-        // unregistered call. Allocation is not here: it goes through
-        // `struct_allocs`, so concrete execution calls `jit_alloc_node` while
-        // tracing emits a headerless `New(Node)` plus field stores under the
-        // descriptor identity the graph-pipeline storage helpers use.
-        //
-        // `jit_free_node` is `concrete_only_void` — the free runs on the
-        // concrete path only, and the trace omits it. The GNE after the call
-        // is a store-scheduling fence for the preceding
-        // `setfield_gc_r(selected_ref.head)` lazy set.
-        jit_free_node => concrete_only_void,
-        val_add => elidable_int,
-        val_sub => elidable_int,
-        val_mul => elidable_int,
-        val_div => elidable_int,
-        val_mod => elidable_int,
-        val_from_i32 => elidable_int_cannot_raise,
     },
     // Residual storage mutators that change `size` or the `head` chain pointer.
     //
@@ -1745,15 +1507,11 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // an extra reload is harmless, a missing invalidation is not.
     residual_writes = {
         selected_ref.size => [
-            lj::queue_push, lj::queue_add, lj::queue_sub,
-            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
-            lj::queue_cmp,
+            lj::queue_push, lj::queue_dup,
             jit_storage_push, jit_storage_dup,
         ],
         selected_ref.head => [
-            lj::queue_push, lj::queue_add, lj::queue_sub,
-            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
-            lj::queue_cmp,
+            lj::queue_push, lj::queue_dup,
             jit_storage_push, jit_storage_dup,
         ],
         // `tail` exists only on Queue (the dummy-tail sentinel append target).
@@ -1762,9 +1520,7 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // stale sentinel and appends off the live chain, orphaning nodes
         // (chainlen < size + 1) until a later pop dereferences a null head.
         selected_ref.tail @ aheui_runtime::storage::linkedlist::Queue => [
-            lj::queue_push, lj::queue_add, lj::queue_sub,
-            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
-            lj::queue_cmp,
+            lj::queue_push, lj::queue_dup,
             jit_storage_push, jit_storage_dup,
         ],
     },
@@ -1848,11 +1604,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // argument on the command line outranks an ambient variable. `stack_cap`
     // is not a driver parameter — it is consumed below, before the state
     // arrays are sized.
-    for (name, value) in USER_JIT_PARAMS.lock().unwrap().iter() {
-        match name.as_str() {
-            "stack_cap" => {}
-            "enable_opts" => driver.set_param_enable_opts(value),
-            _ => driver.set_param(name, value.parse().unwrap_or(0)),
+    for setting in USER_JIT_PARAMS.lock().unwrap().iter() {
+        if let UserJitSetting::Driver(text) = setting {
+            majit_metainterp::jit::set_user_param(&mut driver, text)
+                .expect("JIT parameters were validated before staging");
         }
     }
 
@@ -1869,8 +1624,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         .unwrap()
         .iter()
         .rev()
-        .find(|(name, _)| name == "stack_cap")
-        .and_then(|(_, value)| value.parse::<usize>().ok());
+        .find_map(|setting| match setting {
+            UserJitSetting::StackCap(cap) => Some(*cap),
+            UserJitSetting::Driver(_) => None,
+        });
     if let Some(cap) = user_cap.or_else(|| {
         std::env::var("AHEUI_CAP")
             .ok()
@@ -1927,9 +1684,10 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     state.refresh_selected_ref();
     // Register the storage as the nursery collector's root set. `state` is a
     // stationary local for the rest of the mainloop, so the pointer stays
-    // valid; the compiled traces omit `jit_free_node`, so leaked nodes are
+    // valid; compiled traces do not recycle individual nodes; dead nodes are
     // reclaimed by `Nursery::collect` walking these roots.
-    aheui_runtime::storage::set_gc_roots(&mut state.storage as *mut Storage);
+    // SAFETY: `state` stays at this address for the rest of the mainloop.
+    let _roots = unsafe { aheui_runtime::storage::GcRootsGuard::new(&mut state.storage) };
     register_aheui_copying_gc_jit_roots();
     // Publish the storage for the output shims' diagnostic dump. It is taken
     // from the same stationary `state` as the roots above, so the pointer does
@@ -2155,180 +1913,196 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         }
 
         match op {
-            // `selected.<op>()`, branched on the `is_queue` green. The trace
-            // specializes per value, so only one branch survives in compiled
-            // code: a concrete `stack_*` or `queue_*` helper reached through
-            // `selected_ref`, the `ref(Stack)` state scalar pointing at the
-            // selected storage. Port falls through to polymorphic dispatch.
-            //
-            // The banded arm — `selected < bands` — runs the same binary op
-            // over the ring instead of the chain. `sp` is the depth after the
-            // op, so the operands sit at `sp` and `sp - 1` and the result takes
-            // the lower slot, the shape `linkedlist.py` has over the chain. At
-            // `sp >= cap` the pop dropped the band's bottom element out of
-            // range, so the chain hands the next one back — into the slot the
-            // popped operand just vacated, which is the same ring slot.
+            // rpaheui LinkedList arithmetic: _get_2_values, compute, _put_value.
+            // Queue consumes two nodes; Stack/Port consume one and overwrite
+            // the next. Banded stacks use the same arithmetic over ring slots.
             OP_ADD => {
                 if stackok {
-                    if is_queue {
-                        if bm != 0 {
-                            lj::queue_add(state.selected_ref);
-                        } else {
-                            lj::queue_add_raw(state.selected_ref);
-                        }
+                    let r1 = if state.selected < bands {
+                        let slot = state.selected * cap + (state.sp & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
+                    };
+                    let r2 = if is_queue {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        let head = state.selected_ref.head;
+                        jit_win_store(head.value)
+                    };
+                    let word = if bm != 0 {
+                        bd::band_add(r2, r1)
+                    } else {
+                        bd::band_add_raw(r2, r1)
+                    };
+                    if is_queue {
+                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                    } else if state.selected < bands {
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        let r1 = state.vals[r1_slot];
-                        let r2 = state.vals[r2_slot];
-                        let __band_word = if bm != 0 {
-                            bd::band_add(r2, r1)
-                        } else {
-                            bd::band_add_raw(r2, r1)
-                        };
-                        state.vals[r2_slot] = __band_word;
+                        state.vals[r2_slot] = word;
                         if state.sp >= cap {
+                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
-                    } else if bm != 0 {
-                        lj::stack_add(state.selected_ref);
                     } else {
-                        lj::stack_add_raw(state.selected_ref);
+                        let head = state.selected_ref.head;
+                        head.value = jit_tag_val_raw(word);
                     }
                 }
             }
             OP_SUB => {
                 if stackok {
-                    if is_queue {
-                        if bm != 0 {
-                            lj::queue_sub(state.selected_ref);
-                        } else {
-                            lj::queue_sub_raw(state.selected_ref);
-                        }
+                    let r1 = if state.selected < bands {
+                        let slot = state.selected * cap + (state.sp & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
+                    };
+                    let r2 = if is_queue {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        let head = state.selected_ref.head;
+                        jit_win_store(head.value)
+                    };
+                    let word = if bm != 0 {
+                        bd::band_sub(r2, r1)
+                    } else {
+                        bd::band_sub_raw(r2, r1)
+                    };
+                    if is_queue {
+                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                    } else if state.selected < bands {
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        let r1 = state.vals[r1_slot];
-                        let r2 = state.vals[r2_slot];
-                        let __band_word = if bm != 0 {
-                            bd::band_sub(r2, r1)
-                        } else {
-                            bd::band_sub_raw(r2, r1)
-                        };
-                        state.vals[r2_slot] = __band_word;
+                        state.vals[r2_slot] = word;
                         if state.sp >= cap {
+                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
-                    } else if bm != 0 {
-                        lj::stack_sub(state.selected_ref);
                     } else {
-                        lj::stack_sub_raw(state.selected_ref);
+                        let head = state.selected_ref.head;
+                        head.value = jit_tag_val_raw(word);
                     }
                 }
             }
             OP_MUL => {
                 if stackok {
-                    if is_queue {
-                        if bm != 0 {
-                            lj::queue_mul(state.selected_ref);
-                        } else {
-                            lj::queue_mul_raw(state.selected_ref);
-                        }
+                    let r1 = if state.selected < bands {
+                        let slot = state.selected * cap + (state.sp & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
+                    };
+                    let r2 = if is_queue {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        let head = state.selected_ref.head;
+                        jit_win_store(head.value)
+                    };
+                    let word = if bm != 0 {
+                        bd::band_mul(r2, r1)
+                    } else {
+                        bd::band_mul_raw(r2, r1)
+                    };
+                    if is_queue {
+                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                    } else if state.selected < bands {
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        let r1 = state.vals[r1_slot];
-                        let r2 = state.vals[r2_slot];
-                        let __band_word = if bm != 0 {
-                            bd::band_mul(r2, r1)
-                        } else {
-                            bd::band_mul_raw(r2, r1)
-                        };
-                        state.vals[r2_slot] = __band_word;
+                        state.vals[r2_slot] = word;
                         if state.sp >= cap {
+                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
-                    } else if bm != 0 {
-                        lj::stack_mul(state.selected_ref);
                     } else {
-                        lj::stack_mul_raw(state.selected_ref);
+                        let head = state.selected_ref.head;
+                        head.value = jit_tag_val_raw(word);
                     }
                 }
             }
             OP_DIV => {
                 if stackok {
-                    if is_queue {
-                        if bm != 0 {
-                            lj::queue_div(state.selected_ref);
-                        } else {
-                            lj::queue_div_raw(state.selected_ref);
-                        }
+                    let r1 = if state.selected < bands {
+                        let slot = state.selected * cap + (state.sp & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
+                    };
+                    let r2 = if is_queue {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        let head = state.selected_ref.head;
+                        jit_win_store(head.value)
+                    };
+                    let word = if bm != 0 {
+                        bd::band_div(r2, r1)
+                    } else {
+                        bd::band_div_raw(r2, r1)
+                    };
+                    if is_queue {
+                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                    } else if state.selected < bands {
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        let r1 = state.vals[r1_slot];
-                        let r2 = state.vals[r2_slot];
-                        let __band_word = if bm != 0 {
-                            bd::band_div(r2, r1)
-                        } else {
-                            bd::band_div_raw(r2, r1)
-                        };
-                        state.vals[r2_slot] = __band_word;
+                        state.vals[r2_slot] = word;
                         if state.sp >= cap {
+                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
-                    } else if bm != 0 {
-                        let top_node = state.selected_ref.head;
-                        let r1 = top_node.value;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1u32;
-                        jit_free_node(top_node);
-                        let r2 = next.value;
-                        next.value = val_div(r2, r1);
                     } else {
-                        lj::stack_div_raw(state.selected_ref);
+                        let head = state.selected_ref.head;
+                        head.value = jit_tag_val_raw(word);
                     }
                 }
             }
             OP_MOD => {
                 if stackok {
-                    if is_queue {
-                        if bm != 0 {
-                            lj::queue_mod(state.selected_ref);
-                        } else {
-                            lj::queue_mod_raw(state.selected_ref);
-                        }
+                    let r1 = if state.selected < bands {
+                        let slot = state.selected * cap + (state.sp & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
+                    };
+                    let r2 = if is_queue {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        let head = state.selected_ref.head;
+                        jit_win_store(head.value)
+                    };
+                    let word = if bm != 0 {
+                        bd::band_mod(r2, r1)
+                    } else {
+                        bd::band_mod_raw(r2, r1)
+                    };
+                    if is_queue {
+                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                    } else if state.selected < bands {
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        let r1 = state.vals[r1_slot];
-                        let r2 = state.vals[r2_slot];
-                        let __band_word = if bm != 0 {
-                            bd::band_mod(r2, r1)
-                        } else {
-                            bd::band_mod_raw(r2, r1)
-                        };
-                        state.vals[r2_slot] = __band_word;
+                        state.vals[r2_slot] = word;
                         if state.sp >= cap {
+                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
-                    } else if bm != 0 {
-                        let top_node = state.selected_ref.head;
-                        let r1 = top_node.value;
-                        let next = top_node.next;
-                        state.selected_ref.head = next;
-                        state.selected_ref.size = state.selected_ref.size - 1u32;
-                        jit_free_node(top_node);
-                        let r2 = next.value;
-                        next.value = val_mod(r2, r1);
                     } else {
-                        lj::stack_mod_raw(state.selected_ref);
+                        let head = state.selected_ref.head;
+                        head.value = jit_tag_val_raw(word);
                     }
                 }
             }
@@ -2530,31 +2304,39 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_CMP => {
                 if stackok {
-                    if is_queue {
-                        if bm != 0 {
-                            lj::queue_cmp(state.selected_ref);
-                        } else {
-                            lj::queue_cmp_raw(state.selected_ref);
-                        }
+                    let r1 = if state.selected < bands {
+                        let slot = state.selected * cap + (state.sp & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
+                    };
+                    let r2 = if is_queue {
+                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
                     } else if state.selected < bands {
-                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
+                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
+                        state.vals[slot]
+                    } else {
+                        let head = state.selected_ref.head;
+                        jit_win_store(head.value)
+                    };
+                    let word = if bm != 0 {
+                        bd::band_cmp(r2, r1)
+                    } else {
+                        bd::band_cmp_raw(r2, r1)
+                    };
+                    if is_queue {
+                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                    } else if state.selected < bands {
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        let r1 = state.vals[r1_slot];
-                        let r2 = state.vals[r2_slot];
-                        let __band_word = if bm != 0 {
-                            bd::band_cmp(r2, r1)
-                        } else {
-                            bd::band_cmp_raw(r2, r1)
-                        };
-                        state.vals[r2_slot] = __band_word;
+                        state.vals[r2_slot] = word;
                         if state.sp >= cap {
+                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
-                    } else if bm != 0 {
-                        lj::stack_cmp(state.selected_ref);
                     } else {
-                        lj::stack_cmp_raw(state.selected_ref);
+                        let head = state.selected_ref.head;
+                        head.value = jit_tag_val_raw(word);
                     }
                 }
             }

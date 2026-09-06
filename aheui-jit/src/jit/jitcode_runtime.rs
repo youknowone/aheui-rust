@@ -1,19 +1,4 @@
-//! Runtime access to this crate's build-time jitcode table.
-//!
-//! `MetaInterpStaticData.jitcodes` (warmspot.py) — the list of
-//! `JitCode` objects produced by `CodeWriter.make_jitcodes()`
-//! (codewriter.py). The build script (`build.rs`) runs the
-//! `majit_translate` pipeline over the interpreter sources and writes
-//! `pipeline.jitcodes`, the shared `pipeline.descrs`
-//! (`Assembler.descrs`, assembler.py), symbolic function paths, and the
-//! shared liveness table into `$OUT_DIR`.
-//!
-//! Only the embedding half lives here: reading those artifacts out of the
-//! binary, binding process-local host addresses, and handing the result to
-//! `majit_metainterp::EmbeddedJitCodeTable`, which owns the join and identity
-//! rules. The artifacts are this crate's own `$OUT_DIR` output, which nothing
-//! below it in the dependency graph can see, so the two halves cannot swap
-//! places.
+//! Aheui runtime bindings for the shared codewriter artifacts.
 
 use std::sync::{Arc, OnceLock};
 
@@ -23,46 +8,32 @@ use majit_translate::jitcode::{BhDescr, JitCode};
 
 use aheui_runtime::storage::linkedlist::{ListBase, Node};
 
-/// Deserialize the build-time `pipeline.jitcodes` blob.
+fn artifacts() -> &'static majit_translate::artifacts::EmbeddedArtifacts {
+    static ARTIFACTS: OnceLock<majit_translate::artifacts::EmbeddedArtifacts> = OnceLock::new();
+    ARTIFACTS.get_or_init(|| {
+        majit_translate::artifacts::EmbeddedArtifacts::decode(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/jitcode_artifacts.bin"
+        )))
+        .expect("aheui JitCode artifacts")
+    })
+}
+
 fn load_pipeline_jitcodes() -> Vec<Arc<JitCode>> {
-    const BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/opcode_jitcodes.bin"));
-    bincode::deserialize(BYTES).unwrap_or_else(|e| {
-        panic!(
-            "aheui-jit: failed to deserialize opcode_jitcodes.bin ({} bytes): {e}",
-            BYTES.len(),
-        )
-    })
+    artifacts().jitcodes().expect("aheui JitCodes")
 }
 
-/// Deserialize the build-time shared descr pool (`pipeline.descrs`).
-///
-/// `Assembler.descrs` (assembler.py) handed to
-/// `BlackholeInterpBuilder.setup_descrs` (blackhole.py). Each 'd'/'j'
-/// argcode operand in a `JitCode.code` byte stream is a 2-byte index into
-/// this pool.
 fn load_pipeline_descrs() -> Vec<BhDescr> {
-    const BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/opcode_descrs.bin"));
-    bincode::deserialize(BYTES).unwrap_or_else(|e| {
-        panic!(
-            "aheui-jit: failed to deserialize opcode_descrs.bin ({} bytes): {e}",
-            BYTES.len(),
-        )
-    })
+    artifacts().descrs().expect("aheui descriptors")
 }
 
+#[cfg(test)]
 fn load_symbolic_fnaddr_paths() -> Vec<(i64, String)> {
-    const BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/opcode_symbolic_fnaddrs.bin"));
-    bincode::deserialize(BYTES).unwrap_or_else(|e| {
-        panic!(
-            "aheui-jit: failed to deserialize opcode_symbolic_fnaddrs.bin ({} bytes): {e}",
-            BYTES.len(),
-        )
-    })
+    artifacts().symbolic_fnaddrs.clone()
 }
 
 pub fn prebuild_pipeline_liveness(assembler: &mut majit_metainterp::Assembler) {
-    const BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/opcode_liveness.bin"));
-    assembler.prepend_embedded_liveness(BYTES);
+    assembler.prepend_embedded_liveness(&artifacts().liveness);
 }
 
 // The graph pipeline lowers the shared LinkedList accessors as host calls, so
@@ -126,8 +97,35 @@ extern "C" fn band_compare_ge(r2: i64, r1: i64) -> i64 {
     val_as_raw_i64(val_from_i32(ge as i32))
 }
 
-fn runtime_fnaddr_bindings() -> [(&'static str, i64); 16] {
+// blackhole.py bhimpl_inline_call_* invokes a helper's native fnaddr, even
+// when tracing normally descends into its JitCode. Keep these ABI shims on the
+// same value implementation used by the interpreter.
+extern "C" fn floor_div_i64(a: i64, b: i64) -> i64 {
+    aheui_runtime::value::floor_div_i64(a, b)
+}
+
+extern "C" fn floor_mod_i64(a: i64, b: i64) -> i64 {
+    aheui_runtime::value::floor_mod_i64(a, b)
+}
+
+extern "C" fn floor_correction_mask(a: i64, b: i64) -> i64 {
+    aheui_runtime::value::floor_correction_mask(a, b)
+}
+
+fn runtime_fnaddr_bindings() -> [(&'static str, i64); 15] {
     [
+        (
+            "ahsembler::consts::floor_div_i64",
+            floor_div_i64 as *const () as usize as i64,
+        ),
+        (
+            "ahsembler::consts::floor_mod_i64",
+            floor_mod_i64 as *const () as usize as i64,
+        ),
+        (
+            "ahsembler::consts::floor_correction_mask",
+            floor_correction_mask as *const () as usize as i64,
+        ),
         (
             "LinkedList::head",
             linked_list_head as *const () as usize as i64,
@@ -147,30 +145,6 @@ fn runtime_fnaddr_bindings() -> [(&'static str, i64); 16] {
         (
             "aheui_runtime::storage::free_node",
             linked_list_free_node as *const () as usize as i64,
-        ),
-        (
-            "_ll_2_int_floordiv",
-            majit_metainterp::blackhole::_ll_2_int_floordiv as *const () as usize as i64,
-        ),
-        (
-            "_ll_2_int_mod",
-            majit_metainterp::blackhole::_ll_2_int_mod as *const () as usize as i64,
-        ),
-        // A signed division reaches the trace as the canonical truncating
-        // helper, the same rewrite every other arithmetic operator gets, so
-        // the binding is to that name. The two `core::num` spellings stay
-        // bound for the widths and the unsigned bank the rewrite declines,
-        // where the pipeline still leaves a host call and its site would
-        // otherwise keep the symbolic placeholder. Both resolve to the two
-        // helpers above: `_ll_2_int_floordiv` and `_ll_2_int_mod` are defined
-        // as `wrapping_div` and `wrapping_rem` on `i64`.
-        (
-            "core::num::<Impl>::wrapping_div",
-            majit_metainterp::blackhole::_ll_2_int_floordiv as *const () as usize as i64,
-        ),
-        (
-            "core::num::<Impl>::wrapping_rem",
-            majit_metainterp::blackhole::_ll_2_int_mod as *const () as usize as i64,
         ),
         (
             "aheui_runtime::value::bigint::BIGINT_MODE",
@@ -214,6 +188,7 @@ fn runtime_fnaddr_bindings() -> [(&'static str, i64); 16] {
 pub fn word_abi_fnaddrs() -> Vec<i64> {
     runtime_fnaddr_bindings()
         .iter()
+        .chain(EmbeddedJitCodeTable::builtin_fnaddrs().iter())
         .map(|(_, addr)| *addr)
         .collect()
 }
@@ -236,7 +211,7 @@ fn pipeline_table() -> &'static EmbeddedJitCodeTable {
         let table = EmbeddedJitCodeTable::materialize_with_symbolic_fnaddrs(
             &load_pipeline_jitcodes(),
             load_pipeline_descrs(),
-            &load_symbolic_fnaddr_paths(),
+            &artifacts().symbolic_fnaddrs,
             &bindings,
         );
         table.install_as_global_pool();
@@ -318,6 +293,22 @@ mod tests {
                 "`{name}` does not end in a typed return opcode; \
                  its last bytes are {:?}",
                 &jitcode.code[jitcode.code.len().saturating_sub(8)..],
+            );
+        }
+    }
+
+    #[test]
+    fn signed_wrapping_arithmetic_uses_typed_codewriter_support() {
+        // MIR lowers signed wrapping division/remainder to int_floordiv/mod.
+        // The opaque <Impl> path also denotes unsigned methods, so binding it
+        // globally to a signed function would hide a frontend type mismatch.
+        for (_, path) in load_symbolic_fnaddr_paths() {
+            assert!(
+                !matches!(
+                    path.as_str(),
+                    "core::num::<Impl>::wrapping_div" | "core::num::<Impl>::wrapping_rem"
+                ),
+                "untyped wrapping arithmetic escaped translation: {path}"
             );
         }
     }

@@ -24,6 +24,7 @@ members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compah
 #     majit-ir = { path = "../pyre/majit/majit-ir" }
 #     # ... one line per crate used below
 [workspace.dependencies]
+majit-backend-wasm-host = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
 majit-ir = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
 majit-macros = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
 majit-metainterp = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }

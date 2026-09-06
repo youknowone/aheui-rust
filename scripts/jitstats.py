@@ -1,48 +1,14 @@
 #!/usr/bin/env python3
-"""Record and gate the aheui JIT's `[jit-stats]` counters.
+"""Record and gate Aheui JIT counters and JIT/control output equivalence.
 
-Same file format and the same regression floor as `pyre/check.py`, so one
-reading applies to both: a sorted `key=value` text file per program, compared
-field-by-field with a per-field direction.
+Commands: record/check [--jitstress] [program ...], sweep [program ...],
+survey, trend [program ...] [--all]. Sweep checks output at several thresholds
+without changing baselines. Survey covers externally supplied corpora without
+applying pinned-corpus baselines.
 
-Each gated program is also run twice — once with the JIT and once with the
-threshold raised out of reach — and the two runs must agree byte-for-byte on
-stdout and on the exit code. That A/B is the correctness half: without it a
-baseline can go green on a run that miscompiled.
-
-    scripts/jitstats.py record [--jitstress] [corpus/program ...]
-    scripts/jitstats.py check  [--jitstress] [corpus/program ...]
-    scripts/jitstats.py sweep  [corpus/program ...]
-    scripts/jitstats.py survey
-    scripts/jitstats.py trend [program ...] [--all]
-
-`sweep` runs only that A/B, at several thresholds, against no baseline at all.
-It exists because the two gated axes cannot grow coverage: both carry a
-`loops_compiled` floor, so re-pointing either at a lower threshold reddens
-programs on `guard_failures` alone — pure added coverage that
-`floor_regression` cannot distinguish from a regression, clearable only by
-`record`. An axis with no floor has nothing to regress against. Threshold
-selection is a trace-shape lottery rather than a coverage dial, so sampling
-several points is the only way to see more shapes: `literary/huntcook` is
-correct at 28 and at 40 and miscompiles at 32.
-
-With no arguments both modes cover the whole committed set: corpus programs
-when `snippets/` is present as this repo's pinned submodule, plus a JIT-stressed
-copy of that corpus at the same threshold `pyre/check.py` uses for its
-`*_jitstress` axis. `survey` is the ungated view for every rpaheui corpus
-program with a reference output; it is also what `check` falls back to when the
-corpus came from `$AHEUI_SNIPPETS` or a sibling checkout instead of the
-submodule.
-
-`check` and `survey` each append one row per program run to a local ledger
-(`bench/history.jsonl`; `AHEUI_JITSTATS_HISTORY` moves it). `trend` reads the
-ledger back and prints, per program, only the runs where a counter actually
-moved.
-
-That is the whole methodology: a baseline states what the JIT does *today* and
-says nothing about the run before it, so without a ledger every "did that
-change help?" costs a rebuild of the old tree. Here the record accumulates as
-a side effect of running the gate, and `--no-log` is the way to opt out.
+check/survey append measurements to bench/history.jsonl unless --no-log is
+set; AHEUI_JITSTATS_HISTORY overrides that path. Gate directions are declared
+below. Re-record only deliberate, justified changes to expected counters.
 """
 
 from __future__ import annotations
@@ -55,6 +21,8 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+from bench_support import parse_fields as parse
 
 REPO = Path(__file__).resolve().parent.parent
 BINARY = REPO / "target" / "release" / "aheui"
@@ -255,12 +223,6 @@ def corpus_snapshot(jit: "Run", out_ok: str) -> str:
     return "".join(f"{k}={fields[k]}\n" for k in keys if k in fields)
 
 
-def parse(text: str) -> dict[str, str]:
-    return dict(
-        line.split("=", 1) for line in text.splitlines() if "=" in line
-    )
-
-
 def field_verdict(field: str, base: int, cur: int) -> tuple[bool, str]:
     """Whether `field` regressed, and the headroom left before it would.
 
@@ -276,7 +238,7 @@ def field_verdict(field: str, base: int, cur: int) -> tuple[bool, str]:
 
 
 def floor_regression(old: dict[str, str], new: dict[str, str]) -> list[str]:
-    """`pyre/check.py` `_jit_stats_regression_floor`, verbatim policy."""
+    """Apply the same counter policy used to display gate headroom."""
     failures = []
     for field in (*BADNESS_FIELDS, *RISE_BOUNDED_FIELDS, *FALL_FIELDS):
         if field not in BADNESS_FIELDS and field not in old:
@@ -284,12 +246,7 @@ def floor_regression(old: dict[str, str], new: dict[str, str]) -> list[str]:
             continue
         base = int(old.get(field, 0))
         cur = int(new.get(field, 0))
-        if field in RISE_BOUNDED_FIELDS:
-            regressed = cur > base + max(base // 4, 2)
-        elif field in FALL_FIELDS:
-            regressed = cur < base
-        else:
-            regressed = cur > base
+        regressed, _ = field_verdict(field, base, cur)
         if regressed:
             failures.append(f"{field} {base} -> {cur}")
     return failures
