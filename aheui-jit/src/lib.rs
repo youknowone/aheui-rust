@@ -1251,6 +1251,11 @@ fn jit_alloc_node(value: Val, next: usize) -> usize {
     aheui_runtime::storage::linkedlist_jit::alloc_node_jit(value, next)
 }
 
+#[inline(always)]
+fn jit_free_node(node: usize) {
+    aheui_runtime::storage::linkedlist_jit::free_node_jit(node)
+}
+
 /// Pipeline jitcode resolver for `inline_pipeline_*` call policies.
 /// The `#[jit_interp]` macro's dispatch JitCode builder calls this to
 /// resolve a function name (e.g. `"val_add"`) to the pipeline-built
@@ -1450,12 +1455,21 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         Program::get_op => elidable_int_cannot_raise,
         Program::get_label => elidable_int_cannot_raise,
         Program::get_operand => elidable_int_cannot_raise,
-        // Storage access specializes on the selected kind. Arithmetic below
-        // always uses the graph-pipeline helpers shared with LinkedList.
+        // Storage access specializes on the selected kind.
         lj::stack_push => inline_void,
+        lj::stack_add => inline_void,
+        lj::stack_sub => inline_void,
+        lj::stack_mul => inline_void,
         lj::stack_dup => inline_void,
+        lj::stack_cmp => inline_void,
         lj::queue_push => inline_void,
+        lj::queue_add => inline_void,
+        lj::queue_sub => inline_void,
+        lj::queue_mul => inline_void,
+        lj::queue_div => residual_void,
+        lj::queue_mod => residual_void,
         lj::queue_dup => inline_void,
+        lj::queue_cmp => inline_void,
         // Named by neither family: their parameter is the base the three
         // storages embed, so one registration covers every selection.
         lj::pop_base_known_nonempty => inline_pipeline_int,
@@ -1475,6 +1489,18 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         bd::band_mod_raw => inline_pipeline_int,
         bd::band_cmp_raw => inline_pipeline_int,
         lj::swap_base_known_two => inline_pipeline_void,
+        lj::stack_add_raw => inline_void,
+        lj::stack_sub_raw => inline_void,
+        lj::stack_mul_raw => inline_void,
+        lj::stack_div_raw => inline_void,
+        lj::stack_mod_raw => inline_void,
+        lj::stack_cmp_raw => inline_void,
+        lj::queue_add_raw => inline_void,
+        lj::queue_sub_raw => inline_void,
+        lj::queue_mul_raw => inline_void,
+        lj::queue_div_raw => inline_void,
+        lj::queue_mod_raw => inline_void,
+        lj::queue_cmp_raw => inline_void,
         jit_storage_push => residual_void,
         jit_storage_dup => residual_void,
         // `storage[idx]` returns the selected list's object reference; the
@@ -1493,6 +1519,13 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_sel_get_ref => elidable_ref_cannot_raise_wrapped,
         jit_stacksize_delta => elidable_int_cannot_raise,
         jit_effective_stacksize_delta => elidable_int_cannot_raise,
+        jit_free_node => concrete_only_void,
+        val_add => elidable_int,
+        val_sub => elidable_int,
+        val_mul => elidable_int,
+        val_div => elidable_int,
+        val_mod => elidable_int,
+        val_from_i32 => elidable_int_cannot_raise,
     },
     // Residual storage mutators that change `size` or the `head` chain pointer.
     //
@@ -1507,11 +1540,15 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // an extra reload is harmless, a missing invalidation is not.
     residual_writes = {
         selected_ref.size => [
-            lj::queue_push, lj::queue_dup,
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
             jit_storage_push, jit_storage_dup,
         ],
         selected_ref.head => [
-            lj::queue_push, lj::queue_dup,
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
             jit_storage_push, jit_storage_dup,
         ],
         // `tail` exists only on Queue (the dummy-tail sentinel append target).
@@ -1520,7 +1557,9 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         // stale sentinel and appends off the live chain, orphaning nodes
         // (chainlen < size + 1) until a later pop dereferences a null head.
         selected_ref.tail @ aheui_runtime::storage::linkedlist::Queue => [
-            lj::queue_push, lj::queue_dup,
+            lj::queue_push, lj::queue_add, lj::queue_sub,
+            lj::queue_mul, lj::queue_div, lj::queue_mod, lj::queue_dup,
+            lj::queue_cmp,
             jit_storage_push, jit_storage_dup,
         ],
     },
@@ -1913,196 +1952,180 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
         }
 
         match op {
-            // rpaheui LinkedList arithmetic: _get_2_values, compute, _put_value.
-            // Queue consumes two nodes; Stack/Port consume one and overwrite
-            // the next. Banded stacks use the same arithmetic over ring slots.
+            // `selected.<op>()`, branched on the `is_queue` green. The trace
+            // specializes per value, so only one branch survives in compiled
+            // code: a concrete `stack_*` or `queue_*` helper reached through
+            // `selected_ref`, the `ref(Stack)` state scalar pointing at the
+            // selected storage. Port falls through to polymorphic dispatch.
+            //
+            // The banded arm — `selected < bands` — runs the same binary op
+            // over the ring instead of the chain. `sp` is the depth after the
+            // op, so the operands sit at `sp` and `sp - 1` and the result takes
+            // the lower slot, the shape `linkedlist.py` has over the chain. At
+            // `sp >= cap` the pop dropped the band's bottom element out of
+            // range, so the chain hands the next one back — into the slot the
+            // popped operand just vacated, which is the same ring slot.
             OP_ADD => {
                 if stackok {
-                    let r1 = if state.selected < bands {
-                        let slot = state.selected * cap + (state.sp & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    };
-                    let r2 = if is_queue {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    } else if state.selected < bands {
-                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        let head = state.selected_ref.head;
-                        jit_win_store(head.value)
-                    };
-                    let word = if bm != 0 {
-                        bd::band_add(r2, r1)
-                    } else {
-                        bd::band_add_raw(r2, r1)
-                    };
                     if is_queue {
-                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                        if bm != 0 {
+                            lj::queue_add(state.selected_ref);
+                        } else {
+                            lj::queue_add_raw(state.selected_ref);
+                        }
                     } else if state.selected < bands {
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[r2_slot] = word;
+                        let r1 = state.vals[r1_slot];
+                        let r2 = state.vals[r2_slot];
+                        let __band_word = if bm != 0 {
+                            bd::band_add(r2, r1)
+                        } else {
+                            bd::band_add_raw(r2, r1)
+                        };
+                        state.vals[r2_slot] = __band_word;
                         if state.sp >= cap {
-                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
+                    } else if bm != 0 {
+                        lj::stack_add(state.selected_ref);
                     } else {
-                        let head = state.selected_ref.head;
-                        head.value = jit_tag_val_raw(word);
+                        lj::stack_add_raw(state.selected_ref);
                     }
                 }
             }
             OP_SUB => {
                 if stackok {
-                    let r1 = if state.selected < bands {
-                        let slot = state.selected * cap + (state.sp & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    };
-                    let r2 = if is_queue {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    } else if state.selected < bands {
-                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        let head = state.selected_ref.head;
-                        jit_win_store(head.value)
-                    };
-                    let word = if bm != 0 {
-                        bd::band_sub(r2, r1)
-                    } else {
-                        bd::band_sub_raw(r2, r1)
-                    };
                     if is_queue {
-                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                        if bm != 0 {
+                            lj::queue_sub(state.selected_ref);
+                        } else {
+                            lj::queue_sub_raw(state.selected_ref);
+                        }
                     } else if state.selected < bands {
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[r2_slot] = word;
+                        let r1 = state.vals[r1_slot];
+                        let r2 = state.vals[r2_slot];
+                        let __band_word = if bm != 0 {
+                            bd::band_sub(r2, r1)
+                        } else {
+                            bd::band_sub_raw(r2, r1)
+                        };
+                        state.vals[r2_slot] = __band_word;
                         if state.sp >= cap {
-                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
+                    } else if bm != 0 {
+                        lj::stack_sub(state.selected_ref);
                     } else {
-                        let head = state.selected_ref.head;
-                        head.value = jit_tag_val_raw(word);
+                        lj::stack_sub_raw(state.selected_ref);
                     }
                 }
             }
             OP_MUL => {
                 if stackok {
-                    let r1 = if state.selected < bands {
-                        let slot = state.selected * cap + (state.sp & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    };
-                    let r2 = if is_queue {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    } else if state.selected < bands {
-                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        let head = state.selected_ref.head;
-                        jit_win_store(head.value)
-                    };
-                    let word = if bm != 0 {
-                        bd::band_mul(r2, r1)
-                    } else {
-                        bd::band_mul_raw(r2, r1)
-                    };
                     if is_queue {
-                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                        if bm != 0 {
+                            lj::queue_mul(state.selected_ref);
+                        } else {
+                            lj::queue_mul_raw(state.selected_ref);
+                        }
                     } else if state.selected < bands {
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[r2_slot] = word;
+                        let r1 = state.vals[r1_slot];
+                        let r2 = state.vals[r2_slot];
+                        let __band_word = if bm != 0 {
+                            bd::band_mul(r2, r1)
+                        } else {
+                            bd::band_mul_raw(r2, r1)
+                        };
+                        state.vals[r2_slot] = __band_word;
                         if state.sp >= cap {
-                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
+                    } else if bm != 0 {
+                        lj::stack_mul(state.selected_ref);
                     } else {
-                        let head = state.selected_ref.head;
-                        head.value = jit_tag_val_raw(word);
+                        lj::stack_mul_raw(state.selected_ref);
                     }
                 }
             }
             OP_DIV => {
                 if stackok {
-                    let r1 = if state.selected < bands {
-                        let slot = state.selected * cap + (state.sp & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    };
-                    let r2 = if is_queue {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    } else if state.selected < bands {
-                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        let head = state.selected_ref.head;
-                        jit_win_store(head.value)
-                    };
-                    let word = if bm != 0 {
-                        bd::band_div(r2, r1)
-                    } else {
-                        bd::band_div_raw(r2, r1)
-                    };
                     if is_queue {
-                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                        if bm != 0 {
+                            lj::queue_div(state.selected_ref);
+                        } else {
+                            lj::queue_div_raw(state.selected_ref);
+                        }
                     } else if state.selected < bands {
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[r2_slot] = word;
+                        let r1 = state.vals[r1_slot];
+                        let r2 = state.vals[r2_slot];
+                        let __band_word = if bm != 0 {
+                            bd::band_div(r2, r1)
+                        } else {
+                            bd::band_div_raw(r2, r1)
+                        };
+                        state.vals[r2_slot] = __band_word;
                         if state.sp >= cap {
-                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
+                    } else if bm != 0 {
+                        let top_node = state.selected_ref.head;
+                        let r1 = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1u32;
+                        jit_free_node(top_node);
+                        let r2 = next.value;
+                        next.value = val_div(r2, r1);
                     } else {
-                        let head = state.selected_ref.head;
-                        head.value = jit_tag_val_raw(word);
+                        lj::stack_div_raw(state.selected_ref);
                     }
                 }
             }
             OP_MOD => {
                 if stackok {
-                    let r1 = if state.selected < bands {
-                        let slot = state.selected * cap + (state.sp & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    };
-                    let r2 = if is_queue {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    } else if state.selected < bands {
-                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        let head = state.selected_ref.head;
-                        jit_win_store(head.value)
-                    };
-                    let word = if bm != 0 {
-                        bd::band_mod(r2, r1)
-                    } else {
-                        bd::band_mod_raw(r2, r1)
-                    };
                     if is_queue {
-                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                        if bm != 0 {
+                            lj::queue_mod(state.selected_ref);
+                        } else {
+                            lj::queue_mod_raw(state.selected_ref);
+                        }
                     } else if state.selected < bands {
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[r2_slot] = word;
+                        let r1 = state.vals[r1_slot];
+                        let r2 = state.vals[r2_slot];
+                        let __band_word = if bm != 0 {
+                            bd::band_mod(r2, r1)
+                        } else {
+                            bd::band_mod_raw(r2, r1)
+                        };
+                        state.vals[r2_slot] = __band_word;
                         if state.sp >= cap {
-                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
+                    } else if bm != 0 {
+                        let top_node = state.selected_ref.head;
+                        let r1 = top_node.value;
+                        let next = top_node.next;
+                        state.selected_ref.head = next;
+                        state.selected_ref.size = state.selected_ref.size - 1u32;
+                        jit_free_node(top_node);
+                        let r2 = next.value;
+                        next.value = val_mod(r2, r1);
                     } else {
-                        let head = state.selected_ref.head;
-                        head.value = jit_tag_val_raw(word);
+                        lj::stack_mod_raw(state.selected_ref);
                     }
                 }
             }
@@ -2304,39 +2327,31 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
             }
             OP_CMP => {
                 if stackok {
-                    let r1 = if state.selected < bands {
-                        let slot = state.selected * cap + (state.sp & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    };
-                    let r2 = if is_queue {
-                        jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
-                    } else if state.selected < bands {
-                        let slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[slot]
-                    } else {
-                        let head = state.selected_ref.head;
-                        jit_win_store(head.value)
-                    };
-                    let word = if bm != 0 {
-                        bd::band_cmp(r2, r1)
-                    } else {
-                        bd::band_cmp_raw(r2, r1)
-                    };
                     if is_queue {
-                        lj::queue_push(state.selected_ref, jit_tag_val_raw(word));
+                        if bm != 0 {
+                            lj::queue_cmp(state.selected_ref);
+                        } else {
+                            lj::queue_cmp_raw(state.selected_ref);
+                        }
                     } else if state.selected < bands {
+                        let r1_slot = state.selected * cap + (state.sp & cap_mask);
                         let r2_slot = state.selected * cap + ((state.sp - 1) & cap_mask);
-                        state.vals[r2_slot] = word;
+                        let r1 = state.vals[r1_slot];
+                        let r2 = state.vals[r2_slot];
+                        let __band_word = if bm != 0 {
+                            bd::band_cmp(r2, r1)
+                        } else {
+                            bd::band_cmp_raw(r2, r1)
+                        };
+                        state.vals[r2_slot] = __band_word;
                         if state.sp >= cap {
-                            let r1_slot = state.selected * cap + (state.sp & cap_mask);
                             state.vals[r1_slot] =
                                 jit_win_store(lj::pop_base_known_nonempty(state.selected_ref));
                         }
+                    } else if bm != 0 {
+                        lj::stack_cmp(state.selected_ref);
                     } else {
-                        let head = state.selected_ref.head;
-                        head.value = jit_tag_val_raw(word);
+                        lj::stack_cmp_raw(state.selected_ref);
                     }
                 }
             }
