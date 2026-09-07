@@ -12,8 +12,8 @@ fn main() {
     let base = format!("{manifest_dir}/..");
 
     // The majit-translate graph pipeline lowers Charon-extracted MIR
-    // (`.ullbc`), not the syn-parsed source strings below. The shared
-    // front-end auto-discovers only the parent repo's pyre artefact pair,
+    // (`.ullbc`). The shared front-end auto-discovers only the parent
+    // repo's pyre artefact pair,
     // so point it at aheui's own crate LLBC (extracted by
     // `scripts/extract-llbc.py` into `<aheui>/build/llbc/`) via
     // `MAJIT_MIR_FRONTEND_LLBC`, which the front-end honours ahead of
@@ -192,9 +192,6 @@ fn main() {
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     std::fs::write(format!("{out_dir}/jit_trace_gen.rs"), &code).unwrap();
-
-    let json = serde_json::to_string_pretty(&pipeline).unwrap();
-    std::fs::write(format!("{out_dir}/jit_metadata.json"), &json).unwrap();
 
     let artifacts = majit_translate::artifacts::EmbeddedArtifacts::from_pipeline(&pipeline)
         .expect("encode Aheui pipeline artifacts");

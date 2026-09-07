@@ -30,7 +30,7 @@
 use majit_backend_wasm_host::CALL_RESULT_OFS;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use wasmtime::{Caller, Config, Engine, Error, Func, Linker, Module, Result, Store, Table};
+use wasmtime::{Caller, Config, Engine, Error, Func, Linker, Module, Result, Store};
 use wasmtime_wasi::p1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
@@ -551,10 +551,9 @@ fn jit_compile_trace(
     caller: &mut Caller<'_, Host>,
     bytes_ptr: u32,
     bytes_len: u32,
-) -> Result<(Table, Func, Option<Func>)> {
+) -> Result<(Func, Option<Func>)> {
     caller.data_mut().compile_count += 1;
     let memory = majit_backend_wasm_host::memory(caller)?;
-    let table = majit_backend_wasm_host::table(caller)?;
 
     let mut bytes = vec![0u8; bytes_len as usize];
     memory.read(&*caller, bytes_ptr as usize, &mut bytes)?;
@@ -582,11 +581,11 @@ fn jit_compile_trace(
 
     let (trace, trace_wide, _) =
         majit_backend_wasm_host::instantiate(caller, &module, jit_call_trampoline)?;
-    Ok((table, trace, trace_wide))
+    Ok((trace, trace_wide))
 }
 /// Compile and instantiate a trace, then append its export to the table.
 fn jit_compile(caller: &mut Caller<'_, Host>, bytes_ptr: u32, bytes_len: u32) -> Result<u32> {
-    let (_table, trace, trace_wide) = jit_compile_trace(caller, bytes_ptr, bytes_len)?;
+    let (trace, trace_wide) = jit_compile_trace(caller, bytes_ptr, bytes_len)?;
     let slot = majit_backend_wasm_host::publish(caller, trace, trace_wide)?;
     Ok(slot)
 }
@@ -600,7 +599,7 @@ fn jit_replace(
     if (func_id as u64) < caller.data().jit.trace_base {
         return Err(Error::msg("cannot replace a guest function"));
     }
-    let (_table, trace, trace_wide) = jit_compile_trace(caller, bytes_ptr, bytes_len)?;
+    let (trace, trace_wide) = jit_compile_trace(caller, bytes_ptr, bytes_len)?;
     let slot = majit_backend_wasm_host::replace(caller, func_id, trace, trace_wide)?;
     Ok(slot)
 }
