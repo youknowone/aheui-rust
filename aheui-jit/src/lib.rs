@@ -31,17 +31,12 @@ pub use aheui_runtime::value;
 
 pub mod jit;
 
-/// Default JIT threshold, taken from the parameter table rather than
-/// restated: a jitdriver that does not set the value gets `PARAMETERS`'
-/// default (`rlib/jit.py`), so the number has one home.
-pub const JIT_THRESHOLD: u32 = majit_metainterp::jit::PARAMETERS.threshold;
-
 /// JIT threshold, with a MAJIT_THRESHOLD startup override.
 pub fn jit_threshold() -> u32 {
     std::env::var("MAJIT_THRESHOLD")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(JIT_THRESHOLD)
+        .unwrap_or(majit_metainterp::jit::PARAMETERS.threshold)
 }
 
 /// The JIT trace budget, in recorded ops.
@@ -73,11 +68,15 @@ fn trace_eagerness_override() -> Option<i64> {
 
 /// `--jit name=value,...` pairs, staged by [`set_user_jit_params`] before
 /// [`mainloop`] builds the driver that consumes them.
-static USER_JIT_PARAMS: std::sync::Mutex<Vec<UserJitSetting>> = std::sync::Mutex::new(Vec::new());
+static USER_JIT_PARAMS: std::sync::Mutex<UserJitParams> = std::sync::Mutex::new(UserJitParams {
+    driver: Vec::new(),
+    stack_cap: None,
+});
 
-enum UserJitSetting {
-    Driver(String),
-    StackCap(usize),
+#[derive(Default)]
+struct UserJitParams {
+    driver: Vec<String>,
+    stack_cap: Option<usize>,
 }
 
 /// Stage the tunable JIT parameters from a user-supplied string in the
@@ -86,17 +85,22 @@ enum UserJitSetting {
 /// constraint belongs here. The CLI may handle `off` by selecting the naive
 /// interpreter; the shared parser also supports disabling a live JIT driver.
 pub fn set_user_jit_params(text: &str) -> Result<(), String> {
-    let staged = parse_user_jit_settings(text)?;
-    USER_JIT_PARAMS.lock().unwrap().extend(staged);
+    let staged = parse_user_jit_params(text)?;
+    let mut params = USER_JIT_PARAMS.lock().unwrap();
+    params.driver.extend(staged.driver);
+    if staged.stack_cap.is_some() {
+        params.stack_cap = staged.stack_cap;
+    }
     Ok(())
 }
 
-fn parse_user_jit_settings(text: &str) -> Result<Vec<UserJitSetting>, String> {
-    let mut staged = Vec::new();
+fn parse_user_jit_params(text: &str) -> Result<UserJitParams, String> {
+    let mut staged = UserJitParams::default();
     let mut params = majit_metainterp::jit::PARAMETERS;
     if text == "off" || text == "default" {
         majit_metainterp::jit::set_user_param(&mut params, text).map_err(|err| err.to_string())?;
-        return Ok(vec![UserJitSetting::Driver(text.to_string())]);
+        staged.driver.push(text.to_string());
+        return Ok(staged);
     }
     for part in text.split(',') {
         let part = part.trim_matches(' ');
@@ -108,7 +112,7 @@ fn parse_user_jit_settings(text: &str) -> Result<Vec<UserJitSetting>, String> {
             if !cap.is_power_of_two() || cap < 2 {
                 return Err(format!("stack_cap must be a power of two >= 2: {cap}"));
             }
-            staged.push(UserJitSetting::StackCap(cap));
+            staged.stack_cap = Some(cap);
         } else {
             // off/default are whole-string commands, never list entries.
             if !part.contains('=') {
@@ -116,10 +120,38 @@ fn parse_user_jit_settings(text: &str) -> Result<Vec<UserJitSetting>, String> {
             }
             majit_metainterp::jit::set_user_param(&mut params, part)
                 .map_err(|err| err.to_string())?;
-            staged.push(UserJitSetting::Driver(part.to_string()));
+            staged.driver.push(part.to_string());
         }
     }
     Ok(staged)
+}
+
+#[cfg(test)]
+mod user_jit_param_tests {
+    use super::parse_user_jit_params;
+
+    #[test]
+    fn driver_order_and_last_stack_cap_are_independent() {
+        let params = parse_user_jit_params(
+            "threshold=10,stack_cap=4,enable_opts=all,stack_cap=8,threshold=20",
+        )
+        .unwrap();
+        assert_eq!(
+            params.driver,
+            ["threshold=10", "enable_opts=all", "threshold=20"]
+        );
+        assert_eq!(params.stack_cap, Some(8));
+    }
+
+    #[test]
+    fn driver_commands_do_not_set_aheui_capacity() {
+        for text in ["off", "default"] {
+            let params = parse_user_jit_params(text).unwrap();
+            assert_eq!(params.driver, [text]);
+            assert_eq!(params.stack_cap, None);
+        }
+        assert!(parse_user_jit_params("stack_cap=8,unknown=1").is_err());
+    }
 }
 
 /// The last [`mainloop`] run's cumulative JIT counters.
@@ -1643,12 +1675,14 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // argument on the command line outranks an ambient variable. `stack_cap`
     // is not a driver parameter — it is consumed below, before the state
     // arrays are sized.
-    for setting in USER_JIT_PARAMS.lock().unwrap().iter() {
-        if let UserJitSetting::Driver(text) = setting {
+    let user_cap = {
+        let params = USER_JIT_PARAMS.lock().unwrap();
+        for text in &params.driver {
             majit_metainterp::jit::set_user_param(&mut driver, text)
                 .expect("JIT parameters were validated before staging");
         }
-    }
+        params.stack_cap
+    };
 
     let mut pc: usize = 0;
     // Resolved before the arrays are sized: everything downstream — the
@@ -1658,15 +1692,6 @@ pub fn mainloop(program: &Program, threshold: u32) -> Val {
     // indexing, so it is refused rather than rounded. 1 is refused too: a
     // one-slot ring evicts on every push and refills on every pop, which
     // multiplies runtime past any measured budget.
-    let user_cap = USER_JIT_PARAMS
-        .lock()
-        .unwrap()
-        .iter()
-        .rev()
-        .find_map(|setting| match setting {
-            UserJitSetting::StackCap(cap) => Some(*cap),
-            UserJitSetting::Driver(_) => None,
-        });
     if let Some(cap) = user_cap.or_else(|| {
         std::env::var("AHEUI_CAP")
             .ok()

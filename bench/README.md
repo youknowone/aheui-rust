@@ -53,6 +53,57 @@ PASS만 출력해서는 JIT가 실제로 무엇을 했는지 알 수 없기 때�
 실사용 threshold, `jitstress`는 threshold 50. 확장자는 그 실행을 읽은
 **계측기**를 가리킵니다(`.jitstats`는 `MAJIT_STATS`, `.opcensus`는 `MAJIT_LOG`).
 
+### π의 unroll 기준선
+
+`pi/pi.jinseo`의 default guard 기준은 majit `cbe5dd88716`에서 651입니다.
+이전 451은 Aheui `ca32781` / majit `f395e39b58e`가 `unroll`을 끈 설정에서
+기록한 값입니다. 그 과거 소스를 다시 빌드해 같은 바이너리의 설정만 바꾸면
+다음처럼 재현됩니다(threshold 1039, trace_eagerness 200).
+
+| 소스 / 최적화 설정 | loop | bridge | abort | guard 실패 |
+|---|---:|---:|---:|---:|
+| 과거 / 기본값(unroll 제외) | 3 | 1 | 1 | 451 |
+| 과거 / `AHEUI_ENABLE_OPTS=all` | 3 | 2 | 2 | 651 |
+| 현재 / 기본값(all) | 3 | 2 | 0 | 651 |
+
+`MAJIT_GUARD_CENSUS=1`로 분해하면 반복 종료 251회는 유지되고, 저장소 17의
+크기 검사에서 브리지 예열 200회가 하나 추가됩니다. 현재 두 크기 가드는
+작업량을 126·251·502묶음으로 바꿔도 각각 200회씩 실패합니다.
+이는 PyPy `rpython/jit/metainterp/compile.py`의
+`ResumeGuardDescr.must_compile`이 가드별 예열 카운터를 사용하는 동작과
+일치합니다. census 번호는 trace 내부의 0번 시작 exit 번호이며, 최적화
+로그의 전역 `fail_index`와 같은 번호가 아닙니다.
+
+이 갱신은 예열 경로의 변경을 반영하며 성능 개선을 뜻하지 않습니다.
+Linux aarch64, opt3/fat LTO, GC poison을 켠 교대 실행 30회씩의 중앙값은
+위 표 순서대로 36.30 / 43.71 / 41.69ms였습니다. 현재는 과거의 unroll
+설정보다 빠르지만, unroll을 끈 과거보다 약 15% 느립니다. 이 비용은 추가
+최적화 대상으로 남습니다. unroll을 끄는 것은 self-interpreter의 종료
+정확성을 회복한 Aheui `f4ad029`를 되돌리는 것이므로 해결책으로 삼지 않습니다.
+
+### threshold 선택
+
+majit `cbe5dd88716`의 기본값 1039를 사용하며 Aheui 전용 기본값은 두지
+않습니다. 1039·500·200·100·50에서 고정 corpus 전체(62개)의 JIT/미컴파일
+출력이 일치했습니다. 아래는 같은 release 바이너리로 시작 순서를 교대하며
+각 조합을 20회 측정한 중앙값(ms)입니다. Linux aarch64, opt3/fat LTO이며,
+시간 측정에서는 GC poison과 진단 로그를 껐습니다.
+
+| 프로그램 | 1039 | 500 | 200 | 100 | 50 |
+|---|---:|---:|---:|---:|---:|
+| logo | 179.1 | 173.2 | 172.5 | 171.3 | 169.8 |
+| pi.jinseo | 41.1 | 46.3 | 49.3 | 49.1 | 50.4 |
+| 99dan | 7.9 | 8.1 | 8.0 | 8.2 | 12.7 |
+| 99bottles | 8.9 | 9.3 | 13.7 | 25.6 | 25.7 |
+| quine.puzzlet.40col | 10.8 | 20.8 | 23.3 | 28.4 | 29.1 |
+| standard/loop | 10.2 | 10.1 | 10.0 | 10.2 | 9.9 |
+
+낮은 threshold는 logo의 예열을 줄이지만, 짧은 프로그램에서는 컴파일 비용을
+회수하지 못합니다. 이 corpus에서는 기본값을 낮출 근거가 없습니다.
+장시간 self-interpreter 작업의 최적값까지 이 측정으로 일반화하지는 않습니다.
+
+### 초기 threshold 측정
+
 실사용 back-edge threshold 1039에서는 고정된 62개 프로그램 가운데 **3개**가
 threshold에 도달합니다(submodule `4961b05`, majit `2674bdcb06b`, aheui
 `13e4eb9`).
