@@ -461,7 +461,7 @@ opt-level = 3
     std::fs::write(
         dir.join("build.rs"),
         format!(
-            "fn main() {{\n  let object = {object_path:?};\n  println!(\"cargo:rerun-if-changed={{object}}\");\n  println!(\"cargo:rustc-link-arg-bin={package}={{object}}\");\n}}\n",
+            "fn main() {{\n  let object = {object_path:?};\n  println!(\"cargo:rerun-if-changed={{object}}\");\n  println!(\"cargo:rustc-link-arg-bin={package}={{object}}\");\n  // The C object follows rustc's libraries; repeat libc after its references.\n  if std::env::var(\"CARGO_CFG_TARGET_OS\").as_deref() == Ok(\"linux\") {{ println!(\"cargo:rustc-link-arg-bin={package}=-lc\"); }}\n}}\n",
             object_path = object_path.to_string_lossy(),
         ),
     )

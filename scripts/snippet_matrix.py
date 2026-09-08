@@ -12,6 +12,7 @@ import shutil
 import statistics
 import subprocess
 import time
+from bench_support import bounded_run
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,16 +59,18 @@ def run_command(
     display = " ".join(str(part) for part in command)
     if log:
         print(f"+ {display}", flush=True)
-    return subprocess.run(
+    result = bounded_run(
         [str(part) for part in command],
         cwd=ROOT,
         input=input_bytes,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
         env=env,
-        timeout=timeout,
-        check=False,
+        timeout=timeout or 1800,
+        memory_mib=4096 if str(command[0]) == "cargo" else 1024,
     )
+    if not capture:
+        print(result.stdout.decode(errors="replace"), end="")
+        print(result.stderr.decode(errors="replace"), end="")
+    return result
 
 
 def require_success(proc: subprocess.CompletedProcess[bytes], what: str) -> None:

@@ -1,37 +1,9 @@
 name: Snippet backend matrix
 
 on:
+  push:
+    branches: [main]
   pull_request:
-    paths:
-      - "ahsembler/src/**"
-      - "ahsembler/tests/**"
-      - "ahsembler/Cargo.toml"
-      - "aheui-runtime/src/**"
-      - "aheui-runtime/tests/**"
-      - "aheui-runtime/Cargo.toml"
-      - "aheui-jit/src/**"
-      - "aheui-jit/tests/**"
-      - "aheui-jit/build.rs"
-      - "aheui-jit/Cargo.toml"
-      - "aheuinterpreter/src/**"
-      - "aheuinterpreter/tests/**"
-      - "aheuinterpreter/examples/**"
-      - "aheuinterpreter/Cargo.toml"
-      - "compaheuiler/src/**"
-      - "compaheuiler/tests/**"
-      - "compaheuiler/examples/**"
-      - "compaheuiler/Cargo.toml"
-      - "aheui-wasm/src/**"
-      - "aheui-wasm/Cargo.toml"
-      - "src/**"
-      - "tests/**"
-      - "check.sh"
-      - "scripts/snippet_matrix.py"
-      - "scripts/extract-llbc.py"
-      - "snippets"
-      - ".github/majit-ci-config.toml"
-      - "Cargo.toml"
-      - ".github/workflows/snippet-matrix.yml"
   workflow_dispatch:
 
 concurrency:
@@ -42,6 +14,11 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+
+env:
+  CARGO_BUILD_JOBS: "1"
+  RUST_TEST_THREADS: "1"
+  LLBC_PARALLEL_LAYOUTS: "0"
 
 jobs:
   lint:
@@ -61,6 +38,12 @@ jobs:
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
+
+      - name: Validate pins and script tests
+        run: |
+          python3 scripts/check_config.py
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          bash -n check.sh aheui-wasm/build.sh
 
       # `not_unsafe_ptr_arg_deref` and the rest of `clippy::correctness` are
       # deny-by-default, so this fails the run rather than warning: a public
@@ -88,7 +71,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: youknowone/pyre
-          ref: 67505f239e94fc7a6e8f8414f4fb74efcd746d4d
+          ref: c8231572882d3f798edf7e40684c1f355468db38
           path: pyre
 
       - name: Check out this aheui revision
@@ -144,6 +127,22 @@ jobs:
         run: |
           cargo check --workspace --features dynasm
           cargo test --workspace --features dynasm --no-fail-fast
+
+      - name: Check release JIT behavior and optimization baselines
+        working-directory: pyre/aheui
+        run: |
+          cargo build --release -p aheui --no-default-features --features jit,dynasm,malachite-bigint
+          python3 scripts/jitstats.py check
+          python3 scripts/jitstats.py sweep
+          python3 scripts/opcensus.py check
+
+      - name: Check WASI JIT execution
+        working-directory: pyre/aheui
+        run: |
+          rustup target add wasm32-wasip1
+          cargo build --release -p aheui-wasm-runner
+          cargo build --release -p aheui --target wasm32-wasip1 --no-default-features --features jit,naive,malachite-bigint,wasm-host
+          python3 scripts/check_wasi.py
 
   snippets:
     runs-on: ubuntu-latest

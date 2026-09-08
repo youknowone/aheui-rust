@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bench_support import parse_fields as parse
+from bench_support import bounded_run
+from majit_source import resolved_source
 
 REPO = Path(__file__).resolve().parent.parent
 BINARY = REPO / "target" / "release" / "aheui"
@@ -77,10 +79,8 @@ JITSTRESS_THRESHOLD = "50"
 # on every run. Point `AHEUI_JITSTATS_HISTORY` at a shared path to pool them.
 HISTORY = Path(os.environ.get("AHEUI_JITSTATS_HISTORY", BENCH / "history.jsonl"))
 
-# `aheui-jit` path-depends on `../../majit/*`, i.e. on the pyre working tree.
-# A row that names only the aheui commit cannot be attributed afterwards —
-# most of what moves these counters is a majit change, not an aheui one.
-MAJIT_REPO = REPO.parent
+# Source resolution describes the measurement-time tree. The binary digest
+# separately identifies what was executed; a source HEAD is not a build receipt.
 
 
 def default_baseline_path(name: str) -> Path:
@@ -136,11 +136,8 @@ def run_path(
 ) -> Run:
     """Run one program; capture its stdout, exit code and `[jit-stats]` fields.
 
-    `timeout` defaults to None so the gated axes keep waiting indefinitely — a
-    program that stops terminating there is itself the regression. The sweep
-    axis passes one because it drives thresholds no committed baseline covers,
-    and a program that loops forever at an unexplored threshold must not wedge
-    the whole run.
+    Every gate has a deadline: a non-terminating generated trace is a failure,
+    not a reason to prevent the remaining corpus from being checked.
 
     The sibling `.in` is the program's stdin where the corpus ships one. It is
     the input the committed `.out` was produced from, so without it those
@@ -150,14 +147,15 @@ def run_path(
     their real workload at all.
     """
     env = run_env(compile_=compile_, threshold=threshold)
+    if timeout is None:
+        timeout = SWEEP_TIMEOUT_S
     stdin_file = path.with_suffix(".in")
     stdin_bytes = stdin_file.read_bytes() if stdin_file.exists() else b""
     start = time.monotonic()
     try:
-        proc = subprocess.run(
+        proc = bounded_run(
             [str(BINARY), str(path)],
             input=stdin_bytes,
-            capture_output=True,
             env=env,
             timeout=timeout,
         )
@@ -347,7 +345,7 @@ def build_is_stale() -> bool:
     """
     if not BINARY.exists():
         return False
-    heads = [t for t in (head_committed_at(REPO), head_committed_at(MAJIT_REPO)) if t]
+    heads = [t for t in (head_committed_at(REPO), head_committed_at(resolved_source()[0])) if t]
     return bool(heads) and BINARY.stat().st_mtime < max(heads)
 
 
@@ -415,7 +413,9 @@ def append_rows(mode: str, note: str, rows: list[dict]) -> None:
         "mode": mode,
         "note": note,
         "aheui": git_head(REPO),
-        "majit": git_head(MAJIT_REPO),
+        "majit": resolved_source()[1],
+        "source_identity_at": "measurement",
+        "binary_sha256": hashlib.sha256(BINARY.read_bytes()).hexdigest(),
         "env": tuning_env(),
         "stale_build": build_is_stale(),
     }

@@ -1,6 +1,6 @@
-//! Generate Rust code from an Aheui CFG using the Stackifier algorithm.
+//! Generate Rust code from an optimized Aheui CFG.
 //!
-//! All control flow expressed as loop/break/continue — no match dispatch.
+//! Small CFGs use sequential dispatch; large CFGs use a match dispatch loop.
 //! Compile with: rustc -C opt-level=3 -o program output.rs
 
 use ahsembler::cfg::*;
@@ -51,6 +51,7 @@ fn generate_rs_dispatch(cfg: &Cfg, bigint: bool) -> String {
         out.push_str("use num_bigint::BigInt;\n");
         #[cfg(not(feature = "num-bigint"))]
         out.push_str("use malachite_bigint::BigInt;\n");
+        out.push_str(include_str!("runtime_templates/bigint_arena.rs.in"));
         out.push_str(PRELUDE_INT_DUAL);
     } else {
         out.push_str(PRELUDE_INT_I64);
@@ -211,6 +212,12 @@ fn generate_rs_dispatch(cfg: &Cfg, bigint: bool) -> String {
 
         if is_self_loop {
             out.push_str(&format!("{ind}  loop {{\n"));
+        }
+
+        // Predecessors flush register locals before transferring control.
+        // Inside the inner loop so allocating self-edges also reach collection.
+        if bigint {
+            out.push_str(&format!("{ind}  if _bm && cbig_collection_due != 0 {{ collect_bigints(bases, &tops_snapshot, &sp); }}\n"));
         }
 
         // Entry sync: reload top from tN for sel-unknown blocks.
@@ -880,148 +887,11 @@ fn is_special(s: usize) -> bool {
 
 /// Common PRELUDE: Int abstraction, SpecialStorage, I/O, dyn_sel helpers.
 /// Int impl is provided separately by PRELUDE_INT_I64 or PRELUDE_INT_DUAL.
-const PRELUDE_COMMON: &str = r#"
-use std::io::{Read, Write};
-use std::collections::VecDeque;
-const QUEUE: usize = 21;
-const PORT: usize = 27;
-const STORAGE_COUNT: usize = 28;
-const MAX_STACK: usize = 65536;
-struct SpecialStorage { queue: VecDeque<Int>, port: Vec<Int>, port_last: Int }
-impl SpecialStorage {
-    fn new() -> Self { SpecialStorage { queue: VecDeque::new(), port: Vec::new(), port_last: Int(0) } }
-    fn push(&mut self, sel: usize, v: Int) { if sel == QUEUE { self.queue.push_back(v); } else { self.port_last = v; self.port.push(v); } }
-    fn pop(&mut self, sel: usize) -> Int { if sel == QUEUE { self.queue.pop_front().unwrap_or(Int(0)) } else { self.port.pop().unwrap_or(Int(0)) } }
-    fn depth(&self, sel: usize) -> usize { if sel == QUEUE { self.queue.len() } else { self.port.len() } }
-    fn dup(&mut self, sel: usize) { if sel == QUEUE { if let Some(&v) = self.queue.front() { self.queue.push_front(v); } } else { self.port.push(self.port_last); } }
-    fn swap(&mut self, sel: usize) { if sel == QUEUE && self.queue.len() >= 2 { let a = self.queue.pop_front().unwrap(); let b = self.queue.pop_front().unwrap(); self.queue.push_front(a); self.queue.push_front(b); } else if sel == PORT && self.port.len() >= 2 { let n = self.port.len(); self.port.swap(n-1, n-2); } }
-    fn peek(&self, sel: usize) -> Int { if sel == QUEUE { self.queue.front().copied().unwrap_or(Int(0)) } else { self.port.last().copied().unwrap_or(Int(0)) } }
-    fn scan_to_zero(&mut self) -> Int {
-        let zero = int_lit(0);
-        if let Some(pos) = self.queue.iter().position(|v| *v == zero) {
-            self.queue.rotate_left(pos + 1);
-            zero
-        } else { zero }
-    }
-    fn promote(&mut self) {
-        for value in &mut self.queue { *value = promote_val(*value); }
-        for value in &mut self.port { *value = promote_val(*value); }
-        self.port_last = promote_val(self.port_last);
-    }
-}
-#[inline(always)] fn write_i64(w: &mut impl Write, n: i64) { let mut buf = [0u8; 20]; let mut u = if n < 0 { w.write_all(b"-").ok(); (n as u64).wrapping_neg() } else { n as u64 }; let mut i = 20; loop { i -= 1; buf[i] = b'0' + (u % 10) as u8; u /= 10; if u == 0 { break; } } w.write_all(&buf[i..]).ok(); }
-#[inline(always)] fn write_char(w: &mut impl Write, v: Int) { let c = int_to_i64(v) as u32; if c <= 0x7F { w.write_all(&[c as u8]).ok(); return; } let mut buf = [0u8; 4]; if let Some(ch) = char::from_u32(c) { let s = ch.encode_utf8(&mut buf); w.write_all(s.as_bytes()).ok(); } }
-fn read_num() -> Int { let mut s = String::new(); std::io::stdin().read_line(&mut s).ok(); int_lit(s.trim().parse().unwrap_or(0)) }
-fn read_char() -> Int { let mut buf = [0u8; 4]; match std::io::stdin().read(&mut buf[..1]) { Ok(0) | Err(_) => int_lit(-1), Ok(_) => { let b = buf[0]; if b < 0x80 { return int_lit(b as i64); } let (n, mut val) = if b >> 5 == 6 { (1, (b & 0x1F) as i32) } else if b >> 4 == 14 { (2, (b & 0x0F) as i32) } else if b >> 3 == 30 { (3, (b & 0x07) as i32) } else { return int_lit(-1) }; for _ in 0..n { if std::io::stdin().read(&mut buf[..1]).unwrap_or(0) == 0 { return int_lit(-1); } val = (val << 6) | (buf[0] & 0x3F) as i32; } int_lit(val as i64) } } }
-#[inline(always)] fn floor_div_i64(a: i64, b: i64) -> i64 { let mut q = a.wrapping_div(b); let r = a.wrapping_rem(b); if r != 0 && (r < 0) != (b < 0) { q -= 1; } q }
-#[inline(always)] fn floor_mod_i64(a: i64, b: i64) -> i64 { let _q = a.wrapping_div(b); let mut r = a.wrapping_rem(b); if r != 0 && (r < 0) != (b < 0) { r += b; } r }
-#[cold] #[inline(never)] unsafe fn dyn_push_sp(sp: &mut SpecialStorage, sel: usize, v: Int) { sp.push(sel, v); }
-#[cold] #[inline(never)] unsafe fn dyn_pop_sp(sp: &mut SpecialStorage, sel: usize) -> Int { sp.pop(sel) }
-#[cold] #[inline(never)] unsafe fn dyn_dup_sp(sp: &mut SpecialStorage, sel: usize) { sp.dup(sel); }
-#[cold] #[inline(never)] unsafe fn dyn_swap_sp(sp: &mut SpecialStorage, sel: usize) { sp.swap(sel); }
-"#;
+const PRELUDE_COMMON: &str = include_str!("runtime_templates/prelude_common.rs.in");
 
 /// Int = dual-mode: raw i64 → checked → on overflow promote to tagged bigint.
 /// `_bm` local variable selects mode (register → ~0 cycle branch).
-const PRELUDE_INT_DUAL: &str = r#"use num_traits::ToPrimitive;
-const SMALL_MIN: i64 = -(1i64 << 62);
-const SMALL_MAX: i64 = (1i64 << 62) - 1;
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-struct Int(i64);
-static BIGINT_ARENA: std::sync::Mutex<Vec<Box<BigInt>>> = std::sync::Mutex::new(Vec::new());
-fn clear_bigints() { BIGINT_ARENA.lock().unwrap_or_else(|e| e.into_inner()).clear(); }
-#[inline(never)] fn box_bigint(value: BigInt) -> Int {
-    let value = Box::new(value);
-    let ptr = (&*value as *const BigInt) as i64;
-    BIGINT_ARENA.lock().unwrap_or_else(|e| e.into_inner()).push(value);
-    Int(ptr)
-}
-#[inline(always)] fn promote_val(v: Int) -> Int {
-    let r = v.0;
-    if r >= SMALL_MIN && r <= SMALL_MAX { Int((r << 1) | 1) }
-    else { box_bigint(BigInt::from(r)) }
-}
-fn to_big(v: i64) -> BigInt { if v & 1 != 0 { BigInt::from(v >> 1) } else { unsafe { &*(v as *const BigInt) }.clone() } }
-fn normalize(b: BigInt) -> Int { match b.to_i64() { Some(v) if v >= SMALL_MIN && v <= SMALL_MAX => Int((v << 1) | 1), _ => box_bigint(b) } }
-#[cold] #[inline(never)] fn big_add(a: Int, b: Int) -> Int { normalize(to_big(a.0) + to_big(b.0)) }
-#[cold] #[inline(never)] fn big_sub(a: Int, b: Int) -> Int { normalize(to_big(a.0) - to_big(b.0)) }
-#[cold] #[inline(never)] fn big_mul(a: Int, b: Int) -> Int { normalize(to_big(a.0) * to_big(b.0)) }
-fn big_divmod_floor(a: BigInt, b: BigInt) -> (BigInt, BigInt) { let mut q = a.clone() / b.clone(); let mut r = a % b.clone(); if r != BigInt::from(0) && (r < BigInt::from(0)) != (b < BigInt::from(0)) { q -= BigInt::from(1); r += b; } (q, r) }
-#[cold] #[inline(never)] fn big_div(a: Int, b: Int) -> Int { normalize(big_divmod_floor(to_big(a.0), to_big(b.0)).0) }
-#[cold] #[inline(never)] fn big_rem(a: Int, b: Int) -> Int { normalize(big_divmod_floor(to_big(a.0), to_big(b.0)).1) }
-unsafe fn promote_stacks(bases: &[*mut Int; 28], tops: &[*mut Int; 28]) {
-    for s in 0..28 {
-        if bases[s].is_null() { continue; }
-        let mut p = bases[s];
-        while p < tops[s] { *p = promote_val(*p); p = p.add(1); }
-    }
-}
-#[cold] #[inline(never)]
-unsafe fn do_promote(bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) {
-    *bm = true; BM = true;
-    promote_stacks(bases, tops);
-    sp.promote();
-}
-#[inline(always)]
-unsafe fn dual_add(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) -> Int {
-    if !*bm {
-        match Int::raw_add(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops, sp); Int::tag_add(promote_val(a), promote_val(b)) } }
-    } else { Int::tag_add(a, b) }
-}
-#[inline(always)]
-unsafe fn dual_sub(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) -> Int {
-    if !*bm {
-        match Int::raw_sub(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops, sp); Int::tag_sub(promote_val(a), promote_val(b)) } }
-    } else { Int::tag_sub(a, b) }
-}
-#[inline(always)]
-unsafe fn dual_mul(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) -> Int {
-    if !*bm {
-        match Int::raw_mul(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops, sp); Int::tag_mul(promote_val(a), promote_val(b)) } }
-    } else { Int::tag_mul(a, b) }
-}
-impl Int {
-    // Mode-aware operations: _bm=false → raw i64, _bm=true → tagged
-    #[inline(always)] fn lit(v: i64, _bm: bool) -> Int { if _bm { promote_val(Int(v)) } else { Int(v) } }
-    #[inline(always)] fn to_i64(v: Int, _bm: bool) -> i64 { if _bm { if v.0 & 1 != 0 { v.0 >> 1 } else { unsafe { &*(v.0 as *const BigInt) }.to_i64().unwrap_or(0) } } else { v.0 } }
-}
-// Static flag for free functions (PRELUDE_COMMON) to detect mode
-static mut BM: bool = false;
-#[inline(always)] fn int_lit(v: i64) -> Int { if unsafe { BM } { promote_val(Int(v)) } else { Int(v) } }
-#[inline(always)] fn int_to_i64(v: Int) -> i64 { if unsafe { BM } { if v.0 & 1 != 0 { v.0 >> 1 } else { unsafe { &*(v.0 as *const BigInt) }.to_i64().unwrap_or(0) } } else { v.0 } }
-impl Int {
-    #[inline(always)] fn is_zero(v: Int, _bm: bool) -> bool { if _bm { v.0 == 1 } else { v.0 == 0 } }
-    #[inline(always)] fn ge(a: Int, b: Int, _bm: bool) -> bool { if _bm { if a.0 & b.0 & 1 != 0 { a.0 >= b.0 } else { to_big(a.0) >= to_big(b.0) } } else { a.0 >= b.0 } }
-    // Fast-path add/sub: raw checked arithmetic. Overflow handled by caller.
-    #[inline(always)] fn raw_add(a: Int, b: Int) -> Option<Int> { a.0.checked_add(b.0).map(Int) }
-    #[inline(always)] fn raw_sub(a: Int, b: Int) -> Option<Int> { a.0.checked_sub(b.0).map(Int) }
-    #[inline(always)] fn raw_mul(a: Int, b: Int) -> Option<Int> { a.0.checked_mul(b.0).map(Int) }
-    // Tagged-path operations (after promotion)
-    #[inline(always)] fn tag_add(a: Int, b: Int) -> Int {
-        if a.0 & b.0 & 1 != 0 { if let Some(r) = a.0.checked_add(b.0 - 1) { return Int(r); } }
-        big_add(a, b)
-    }
-    #[inline(always)] fn tag_sub(a: Int, b: Int) -> Int {
-        if a.0 & b.0 & 1 != 0 { if let Some(r) = a.0.checked_sub(b.0 - 1) { return Int(r); } }
-        big_sub(a, b)
-    }
-    #[inline(always)] fn tag_mul(a: Int, b: Int) -> Int {
-        if a.0 & b.0 & 1 != 0 { let av = a.0 >> 1; let bv = b.0 >> 1;
-            if let Some(r) = av.checked_mul(bv) { if r >= SMALL_MIN && r <= SMALL_MAX { return Int((r << 1) | 1); } } }
-        big_mul(a, b)
-    }
-    #[inline(always)] fn div(a: Int, b: Int, _bm: bool) -> Int {
-        if _bm { if b.0 == 1 { return Int(1); } if a.0 & b.0 & 1 != 0 { return Int((floor_div_i64(a.0>>1, b.0>>1)<<1)|1); } big_div(a, b) }
-        else { Int(if b.0 != 0 { floor_div_i64(a.0, b.0) } else { 0 }) }
-    }
-    #[inline(always)] fn rem(a: Int, b: Int, _bm: bool) -> Int {
-        if _bm { if b.0 == 1 { return Int(1); } if a.0 & b.0 & 1 != 0 { return Int((floor_mod_i64(a.0>>1, b.0>>1)<<1)|1); } big_rem(a, b) }
-        else { Int(if b.0 != 0 { floor_mod_i64(a.0, b.0) } else { 0 }) }
-    }
-}
-fn write_num(w: &mut impl std::io::Write, v: Int) { if !unsafe { BM } { write_i64(w, v.0); } else if v.0 & 1 != 0 { write_i64(w, v.0 >> 1); } else { use std::io::Write as _; write!(w, "{}", unsafe { &*(v.0 as *const BigInt) }).ok(); } }
-"#;
+const PRELUDE_INT_DUAL: &str = include_str!("runtime_templates/prelude_int_dual.rs.in");
 
 /// Int = i64 (wrapping arithmetic, no bigint). Zero overhead.
 const PRELUDE_INT_I64: &str = r#"#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1048,19 +918,4 @@ impl Int {
 #[inline(always)] fn write_num(w: &mut impl std::io::Write, v: Int) { write_i64(w, v.0); }
 "#;
 
-const MAIN_FN: &str = r#"
-fn main() {
-    let mut data: [Vec<Int>; STORAGE_COUNT] = std::array::from_fn(|_| Vec::new());
-    for &storage in USED_STORAGES { data[storage] = vec![Int(0); MAX_STACK]; }
-    let mut bases: [*mut Int; 28] = { let mut b = [std::ptr::null_mut(); 28]; for i in 0..28 { b[i] = data[i].as_mut_ptr(); } b };
-    let mut lengths = [0i32; 28];
-    let stdout = std::io::stdout();
-    let mut w = std::io::BufWriter::with_capacity(16384, stdout.lock());
-    let result = unsafe { aheui_main(&mut bases, &mut lengths, &mut w) };
-    w.flush().ok();
-    let exit_code = int_to_i64(result) as i32;
-    drop(w);
-    clear_bigints();
-    std::process::exit(exit_code);
-}
-"#;
+const MAIN_FN: &str = include_str!("runtime_templates/main_fn.rs.in");

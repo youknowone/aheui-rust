@@ -30,6 +30,8 @@
 
 /* Rust BigInt bridge. Values use the same odd-immediate/even-pointer ABI. */
 extern int64_t cbig_from_i64(int64_t value);
+extern uint8_t cbig_collection_due;
+extern void cbig_collect(int64_t **bases, int64_t **tops, void *storage);
 extern int64_t cbig_add(int64_t a, int64_t b);
 extern int64_t cbig_sub(int64_t a, int64_t b);
 extern int64_t cbig_mul(int64_t a, int64_t b);

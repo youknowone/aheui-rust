@@ -40,7 +40,6 @@ fn compile_and_run(source: &str, stdin_data: &[u8]) -> (String, i32) {
         return ("COMPILE_ERROR".into(), -1);
     }
 
-    use std::io::Read;
     let mut child = Command::new(bin_path)
         .stdin(if stdin_data.is_empty() {
             std::process::Stdio::null()
@@ -56,39 +55,7 @@ fn compile_and_run(source: &str, stdin_data: &[u8]) -> (String, i32) {
         child.stdin.as_mut().unwrap().write_all(stdin_data).unwrap();
         drop(child.stdin.take());
     }
-    // Read stdout with limit to prevent OOM
-    let mut stdout_bytes = Vec::new();
-    let max_output = 10 * 1024 * 1024; // 10MB limit
-    if let Some(ref mut out) = child.stdout {
-        let mut buf = [0u8; 8192];
-        loop {
-            match out.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    stdout_bytes.extend_from_slice(&buf[..n]);
-                    if stdout_bytes.len() > max_output {
-                        let _ = child.kill();
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    }
-    // Wait with timeout (5 seconds)
-    let status = match child.try_wait() {
-        Ok(Some(s)) => s,
-        _ => {
-            std::thread::sleep(std::time::Duration::from_secs(5));
-            match child.try_wait() {
-                Ok(Some(s)) => s,
-                _ => {
-                    let _ = child.kill();
-                    child.wait().unwrap()
-                }
-            }
-        }
-    };
+    let (stdout_bytes, status) = common::bounded_output(child, std::time::Duration::from_secs(5));
     let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
     (stdout, status.code().unwrap_or(-1))
 }
@@ -103,19 +70,22 @@ fn compile_and_run_bigint(source: &str, stdin_data: &[u8]) -> (String, i32) {
     // Own scratch project: `bigint_test` builds against a different
     // malachite-bigint version, and sharing one directory would make the two
     // suites rebuild the dependency for each other on every alternation.
-    let dir = common::build_dir("allsnip-bigint-proj");
+    let package = format!("aheui-allsnip-bigint-test-{}", std::process::id());
+    let dir = common::build_dir(&package);
+    let target = common::build_dir("allsnip-bigint-proj/target");
     std::fs::create_dir_all(dir.join("src")).ok();
     std::fs::write(dir.join("src/main.rs"), &rs_code).unwrap();
     std::fs::write(
         dir.join("Cargo.toml"),
-        r#"
+        format!(
+            r#"
 # Its own workspace root: the project sits under `target/`, inside the aheui
 # workspace directory, and cargo would otherwise refuse to build a package it
 # finds there but no member list names.
 [workspace]
 
 [package]
-name = "aheui-bigint-test"
+name = "{package}"
 version = "0.0.1"
 edition = "2021"
 
@@ -125,20 +95,21 @@ num-traits = "0.2"
 
 [profile.release]
 opt-level = 2
-"#,
+"#
+        ),
     )
     .unwrap();
     let status = Command::new("cargo")
         .args(["build", "--release", "--quiet"])
         .current_dir(&dir)
+        .env("CARGO_TARGET_DIR", &target)
         .status()
         .unwrap();
     if !status.success() {
         return ("COMPILE_ERROR".into(), -1);
     }
-    let bin = dir.join("target/release/aheui-bigint-test");
+    let bin = target.join("release").join(&package);
 
-    use std::io::Read;
     let mut child = Command::new(&bin)
         .stdin(if stdin_data.is_empty() {
             std::process::Stdio::null()
@@ -154,36 +125,7 @@ opt-level = 2
         child.stdin.as_mut().unwrap().write_all(stdin_data).unwrap();
         drop(child.stdin.take());
     }
-    let mut stdout_bytes = Vec::new();
-    if let Some(ref mut out) = child.stdout {
-        let mut buf = [0u8; 8192];
-        loop {
-            match out.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    stdout_bytes.extend_from_slice(&buf[..n]);
-                    if stdout_bytes.len() > 10 * 1024 * 1024 {
-                        let _ = child.kill();
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    }
-    let status = match child.try_wait() {
-        Ok(Some(s)) => s,
-        _ => {
-            std::thread::sleep(std::time::Duration::from_secs(5));
-            match child.try_wait() {
-                Ok(Some(s)) => s,
-                _ => {
-                    let _ = child.kill();
-                    child.wait().unwrap()
-                }
-            }
-        }
-    };
+    let (stdout_bytes, status) = common::bounded_output(child, std::time::Duration::from_secs(5));
     (
         String::from_utf8_lossy(&stdout_bytes).to_string(),
         status.code().unwrap_or(-1),

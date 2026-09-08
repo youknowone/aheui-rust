@@ -12,7 +12,8 @@ members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compah
 # compiled against a recorded fact instead of whatever happened to be in a
 # sibling directory.
 #
-# The revision is declared ONCE, for every majit crate.  Two members resolving
+# All workspace entries use one revision, checked by scripts/check_config.py.
+# Two members resolving
 # different revisions would each get their own clone, and the same type from
 # the two clones (`majit_ir::DescrRef`, say) would not unify — the failure
 # reads as an unrelated type error deep in a generic.
@@ -24,17 +25,17 @@ members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compah
 #     majit-ir = { path = "../pyre/majit/majit-ir" }
 #     # ... one line per crate used below
 [workspace.dependencies]
-majit-backend-wasm-host = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
-majit-ir = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
-majit-macros = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
-majit-metainterp = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
-majit-rlib = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
-majit-gc = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
-majit-translate = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
-majit-backend = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
-majit-backend-cranelift = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
-majit-backend-dynasm = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d" }
-majit-backend-wasm = { git = "https://github.com/youknowone/pyre", rev = "67505f239e94fc7a6e8f8414f4fb74efcd746d4d", default-features = false }
+majit-backend-wasm-host = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38" }
+majit-ir = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38" }
+majit-macros = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38" }
+majit-metainterp = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38" }
+majit-rlib = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38" }
+majit-gc = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38" }
+majit-translate = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38" }
+majit-backend = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38" }
+majit-backend-cranelift = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38" }
+majit-backend-dynasm = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38" }
+majit-backend-wasm = { git = "https://github.com/youknowone/pyre", rev = "c8231572882d3f798edf7e40684c1f355468db38", default-features = false }
 
 [features]
 default = ["jit", "dynasm", "malachite-bigint"]

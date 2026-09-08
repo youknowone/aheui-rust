@@ -29,6 +29,7 @@ use crate::value::*;
     },
     ref_fields = {
         super::linkedlist::ListBase::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
     },
     struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
     headerless_structs = { super::linkedlist::Node, },
@@ -301,6 +302,7 @@ pub fn stack_mod(stack: usize) {
     },
     ref_fields = {
         super::linkedlist::ListBase::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
     },
     struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
     headerless_structs = { super::linkedlist::Node, },
@@ -311,7 +313,7 @@ pub fn stack_mod(stack: usize) {
 pub fn stack_dup(stack: usize) {
     // linkedlist.py Stack.dup -- `self.push(self.head.value)`, flattened
     // here into the three statements that push expands to.  The queue's `dup`
-    // is a separate definition (:112-116) that happens to expand the same way;
+    // is a separate definition (`Queue.dup`) that expands the same way;
     // they are two implementations of a method every storage overrides, not one
     // implementation reached twice, so they stay two helpers.
     let head = stack.head;
@@ -811,6 +813,7 @@ pub fn queue_mod(queue: usize) {
     },
     ref_fields = {
         super::linkedlist::ListBase::head => super::linkedlist::Node,
+        super::linkedlist::Node::next => super::linkedlist::Node,
     },
     struct_allocs = { super::linkedlist::Node => alloc_node_jit, },
     headerless_structs = { super::linkedlist::Node, },

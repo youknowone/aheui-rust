@@ -16,7 +16,7 @@ runtime-rbigint = ["dep:majit-rlib", "bigint-backend"]
 ahsembler = { path = "../ahsembler" }
 majit-ir = { workspace = true, optional = true }
 majit-macros = { workspace = true, optional = true }
-majit-metainterp = { workspace = true, features = ["dynasm"], optional = true }
+majit-metainterp = { workspace = true, optional = true }
 majit-rlib = { workspace = true, optional = true }
 num-bigint = { version = "0.4", optional = true }
 malachite-bigint = { version = "0.9.1", optional = true }

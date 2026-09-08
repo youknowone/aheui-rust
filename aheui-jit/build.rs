@@ -92,8 +92,8 @@ fn main() {
     // crate-stripped module path of the i-th source file, derived by the
     // translator that consumes it — the spelling is its invariant, not a
     // label this build script gets to choose.
-    // aheui carries no host vinfo / fnaddr / static-singleton bindings —
-    // the `#[jit_interp]` macro plus the `Minimal` flavor cover those.
+    // This pipeline needs no host vinfo or static-singleton configuration.
+    // Concrete function bindings are installed by jit::jitcode_runtime.
     let module_paths: Vec<String> = source_paths
         .iter()
         .map(|p| majit_translate::module_path::module_path_from_source_file(p))

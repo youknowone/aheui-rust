@@ -1,14 +1,8 @@
 use num_traits::ToPrimitive;
 use std::collections::VecDeque;
-use std::sync::{Mutex, OnceLock};
 
 const SMALL_MIN: i64 = -(1i64 << 62);
 const SMALL_MAX: i64 = (1i64 << 62) - 1;
-
-fn arena() -> &'static Mutex<Vec<Box<BigInt>>> {
-    static ARENA: OnceLock<Mutex<Vec<Box<BigInt>>>> = OnceLock::new();
-    ARENA.get_or_init(|| Mutex::new(Vec::new()))
-}
 
 fn to_big(value: i64) -> BigInt {
     if value & 1 != 0 {
@@ -21,15 +15,7 @@ fn to_big(value: i64) -> BigInt {
 fn normalize(value: BigInt) -> i64 {
     match value.to_i64() {
         Some(small) if (SMALL_MIN..=SMALL_MAX).contains(&small) => (small << 1) | 1,
-        _ => {
-            let value = Box::new(value);
-            let ptr = (&*value as *const BigInt) as i64;
-            arena()
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(value);
-            ptr
-        }
+        _ => alloc_bigint(value),
     }
 }
 
@@ -147,6 +133,17 @@ fn storage<'a>(handle: Handle) -> &'a mut SpecialStorage {
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn cbig_collect(bases: *const [*mut i64; 28], tops: *const [*mut i64; 28], handle: Handle) {
+    let mut roots = Vec::new();
+    unsafe { bigint_stack_roots(&mut roots, &*bases, &*tops); }
+    let s = storage(handle);
+    for &v in s.queue.iter().chain(s.port.iter()).chain(std::iter::once(&s.port_last)) {
+        bigint_root(&mut roots, v);
+    }
+    collect_bigint_roots(roots);
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn csp_new() -> Handle {
     let storage = Box::new(SpecialStorage {
         queue: VecDeque::new(),
@@ -252,6 +249,6 @@ unsafe extern "C" {
 
 fn main() {
     let result = unsafe { compaheuiler_c_entry() };
-    arena().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    clear_bigints();
     std::process::exit(result as i32);
 }

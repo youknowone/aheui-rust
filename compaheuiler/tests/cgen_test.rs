@@ -1,5 +1,44 @@
 mod common;
 
+#[cfg(feature = "bigint")]
+#[test]
+fn test_c_collection_preserves_stack_queue_and_sticky_port() {
+    let code = r#"
+#include <stdint.h>
+#include <stddef.h>
+extern uint8_t cbig_collection_due;
+extern int64_t cbig_from_i64(int64_t);
+extern int64_t cbig_to_i64(int64_t);
+extern void *csp_new(void);
+extern void csp_push(void *, size_t, int64_t);
+extern int64_t csp_pop(void *, size_t);
+extern void csp_dup(void *, size_t);
+extern void cbig_collect(int64_t **, int64_t **, void *);
+int64_t compaheuiler_c_entry(void) {
+    int64_t stack[] = { cbig_from_i64(INT64_MAX) };
+    int64_t *bases[28] = { stack }, *tops[28] = { stack + 1 };
+    void *sp = csp_new();
+    csp_push(sp, 21, cbig_from_i64(INT64_MAX - 1));
+    csp_dup(sp, 21);
+    csp_push(sp, 27, cbig_from_i64(INT64_MAX - 2));
+    csp_pop(sp, 27);
+    for (int i = 0; i < 1000000; i++) {
+        cbig_from_i64(INT64_MAX);
+        if (cbig_collection_due) cbig_collect(bases, tops, sp);
+    }
+    cbig_collect(bases, tops, sp);
+    if (cbig_to_i64(stack[0]) != INT64_MAX) return 1;
+    if (cbig_to_i64(csp_pop(sp, 21)) != INT64_MAX - 1) return 2;
+    if (cbig_to_i64(csp_pop(sp, 21)) != INT64_MAX - 1) return 3;
+    csp_dup(sp, 27);
+    if (cbig_to_i64(csp_pop(sp, 27)) != INT64_MAX - 2) return 4;
+    return 0;
+}
+"#;
+    let (out, _, _) = compile_and_run_c_bigint_code("gc_roots", code);
+    assert!(out.is_empty());
+}
+
 use std::process::Command;
 use std::time::Instant;
 

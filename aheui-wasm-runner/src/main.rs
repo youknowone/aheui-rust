@@ -160,61 +160,91 @@ fn fuel_count_enabled() -> bool {
     std::env::var_os("AHEUI_WASM_FUEL_COUNT").is_some()
 }
 
-/// Path of the compiled artefact that belongs to a guest module.
-fn artifact_path(module_path: &Path) -> PathBuf {
-    let mut path = module_path.to_path_buf();
-    let ext = match module_path.extension() {
-        Some(ext) => format!("{}.cwasm", ext.to_string_lossy()),
-        None => "cwasm".to_string(),
-    };
-    path.set_extension(ext);
-    path
-}
-
-/// Whether `artifact` was written after `source` was last changed.
-fn artifact_is_current(artifact: &Path, source: &Path) -> bool {
-    let stamp = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    match (stamp(artifact), stamp(source)) {
-        (Some(a), Some(s)) => a >= s,
-        _ => false,
-    }
-}
-
-/// Load the guest, reusing the artefact of an earlier compile when there is a
-/// current one.
-///
-/// Compiling a multi-megabyte module is seconds of work that says nothing about
-/// what the module then does, and without an artefact every launch pays it
-/// again — enough, for this guest, to be several times the program's own run and
-/// to read as if the JIT bought nothing. A deserialized artefact skips it.
-///
-/// `AHEUI_WASM_NO_MODULE_CACHE` compiles unconditionally and writes nothing,
-/// for measuring what that compile costs. `reusable` is false for an engine
-/// configured differently from the one an ordinary run builds — its artefact
-/// would be rejected by every other run, and writing it would evict theirs.
-fn load_guest(engine: &Engine, module_path: &Path, reusable: bool) -> Result<(Module, bool)> {
-    if !reusable || std::env::var_os("AHEUI_WASM_NO_MODULE_CACHE").is_some() {
-        return Ok((Module::from_file(engine, module_path)?, true));
-    }
-    let artifact = artifact_path(module_path);
-    if artifact_is_current(&artifact, module_path) {
-        // SAFETY: `deserialize_file` requires an artefact this engine produced.
-        // Only the write below creates one, the name is derived from the source
-        // module, and a stale or foreign artefact is rejected by the engine's
-        // own compatibility check rather than being run — so the residual risk
-        // is a file corrupted underneath us, which recompiling cannot detect
-        // either.
-        if let Ok(module) = unsafe { Module::deserialize_file(engine, &artifact) } {
-            return Ok((module, false));
-        }
-    }
+/// Wasmtime owns content/config keys, atomic cache publication and validation.
+/// Never deserialize an untrusted sidecar next to a guest supplied by the user.
+fn load_guest(
+    engine: &Engine,
+    module_path: &Path,
+    cache: Option<&wasmtime::Cache>,
+) -> Result<(Module, bool)> {
+    let hits = cache.map_or(0, wasmtime::Cache::cache_hits);
     let module = Module::from_file(engine, module_path)?;
-    // A directory that cannot be written to costs the next run a compile, which
-    // is what it would have paid anyway.
-    if let Ok(bytes) = module.serialize() {
-        let _ = std::fs::write(&artifact, bytes);
+    let compiled = cache.is_none_or(|cache| cache.cache_hits() == hits);
+    Ok((module, compiled))
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn engine(directory: &Path) -> (Engine, wasmtime::Cache) {
+        let mut cache_config = wasmtime::CacheConfig::new();
+        cache_config.with_directory(directory);
+        let cache = wasmtime::Cache::new(cache_config).unwrap();
+        let mut config = Config::new();
+        config.cache(Some(cache.clone()));
+        (Engine::new(&config).unwrap(), cache)
     }
-    Ok((module, true))
+
+    fn value(module: &Module, engine: &Engine) -> i32 {
+        let mut store = Store::new(engine, ());
+        let instance = wasmtime::Instance::new(&mut store, module, &[]).unwrap();
+        instance
+            .get_typed_func::<(), i32>(&mut store, "value")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap()
+    }
+
+    #[test]
+    fn cache_ignores_adjacent_artifacts_and_keys_by_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let (engine, cache) = engine(&temp.path().join("cache"));
+        let guest = temp.path().join("guest.wasm");
+        std::fs::write(
+            guest.with_extension("wasm.cwasm"),
+            b"untrusted adjacent file",
+        )
+        .unwrap();
+        std::fs::write(
+            &guest,
+            "(module (func (export \"value\") (result i32) i32.const 7))",
+        )
+        .unwrap();
+        let (module, compiled) = load_guest(&engine, &guest, Some(&cache)).unwrap();
+        assert!(compiled);
+        assert_eq!(value(&module, &engine), 7);
+        assert!(!load_guest(&engine, &guest, Some(&cache)).unwrap().1);
+        std::fs::write(
+            &guest,
+            "(module (func (export \"value\") (result i32) i32.const 9))",
+        )
+        .unwrap();
+        let (replacement, compiled) = load_guest(&engine, &guest, Some(&cache)).unwrap();
+        assert!(compiled);
+        assert_eq!(value(&replacement, &engine), 9);
+        assert_eq!(value(&module, &engine), 7);
+    }
+
+    #[test]
+    fn concurrent_cache_publication_keeps_live_modules_valid() {
+        let temp = tempfile::tempdir().unwrap();
+        let (engine, cache) = engine(&temp.path().join("cache"));
+        let guest = temp.path().join("guest.wasm");
+        std::fs::write(
+            &guest,
+            "(module (func (export \"value\") (result i32) i32.const 7))",
+        )
+        .unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    let (module, _) = load_guest(&engine, &guest, Some(&cache)).unwrap();
+                    assert_eq!(value(&module, &engine), 7);
+                });
+            }
+        });
+    }
 }
 
 fn run(module_path: &Path, dirs: &[DirMapping], guest_args: &[String]) -> Result<i32> {
@@ -222,12 +252,24 @@ fn run(module_path: &Path, dirs: &[DirMapping], guest_args: &[String]) -> Result
     config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
     let counting_fuel = fuel_count_enabled();
     config.consume_fuel(counting_fuel);
+    let cache = if std::env::var_os("AHEUI_WASM_NO_MODULE_CACHE").is_some() {
+        None
+    } else {
+        match wasmtime::Cache::new(wasmtime::CacheConfig::new()) {
+            Ok(cache) => Some(cache),
+            Err(error) => {
+                eprintln!("[module cache disabled] {error}");
+                None
+            }
+        }
+    };
+    config.cache(cache.clone());
     let engine = Engine::new(&config)?;
     // Recorded before the first compile, so a dumped trace can name its
     // `call_indirect` targets by the guest's own symbols.
     *GUEST_MODULE_PATH.lock().unwrap() = Some(module_path.to_path_buf());
     let load_started = std::time::Instant::now();
-    let (module, guest_compiled) = load_guest(&engine, module_path, !counting_fuel)?;
+    let (module, guest_compiled) = load_guest(&engine, module_path, cache.as_ref())?;
     let guest_load_time_ns = load_started.elapsed().as_nanos();
 
     let mut builder = WasiCtxBuilder::new();

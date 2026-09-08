@@ -21,12 +21,16 @@ fn compile_and_run_bigint_with_opt(
     opt: ahsembler::OptimizationLevel,
 ) -> (String, i32, f64, f64) {
     let _guard = PROJ.lock().unwrap_or_else(|e| e.into_inner());
-    let rs = compaheuiler::compile_to_rs_bigint_opt(source, opt);
+    // Stress complete root enumeration at every tagged block entry, including
+    // self-loops, rather than waiting for the production allocation threshold.
+    let rs = compaheuiler::compile_to_rs_bigint_opt(source, opt)
+        .replace("if _bm && cbig_collection_due != 0", "if _bm");
 
-    // A cargo project kept between runs: its value is that the bigint
-    // dependency stays built, so it belongs under `target/` and not in a
-    // scratch directory that is removed with the test.
-    let dir = common::build_dir("bigint-proj");
+    // Source and executable are process-owned; only dependency build artifacts
+    // are shared. A process-local mutex cannot protect another test executable.
+    let package = format!("aheui-bigint-test-{}", std::process::id());
+    let dir = common::build_dir(&package);
+    let target = common::build_dir("bigint-proj/target");
     std::fs::create_dir_all(dir.join("src")).ok();
     std::fs::write(dir.join("src/main.rs"), &rs).unwrap();
     #[cfg(feature = "num-bigint")]
@@ -43,7 +47,7 @@ fn compile_and_run_bigint_with_opt(
 [workspace]
 
 [package]
-name = "aheui-bigint-test"
+name = "{package}"
 version = "0.0.1"
 edition = "2021"
 
@@ -62,39 +66,34 @@ opt-level = 2
     let status = Command::new("cargo")
         .args(["build", "--release", "--quiet"])
         .current_dir(&dir)
+        .env("CARGO_TARGET_DIR", &target)
         .status()
         .expect("cargo build failed");
     let compile_ms = t.elapsed().as_secs_f64() * 1000.0;
     assert!(status.success(), "bigint compilation failed");
 
-    let bin = dir.join("target/release/aheui-bigint-test");
+    let bin = target.join("release").join(&package);
     let t = Instant::now();
-    let output = if stdin_data.is_empty() {
-        Command::new(&bin).output().expect("execution failed")
-    } else {
+    let mut child = Command::new(&bin)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("execution failed");
+    if !stdin_data.is_empty() {
         use std::io::Write;
-        let mut child = Command::new(&bin)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
         child
             .stdin
             .as_mut()
             .unwrap()
             .write_all(stdin_data.as_bytes())
             .unwrap();
-        child.wait_with_output().unwrap()
-    };
+    }
+    drop(child.stdin.take());
+    let (output, status) = common::bounded_output(child, std::time::Duration::from_secs(30));
     let run_ms = t.elapsed().as_secs_f64() * 1000.0;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    (
-        stdout,
-        output.status.code().unwrap_or(-1),
-        compile_ms,
-        run_ms,
-    )
+    let stdout = String::from_utf8_lossy(&output).to_string();
+    (stdout, status.code().unwrap_or(-1), compile_ms, run_ms)
 }
 
 #[test]

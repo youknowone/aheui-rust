@@ -27,3 +27,6 @@ wasmparser = "0.248"
 # Render a resolved symbol the way the codebase cites one rather than as its
 # v0 mangling. Already in the lockfile as a wasmtime backtrace dependency.
 rustc-demangle = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

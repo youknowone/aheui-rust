@@ -90,7 +90,8 @@ def snippets(only: list[str]) -> list[tuple[str, Path]]:
 
 def run(argv: list[str], stdin: bytes, timeout: float):
     try:
-        return subprocess.run(argv, input=stdin, capture_output=True, timeout=timeout)
+        from bench_support import bounded_run
+        return bounded_run(argv, input=stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
         return None
 

@@ -1,6 +1,7 @@
 name: Deploy aheui-wasm demo to GitHub Pages
 
 on:
+  pull_request:
   push:
     branches: [main]
     paths:
@@ -17,13 +18,17 @@ on:
 
 # 동시에 여러 배포가 도는 걸 방지하되, 진행 중 배포는 자연스럽게 끝나도록
 concurrency:
-  group: pages
+  group: pages-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 permissions:
   contents: read
   pages: write
   id-token: write
+
+env:
+  CARGO_BUILD_JOBS: "1"
+  RUST_TEST_THREADS: "1"
 
 jobs:
   build:
@@ -55,6 +60,9 @@ jobs:
       - name: Build aheui-wasm
         run: ./aheui-wasm/build.sh
 
+      - name: Test browser library through Node
+        run: node aheui-wasm/test_e2e.mjs
+
       - name: Stage site
         run: |
           mkdir -p _site
@@ -63,7 +71,6 @@ jobs:
           mkdir -p _site/pkg
           cp aheui-wasm/pkg/aheui_wasm.js     _site/pkg/
           cp aheui-wasm/pkg/aheui_wasm_bg.wasm _site/pkg/
-          ls -lR _site | head -60
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -71,6 +78,7 @@ jobs:
           path: _site
 
   deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     environment:

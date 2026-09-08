@@ -1,7 +1,10 @@
 #!/bin/bash
 # compaheuiler regression check: rgen (rustc/LLVM) + cranelift backends
 set -uo pipefail
+export CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 LLBC_PARALLEL_LAYOUTS=0
 cd "$(dirname "$0")"
+CHECK_TMP=$(mktemp -d "${TMPDIR:-/tmp}/aheui-check.XXXXXXXX") || exit 1
+echo "Check artifacts: $CHECK_TMP"
 
 if [ -n "${AHEUI_SNIPPETS:-}" ]; then
     SNIPPETS="$AHEUI_SNIPPETS"
@@ -58,7 +61,7 @@ print(int((time.monotonic() - t0) * 1000))
 }
 
 echo -e "${CYAN}Building compaheuiler (rgen + cranelift)...${RESET}"
-cargo build -p compaheuiler --features cranelift --release 2>/dev/null
+cargo build -p compaheuiler --features cranelift --release || exit 1
 
 echo ""
 echo -e "${CYAN}══ RGEN BACKEND (rustc/LLVM) ══${RESET}"
@@ -69,16 +72,14 @@ echo ""
 echo "═══ 1. Logo ═══"
 LOGO_REF="$SNIPPETS/logo/logo.out"
 # Generate .rs via cargo test, then recompile with O3
-cargo test -p compaheuiler --release --test rgen_test -- test_logo_rs --test-threads=1 > /tmp/compaheuiler_logo_test.log 2>&1 || true
-rustc $RUSTC_OPT -o /tmp/aheui_logo_o3 target/codegen/aheui_logo.rs 2>/dev/null
-LOGO_BIN="/tmp/aheui_logo_o3"
+LOGO_BIN="$CHECK_TMP/logo"
 
-if [ ! -x "$LOGO_BIN" ]; then
-    fail "logo: binary not found"
+if ! cargo test -p compaheuiler --release --test rgen_test -- test_logo_rs --test-threads=1 > "$CHECK_TMP/logo-build.log" 2>&1 ||
+   ! rustc $RUSTC_OPT -o "$LOGO_BIN" target/codegen/aheui_logo.rs; then
+    fail "logo: generation or compilation failed (see $CHECK_TMP)"
 else
-    "$LOGO_BIN" > /tmp/logo_check.txt 2>/dev/null || true
-    if diff /tmp/logo_check.txt "$LOGO_REF" > /dev/null 2>&1; then
-        pass "logo correctness ($(wc -c < /tmp/logo_check.txt | tr -d ' ') bytes)"
+    if "$LOGO_BIN" > "$CHECK_TMP/logo.out" && cmp -s "$CHECK_TMP/logo.out" "$LOGO_REF"; then
+        pass "logo correctness ($(wc -c < "$CHECK_TMP/logo.out" | tr -d ' ') bytes)"
     else
         fail "logo output mismatch"
     fi
@@ -97,26 +98,26 @@ echo "═══ 2. aheui.aheui + quine40 ═══"
 QUINE40_SRC="$SNIPPETS/quine/quine.puzzlet.40col.aheui"
 QUINE40_REF="$SNIPPETS/quine/quine.puzzlet.40col.out"
 
-cargo test -p compaheuiler --release --test rgen_test -- test_aheui_self_interp --test-threads=1 > /tmp/compaheuiler_aheui_test.log 2>&1 || true
-rustc $RUSTC_OPT -o /tmp/aheui_aheui_o3 target/codegen/aheui_aheui_self.rs 2>/dev/null
-AHEUI_BIN="/tmp/aheui_aheui_o3"
+AHEUI_BIN="$CHECK_TMP/self-interpreter"
 
-if [ ! -x "$AHEUI_BIN" ]; then
-    # The self-interpreter source is in no snippet corpus; `n` names it and
-    # there is no default, so the rgen test skips too
-    # ("aheui.aheui (set AHEUI_SELF_INTERP)").
+if [ -z "${AHEUI_SELF_INTERP:-}" ]; then
     skip "aheui.aheui: self-interpreter unavailable (set AHEUI_SELF_INTERP)"
+elif [ ! -r "$AHEUI_SELF_INTERP" ]; then
+    fail "AHEUI_SELF_INTERP is not readable: $AHEUI_SELF_INTERP"
+elif ! cargo test -p compaheuiler --release --test rgen_test -- test_aheui_self_interp --test-threads=1 > "$CHECK_TMP/self-build.log" 2>&1 ||
+     ! rustc $RUSTC_OPT -o "$AHEUI_BIN" target/codegen/aheui_aheui_self.rs; then
+    fail "self-interpreter: generation or compilation failed (see $CHECK_TMP)"
 else
-    "$AHEUI_BIN" < "$QUINE40_SRC" > /tmp/quine40_check.txt 2>/dev/null || true
-    Q40_BYTES=$(wc -c < /tmp/quine40_check.txt | tr -d ' ')
-    if diff <(head -c "$Q40_BYTES" /tmp/quine40_check.txt) <(head -c "$Q40_BYTES" "$QUINE40_REF") > /dev/null 2>&1; then
-        pass "aheui+quine40 correctness ($Q40_BYTES bytes)"
+    if "$AHEUI_BIN" < "$QUINE40_SRC" > "$CHECK_TMP/quine40.out" &&
+       cmp -s "$CHECK_TMP/quine40.out" "$QUINE40_REF"; then
+        pass "aheui+quine40 correctness"
     else
         fail "aheui+quine40 output mismatch"
     fi
 
     echo -n "밝희" | "$AHEUI_BIN" > /dev/null 2>&1
-    if [ "$?" = "7" ]; then pass "aheui(밝희) exit=7"; else fail "aheui(밝희) exit=$?, expected 7"; fi
+    AHEUI_EXIT=$?
+    if [ "$AHEUI_EXIT" = "7" ]; then pass "aheui(밝희) exit=7"; else fail "aheui(밝희) exit=$AHEUI_EXIT, expected 7"; fi
 
     measure "$AHEUI_BIN" "$QUINE40_SRC"
     echo -e "  ${YELLOW}aheui+quine40 median: ${MEASURE_MEDIAN}ms${RESET} (runs: ${MEASURE_TIMES})"
@@ -162,7 +163,7 @@ echo ""
 echo "═══ 5. JIT stats floor + threshold sweep ═══"
 # This is the only section that runs the majit-driven interpreter. Test its
 # runtime and JIT crates directly before the end-to-end corpus gate: a defect
-# in code that no corpus program reaches, such as `storage/array.rs`, is visible
+# in code that no corpus program reaches, such as storage GC helpers, is visible
 # only to the crate tests. The corpus and jitstress baselines then gate the
 # pinned `snippets/` submodule.
 for CRATE in aheui-runtime aheui-jit; do
@@ -174,8 +175,7 @@ for CRATE in aheui-runtime aheui-jit; do
     fi
 done
 
-cargo build -p aheui --release 2>/tmp/aheui_jit_build.log
-if [ ! -x target/release/aheui ]; then
+if ! cargo build -p aheui --release 2>/tmp/aheui_jit_build.log; then
     fail "aheui (majit) build failed (see /tmp/aheui_jit_build.log)"
 else
     if python3 scripts/jitstats.py check; then

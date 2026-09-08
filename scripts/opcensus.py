@@ -63,10 +63,10 @@ def census(program: Path) -> dict[str, int]:
     # described — and never reach the workload whose trace this counts.
     stdin_file = program.with_suffix(".in")
     stdin_bytes = stdin_file.read_bytes() if stdin_file.exists() else b""
-    proc = subprocess.run(
+    from bench_support import bounded_run
+    proc = bounded_run(
         [str(BINARY), str(program)],
         input=stdin_bytes,
-        capture_output=True,
         env=env,
     )
 

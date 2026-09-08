@@ -37,7 +37,9 @@ SPECS: dict[str, CrateSpec] = {
         name="aheui-runtime",
         crate_dir=ROOT / "aheui-runtime",
         output_name="aheui-runtime.ullbc",
-        cargo_args=["--features", "jit", *_CONFIG_ARGS],
+        # Extraction compiles the runtime on its own. Select its host backend
+        # here, without forcing dynasm into every consumer's feature graph.
+        cargo_args=["--features", "jit,majit-metainterp/dynasm", *_CONFIG_ARGS],
     ),
     # The naive `mainloop` portal the pipeline traces.
     "aheuinterpreter": CrateSpec(
