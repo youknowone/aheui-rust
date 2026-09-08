@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def main() -> None:
     runner = ROOT / "target/release/aheui-wasm-runner"
     guest = ROOT / "target/wasm32-wasip1/release/aheui.wasm"
-    source = "snippets/standard/loop.aheui"
+    # The runner preopens host paths; the WASI guest does not inherit host cwd.
+    source = str(ROOT / "snippets/standard/loop.aheui")
     command = [str(runner), str(guest), source]
     env = dict(os.environ, MAJIT_STATS="1", MAJIT_THRESHOLD="50")
     jit = bounded_run(command, cwd=ROOT, env=env, timeout=180)

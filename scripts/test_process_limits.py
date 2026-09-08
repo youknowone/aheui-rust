@@ -22,6 +22,25 @@ class ProcessLimits(unittest.TestCase):
         with self.assertRaises(subprocess.TimeoutExpired):
             bounded_run([sys.executable, "-c", "while True: pass"], timeout=0.2)
 
+    def test_build_artifacts_have_an_independent_budget(self):
+        code = "import tempfile\nwith tempfile.TemporaryFile() as f: f.write(b'x'*(9*1024*1024))\nprint('built')"
+        result = bounded_run([sys.executable, "-c", code], file_mib=16, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"built\n")
+
+    def test_build_budget_does_not_relax_output_limit(self):
+        code = "import os,time; os.write(1, b'x'*(9*1024*1024)); time.sleep(60)"
+        result = bounded_run([sys.executable, "-c", code], file_mib=16, timeout=5)
+        self.assertEqual(result.returncode, 125)
+        self.assertLessEqual(len(result.stdout), 8 * 1024 * 1024)
+        self.assertIn(b"output limit exceeded", result.stderr)
+
+    def test_input_survives_output_watchdog_polls(self):
+        code = "import sys,time; time.sleep(0.3); data=sys.stdin.buffer.read(); print(len(data))"
+        result = bounded_run([sys.executable, "-c", code], input=b'x'*131072, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"131072\n")
+
     def test_descendant_is_stopped_on_deadline(self):
         code = "import subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); print(p.pid,flush=True); time.sleep(60)"
         with self.assertRaises(subprocess.TimeoutExpired) as caught:

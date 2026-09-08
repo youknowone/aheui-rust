@@ -7,15 +7,18 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 
-def bounded_run(command, *, input=b"", timeout=60, cwd=None, env=None, memory_mib=1024):
+def bounded_run(command, *, input=b"", timeout=60, cwd=None, env=None, memory_mib=1024, file_mib=8):
     """Capture to bounded files, not an unbounded communicate() byte buffer.
 
     The outer run-limited.py watchdog also bounds aggregate RSS. These local
     limits protect ordinary direct invocations of corpus scripts.
     """
     limit = 8 * 1024 * 1024
+    if file_mib <= 0:
+        raise ValueError("file_mib must be positive")
 
     def limits():
         def lower(kind, amount):
@@ -24,20 +27,36 @@ def bounded_run(command, *, input=b"", timeout=60, cwd=None, env=None, memory_mi
                 amount = min(amount, hard)
             resource.setrlimit(kind, (amount, amount))
         lower(resource.RLIMIT_CORE, 0)
-        lower(resource.RLIMIT_FSIZE, limit)
+        # Cargo also writes Git packs, object files and binaries. Their budget
+        # is independent of the captured output budget checked below.
+        lower(resource.RLIMIT_FSIZE, file_mib * 1024 * 1024)
         if sys.platform.startswith("linux"):
             lower(resource.RLIMIT_DATA, memory_mib * 1024 * 1024)
 
     environment = dict(os.environ if env is None else env)
     environment.update(CARGO_BUILD_JOBS="1", RUST_TEST_THREADS="1")
-    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-        proc = subprocess.Popen(command, cwd=cwd, env=environment, stdin=subprocess.PIPE,
+    with tempfile.TemporaryFile() as stdin, tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        stdin.write(input or b"")
+        stdin.seek(0)
+        proc = subprocess.Popen(command, cwd=cwd, env=environment, stdin=stdin,
                                 stdout=stdout, stderr=stderr, start_new_session=True, preexec_fn=limits)
         expired = False
+        overflowed = False
+        deadline = time.monotonic() + timeout
         try:
-            proc.communicate(input, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            expired = True
+            while True:
+                if max(os.fstat(stdout.fileno()).st_size, os.fstat(stderr.fileno()).st_size) >= limit:
+                    overflowed = True
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    expired = True
+                    break
+                try:
+                    proc.wait(timeout=min(0.1, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
         finally:
             # Include children which inherited a pipe or outlived their parent.
             try:
@@ -50,7 +69,7 @@ def bounded_run(command, *, input=b"", timeout=60, cwd=None, env=None, memory_mi
         out, err = stdout.read(limit), stderr.read(limit)
         if expired:
             raise subprocess.TimeoutExpired(command, timeout, output=out, stderr=err)
-        if len(out) == limit or len(err) == limit:
+        if overflowed or len(out) == limit or len(err) == limit:
             return subprocess.CompletedProcess(command, 125, out, err + b"\noutput limit exceeded\n")
         return subprocess.CompletedProcess(command, proc.returncode, out, err)
 

@@ -55,6 +55,7 @@ def run_command(
     timeout: float | None = None,
     capture: bool = True,
     log: bool = True,
+    build: bool = False,
 ) -> subprocess.CompletedProcess[bytes]:
     display = " ".join(str(part) for part in command)
     if log:
@@ -65,7 +66,8 @@ def run_command(
         input=input_bytes,
         env=env,
         timeout=timeout or 1800,
-        memory_mib=4096 if str(command[0]) == "cargo" else 1024,
+        memory_mib=4096 if build else 1024,
+        file_mib=1024 if build else 8,
     )
     if not capture:
         print(result.stdout.decode(errors="replace"), end="")
@@ -140,6 +142,7 @@ def build_backends() -> dict[str, Path]:
             "cranelift_snippet_runner",
         ],
         timeout=1_800,
+        build=True,
     )
     require_success(compa_build, "compaheuiler backend build")
     compa = BIN_DIR / "compaheuiler"
@@ -169,6 +172,7 @@ def build_backends() -> dict[str, Path]:
                 "snippet_runner",
             ],
             timeout=1_800,
+            build=True,
         )
         require_success(build, f"{backend} build")
         destination = BIN_DIR / backend.replace("/", "-")
@@ -203,6 +207,7 @@ def compile_compaheuiler_programs(
                 env=env,
                 timeout=600,
                 log=False,
+                build=True,
             )
             require_success(proc, f"{backend} compile {snippet.name}")
             binaries[backend][snippet.name] = output
