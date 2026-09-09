@@ -45,8 +45,9 @@ SNAPSHOT_FIELDS = (
 )
 
 # High enough that no corpus program reaches it, so `mainloop` runs with the tracer
-# never firing. This is the right control: `--no-jit` would run a DIFFERENT
-# interpreter (aheuinterpreter), and it only exists on a `naive` build.
+# never firing, preserving JIT setup and instrumentation on both sides.
+# `--no-jit` uses the same interpreter body with the driver disabled, and
+# requires the `naive` feature.
 NO_COMPILE_THRESHOLD = "1000000000"
 
 # Thresholds the `sweep` axis drives, spread across the space rather than

@@ -16,12 +16,16 @@ def main() -> None:
     source = str(ROOT / "snippets/standard/loop.aheui")
     command = [str(runner), str(guest), source]
     env = dict(os.environ, MAJIT_STATS="1", MAJIT_THRESHOLD="50")
-    jit = bounded_run(command, cwd=ROOT, env=env, timeout=180)
+    # Wasmtime's compiled-module cache exceeds the default 8 MiB file limit.
+    # Captured stdout/stderr remain capped independently by bounded_run.
+    jit = bounded_run(command, cwd=ROOT, env=env, timeout=180, file_mib=64)
     control = bounded_run(
         [str(runner), str(guest), "--no-jit", source],
-        cwd=ROOT, env=env, timeout=180,
+        cwd=ROOT, env=env, timeout=180, file_mib=64,
     )
-    assert jit.returncode == control.returncode == 0, (jit.stderr, control.stderr)
+    assert jit.returncode == control.returncode == 0, (
+        jit.returncode, control.returncode, jit.stderr, control.stderr,
+    )
     expected = (ROOT / "snippets/standard/loop.out").read_bytes()
     assert jit.stdout == control.stdout == expected, "WASI output mismatch"
     lines = jit.stderr.decode(errors="replace").splitlines()

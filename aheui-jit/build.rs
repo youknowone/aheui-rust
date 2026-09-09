@@ -1,9 +1,9 @@
-//! Build script for aheui-jit: analyzes the Aheui interpreter through the
-//! majit-translate graph pipeline — the same path pyre-jit takes — and emits
-//! the generated trace code.
+//! Generate LLBC helper artifacts for aheuinterpreter's macro-owned portal.
 
 #[path = "src/jit/call_spec.rs"]
 mod call_spec;
+#[path = "src/jit/helper_spec.rs"]
+mod helper_spec;
 #[path = "src/jit/virtualizable_spec.rs"]
 mod virtualizable_spec;
 
@@ -21,9 +21,8 @@ fn main() {
     if std::env::var_os("MAJIT_MIR_FRONTEND_LLBC").is_none() {
         let llbc_dir = std::path::Path::new(&base).join("build").join("llbc");
         let rt = llbc_dir.join("aheui-runtime.ullbc");
-        let interp = llbc_dir.join("aheuinterpreter.ullbc");
-        if rt.exists() && interp.exists() {
-            let mut paths: Vec<std::path::PathBuf> = vec![rt, interp];
+        if rt.exists() {
+            let mut paths: Vec<std::path::PathBuf> = vec![rt];
             // Cross-target layout sidecars go LAST. `build/llbc` is one set
             // shared by every build, and struct layout is not: a pointer is 4
             // bytes on wasm32, so `ListBase.size` sits at offset 4 there and at
@@ -38,7 +37,7 @@ fn main() {
             let target = std::env::var("TARGET").unwrap_or_default();
             let host = std::env::var("HOST").unwrap_or_default();
             if majit_translate::layout::is_cross_target(&target, &host) {
-                for stem in ["aheui-runtime", "aheuinterpreter"] {
+                for stem in ["aheui-runtime"] {
                     let name = majit_translate::layout::layout_sidecar_filename(stem, &target);
                     let sidecar = llbc_dir.join(&name);
                     assert!(
@@ -61,7 +60,7 @@ fn main() {
             panic!(
                 "aheui LLBC missing under {}.\n\
                  Run `aheui/scripts/extract-llbc.py` to produce \
-                 `aheui-runtime.ullbc` + `aheuinterpreter.ullbc` \
+                 `aheui-runtime.ullbc` \
                  (install with the parent repo's \
                  `python3 scripts/install-charon.py`), or set \
                  `MAJIT_MIR_FRONTEND_LLBC` explicitly.",
@@ -71,10 +70,9 @@ fn main() {
         println!("cargo::rerun-if-changed={}/build/llbc", base);
     }
 
-    let source_dirs = [
-        format!("{base}/aheuinterpreter/src"),
-        format!("{base}/aheui-runtime/src"),
-    ];
+    // Every declared helper is owned by the runtime. The interpreter's
+    // macro-generated engine setup is not input to this helper pipeline.
+    let source_dirs = [format!("{base}/aheui-runtime/src")];
 
     let mut source_paths = Vec::new();
     for dir in &source_dirs {
@@ -99,9 +97,13 @@ fn main() {
         .map(|p| majit_translate::module_path::module_path_from_source_file(p))
         .collect();
     let module_path_refs: Vec<&str> = module_paths.iter().map(|s| s.as_str()).collect();
-    let vinfo_factory: &majit_translate::VirtualizableInfoFactory<'_> = &|_, _| None;
-    let pipeline = majit_translate::analyze_multiple_pipeline_with_modules(
+    let helper_roots: Vec<_> = helper_spec::HELPERS
+        .iter()
+        .map(|path| majit_translate::CallPath::from_segments(path.iter().copied()))
+        .collect();
+    let pipeline = majit_translate::analyze_helper_pipeline_with_modules(
         &module_path_refs,
+        &helper_roots,
         &majit_translate::AnalyzeConfig {
             pipeline: majit_translate::PipelineConfig {
                 transform: majit_translate::GraphTransformConfig {
@@ -136,50 +138,18 @@ fn main() {
                     ],
                     ..Default::default()
                 },
-                //   driver = jit.JitDriver(
-                //       greens=['pc','stackok','is_queue','program'],
-                //       reds=['stacksize','storage','selected'])
                 register_trait_families: Vec::new(),
-                jit_drivers: vec![majit_translate::JitDriverSpec {
-                    // `mainloop` is a crate-root (`lib.rs`) function, so its
-                    // module-qualified identity is the bare name.
-                    portal: majit_translate::CallPath::from_segments(["mainloop"]),
-                    // No synthetic runner wraps the portal here: the driver is
-                    // entered from the `#[jit_interp]` merge-point hook inside
-                    // `mainloop` itself, so there is no separate function whose
-                    // direct calls `guess_call_kind` should classify as
-                    // recursive.
-                    portal_runner: None,
-                    greens: vec![
-                        "pc".to_string(),
-                        "is_queue".to_string(),
-                        "program".to_string(),
-                    ],
-                    reds: vec![
-                        "stacksize".to_string(),
-                        "storage".to_string(),
-                        "selected".to_string(),
-                    ],
-                    // Empty leaves the positional-kind check disabled, the
-                    // documented default for a driver that does not carry a
-                    // portal signature here.
-                    green_kinds: Vec::new(),
-                    red_kinds: Vec::new(),
-                    autoreds: false,
-                    virtualizables: Vec::new(),
-                    red_types: Vec::new(),
-                    // The marker's own graph is the one to register against:
-                    // `mainloop` reaches its `jit_merge_point` on the same
-                    // graph the dispatch loop runs, so no split copy is made.
-                    split_portal: false,
-                }],
+                // The live portal is macro-generated in aheuinterpreter.
+                jit_drivers: Vec::new(),
             },
         },
-        None,
-        vinfo_factory,
-        &[],
-        majit_translate::HostStaticAddrs::default(),
     );
+    for root in &helper_roots {
+        assert!(
+            pipeline.jitcodes_by_path.contains_key(root),
+            "missing generated helper {root:?}"
+        );
+    }
 
     // aheui drives the JIT from the `#[jit_interp]` proc macro, not from
     // the pyre-oriented trace helpers. The `Minimal` flavor emits only

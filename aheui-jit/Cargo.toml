@@ -7,11 +7,11 @@ edition = "2024"
 default = ["malachite-bigint", "dynasm"]
 # Set by the three backend features; means a big-integer backend is selected. Nothing enables it directly.
 bigint-backend = []
-num-bigint = ["aheui-runtime/num-bigint", "bigint-backend"]
-malachite-bigint = ["aheui-runtime/malachite-bigint", "bigint-backend"]
-runtime-rbigint = ["aheui-runtime/runtime-rbigint", "bigint-backend"]
-cranelift = ["dep:majit-backend-cranelift", "majit-metainterp/cranelift"]
-dynasm = ["dep:majit-backend-dynasm", "majit-metainterp/dynasm"]
+num-bigint = ["aheui-runtime/num-bigint", "aheuinterpreter/num-bigint", "bigint-backend"]
+malachite-bigint = ["aheui-runtime/malachite-bigint", "aheuinterpreter/malachite-bigint", "bigint-backend"]
+runtime-rbigint = ["aheui-runtime/runtime-rbigint", "aheuinterpreter/runtime-rbigint", "bigint-backend"]
+cranelift = ["aheuinterpreter/cranelift"]
+dynasm = ["aheuinterpreter/dynasm"]
 # Host binding for the wasm backend. On wasm32 majit-metainterp already
 # selects `WasmBackend` by target_arch, so no backend feature applies there;
 # what is still missing is who instantiates an emitted trace module. Exactly
@@ -19,37 +19,19 @@ dynasm = ["dep:majit-backend-dynasm", "majit-metainterp/dynasm"]
 # API, `wasm-host` through plain `majit_host.*` imports a native embedder
 # supplies. With neither, `glue.rs` keeps its panicking stubs and the JIT
 # traps the first time it tries to run a trace.
-wasm-web = ["majit-backend-wasm/web"]
-wasm-host = ["majit-backend-wasm/host-import"]
+wasm-web = ["aheuinterpreter/wasm-web"]
+wasm-host = ["aheuinterpreter/wasm-host"]
 
 [dependencies]
+aheuinterpreter = { path = "../aheuinterpreter", features = ["jit"], default-features = false }
 aheui-runtime = { path = "../aheui-runtime", features = ["jit"], default-features = false }
-ahsembler = { path = "../ahsembler" }
 majit-ir = { workspace = true }
-majit-macros = { workspace = true }
-# `gc_box`: the compiled `New` op has to allocate Nodes out of the interpreter's
-# shared nursery, so this crate installs a `NurseryGcAllocator` box through
-# `set_gc_allocator` instead of taking the `install_gc_standalone` path that
-# allocates from the `gc_sync` singleton. Without the feature every box query
-# answers a constant `false` and installing one panics.
-majit-gc = { workspace = true, features = ["gc_box"] }
 majit-metainterp = { workspace = true }
 majit-translate = { workspace = true }
-majit-backend = { workspace = true }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Native backends never build for wasm32. Gating them here keeps a stray
-# `dynasm`/`cranelift` feature — the crate's own default carries `dynasm` —
-# from pulling a native-only crate into a wasm32 build.
-majit-backend-cranelift = { workspace = true, optional = true }
-majit-backend-dynasm = { workspace = true, optional = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-# Specified directly rather than through workspace inheritance so
-# default-features can be turned off: pulling the `web` default here would
-# unify `web` into a `host-import` build and route `glue.rs` through
-# wasm-bindgen instead of the plain wasm imports.
-majit-backend-wasm = { workspace = true, default-features = false }
+[dev-dependencies]
+ahsembler = { path = "../ahsembler" }
+majit-macros = { workspace = true }
 
 [build-dependencies]
 majit-translate = { workspace = true }

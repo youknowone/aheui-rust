@@ -6,7 +6,7 @@ use majit_metainterp::EmbeddedJitCodeTable;
 use majit_metainterp::JitCode as RuntimeJitCode;
 use majit_translate::jitcode::{BhDescr, JitCode};
 
-use aheui_runtime::storage::linkedlist::{ListBase, Node};
+use aheui_runtime::storage::linkedlist::Node;
 
 fn artifacts() -> &'static majit_translate::artifacts::EmbeddedArtifacts {
     static ARTIFACTS: OnceLock<majit_translate::artifacts::EmbeddedArtifacts> = OnceLock::new();
@@ -36,41 +36,10 @@ pub fn prebuild_pipeline_liveness(assembler: &mut majit_metainterp::Assembler) {
     assembler.prepend_embedded_liveness(&artifacts().liveness);
 }
 
-// The graph pipeline lowers the shared LinkedList accessors as host calls, so
-// these shims expose the base every storage embeds through the call-stub C ABI.
-// The pointer they receive is a `pools` element, which already names that base.
-//
-// Every shim below takes and returns `i64` and casts at its own boundary, never
-// a pointer or a `usize`. That is the residual-call ABI a compiled trace
-// assumes: it reads the call descr, which says only "a machine word", and emits
-// a call typed `(i64 x n) -> i64`. A pointer parameter is 32 bits wide on a
-// wasm32 target, so a shim spelled with one declares a signature the trace's
-// indirect call does not match, and the call traps the first time it runs.
-extern "C" fn linked_list_head(storage: i64) -> i64 {
-    unsafe { (*(storage as usize as *const ListBase)).head as i64 }
-}
-
-extern "C" fn linked_list_set_head(storage: i64, head: i64) {
-    unsafe { (*(storage as usize as *mut ListBase)).head = head as usize as *mut Node };
-}
-
-extern "C" fn linked_list_size(storage: i64) -> i64 {
-    unsafe { (*(storage as usize as *const ListBase)).size as i64 }
-}
-
-extern "C" fn linked_list_set_size(storage: i64, size: i64) {
-    unsafe { (*(storage as usize as *mut ListBase)).size = size as u32 };
-}
-
+// Residual shims use i64 even for pointers: wasm32's pointer-sized argument
+// would not match the compiled trace's word-ABI call_indirect signature.
 extern "C" fn linked_list_free_node(node: i64) {
     aheui_runtime::storage::free_node(node as usize as *mut Node);
-}
-
-// The dual-mode flag is a static, and the pipeline spells a read of it as a call
-// to the static's path. The macro-lowered dispatch reads it through its own
-// registered helper; a pipeline helper needs this binding to reach the same bit.
-extern "C" fn bigint_mode_flag() -> i64 {
-    aheui_runtime::value::bigint_mode() as i64
 }
 
 // `aheui_runtime::band`'s six escapes. The band helpers reach `val_*` only
@@ -108,11 +77,7 @@ extern "C" fn floor_mod_i64(a: i64, b: i64) -> i64 {
     aheui_runtime::value::floor_mod_i64(a, b)
 }
 
-extern "C" fn floor_correction_mask(a: i64, b: i64) -> i64 {
-    aheui_runtime::value::floor_correction_mask(a, b)
-}
-
-fn runtime_fnaddr_bindings() -> [(&'static str, i64); 15] {
+fn runtime_fnaddr_bindings() -> [(&'static str, i64); 9] {
     [
         (
             "ahsembler::consts::floor_div_i64",
@@ -123,32 +88,8 @@ fn runtime_fnaddr_bindings() -> [(&'static str, i64); 15] {
             floor_mod_i64 as *const () as usize as i64,
         ),
         (
-            "ahsembler::consts::floor_correction_mask",
-            floor_correction_mask as *const () as usize as i64,
-        ),
-        (
-            "LinkedList::head",
-            linked_list_head as *const () as usize as i64,
-        ),
-        (
-            "LinkedList::set_head",
-            linked_list_set_head as *const () as usize as i64,
-        ),
-        (
-            "LinkedList::size",
-            linked_list_size as *const () as usize as i64,
-        ),
-        (
-            "LinkedList::set_size",
-            linked_list_set_size as *const () as usize as i64,
-        ),
-        (
             "aheui_runtime::storage::free_node",
             linked_list_free_node as *const () as usize as i64,
-        ),
-        (
-            "aheui_runtime::value::bigint::BIGINT_MODE",
-            bigint_mode_flag as *const () as usize as i64,
         ),
         (
             "aheui_runtime::band::promote_add",
@@ -226,6 +167,12 @@ fn pipeline_table() -> &'static EmbeddedJitCodeTable {
 /// the only handle that side has. Everything internal to the table addresses
 /// its callees by index instead.
 pub fn pipeline_jitcode_by_name(name: &str) -> Option<Arc<RuntimeJitCode>> {
+    assert!(
+        super::helper_spec::HELPERS
+            .iter()
+            .any(|path| path.last() == Some(&name)),
+        "undeclared pipeline helper: {name}"
+    );
     pipeline_table().by_name(name).cloned()
 }
 
@@ -243,6 +190,12 @@ mod tests {
     fn band_escape_paths_are_bound() {
         let bound: Vec<&str> = runtime_fnaddr_bindings().iter().map(|(p, _)| *p).collect();
         let symbolic = load_symbolic_fnaddr_paths();
+        for path in &bound {
+            assert!(
+                symbolic.iter().any(|(_, emitted)| emitted == path),
+                "unused runtime binding: {path}"
+            );
+        }
         for escape in [
             "aheui_runtime::band::promote_add",
             "aheui_runtime::band::promote_sub",
@@ -250,7 +203,6 @@ mod tests {
             "aheui_runtime::band::promote_div",
             "aheui_runtime::band::promote_mod",
             "aheui_runtime::band::compare_ge",
-            "aheui_runtime::value::bigint::BIGINT_MODE",
         ] {
             assert!(
                 symbolic.iter().any(|(_, path)| path == escape),
@@ -314,15 +266,15 @@ mod tests {
     }
 
     #[test]
-    fn deserializes_pipeline_jitcodes_with_mainloop_portal() {
+    fn deserializes_helpers_without_an_unused_portal() {
         let jitcodes = load_pipeline_jitcodes();
         assert!(
             !jitcodes.is_empty(),
-            "pipeline must produce at least the mainloop portal jitcode",
+            "pipeline must produce the declared helper jitcodes",
         );
         assert!(
-            jitcodes.iter().any(|jc| jc.name == "mainloop"),
-            "pipeline jitcodes must include the `mainloop` portal; got {:?}",
+            !jitcodes.iter().any(|jc| jc.name == "mainloop"),
+            "the macro owns the portal, not the helper pipeline; got {:?}",
             jitcodes
                 .iter()
                 .map(|jc| jc.name.as_str())
@@ -358,24 +310,23 @@ mod tests {
     }
 
     /// A `j` slot and the name lookup must reach the same object, not two
-    /// shells of one body — the tracer inline-calls through the first and the
-    /// dispatch builder registers the second.
+    /// shells of one body — inline callers must reach the same JitCode as
+    /// the table's lookup.
     #[test]
     fn a_named_lookup_and_a_pool_slot_reach_one_object() {
         let table = pipeline_table();
-        let by_name = pipeline_jitcode_by_name("swap_base_known_two")
-            .expect("the pipeline emits `swap_base_known_two`");
+        let by_name = table
+            .by_name("swap_nodes_known_two")
+            .expect("the pipeline emits `swap_nodes_known_two`");
         let from_pool = table
             .descrs()
             .iter()
             .filter_map(majit_metainterp::RuntimeBhDescr::as_jitcode)
-            .find(|callee| callee.name() == "swap_base_known_two")
-            .expect("`swap_base_known_two` is inline-called, so a `j` slot names it");
+            .find(|callee| callee.name() == "swap_nodes_known_two")
+            .expect("`swap_nodes_known_two` is inline-called, so a `j` slot names it");
         assert!(
-            Arc::ptr_eq(&by_name, from_pool),
-            "the dispatch builder registers what the name lookup returns and the \
-             tracer follows what the pool holds; two shells make those different \
-             jitcodes with the same body",
+            Arc::ptr_eq(by_name, from_pool),
+            "name lookup and inline-call pool must share one JitCode object",
         );
     }
 
@@ -386,7 +337,8 @@ mod tests {
         let table = pipeline_table();
         let swap_base = pipeline_jitcode_by_name("swap_base_known_two")
             .expect("the pipeline emits `swap_base_known_two`");
-        let swap_nodes = pipeline_jitcode_by_name("swap_nodes_known_two")
+        let swap_nodes = table
+            .by_name("swap_nodes_known_two")
             .expect("the pipeline emits `swap_nodes_known_two` under `swap_base_known_two`");
         for (index, _) in table.descrs().iter().enumerate() {
             // Both must answer the same pool, at every index — that is what

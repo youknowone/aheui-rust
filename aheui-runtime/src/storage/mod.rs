@@ -2,7 +2,6 @@
 //!
 //! [`Storage`] selects the linked-list pools from rpaheui's `Storage`.
 pub mod linkedlist;
-#[cfg(feature = "jit")]
 pub mod linkedlist_jit;
 
 pub use linkedlist::{

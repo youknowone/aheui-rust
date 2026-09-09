@@ -2,7 +2,7 @@
 """Aheui crate/layout configuration for the shared llbc_extract engine.
 
 Run from an Aheui checkout nested in Pyre. Artifacts go to build/llbc and
-are consumed by aheui-jit/build.rs; Charon installation and freshness checks
+include the runtime helpers consumed by aheui-jit/build.rs; Charon installation and freshness checks
 are owned by the shared engine in the parent checkout.
 """
 
@@ -41,16 +41,18 @@ SPECS: dict[str, CrateSpec] = {
         # here, without forcing dynasm into every consumer's feature graph.
         cargo_args=["--features", "jit,majit-metainterp/dynasm", *_CONFIG_ARGS],
     ),
-    # The naive `mainloop` portal the pipeline traces.
+    # Optional full-interpreter extraction for translator census work. The
+    # helper artifact build does not consume this macro-expanded engine code.
+    # Keep the JIT layout when explicitly requested.
     "aheuinterpreter": CrateSpec(
         name="aheuinterpreter",
         crate_dir=ROOT / "aheuinterpreter",
         output_name="aheuinterpreter.ullbc",
-        cargo_args=list(_CONFIG_ARGS),
+        cargo_args=["--features", "jit,majit-metainterp/dynasm", *_CONFIG_ARGS],
     ),
 }
 
-DEFAULT_CRATES = ["aheui-runtime", "aheuinterpreter"]
+DEFAULT_CRATES = ["aheui-runtime"]
 
 # Targets, besides the extraction host, that get a layout sidecar. `build/llbc`
 # is read by every build of `aheui-jit`, including the wasm32 one, and a wasm32

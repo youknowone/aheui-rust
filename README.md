@@ -4,6 +4,15 @@ This workspace contains the Aheui interpreter, generated majit JIT, and
 compaheuiler's C/Rust/Cranelift/WAT ahead-of-time compilers. Raw integer execution
 promotes to tagged BigInt only when needed; this dual mode is intentional.
 
+`aheuinterpreter` owns the fast interpreter state and opcode dispatch. Ordinary
+execution and tracing use that same source; `aheui-jit` supplies generated
+artifacts, their loader, and startup bindings. The interpreter does not depend
+on the JIT consumer. Builds without the `jit` feature retain concrete execution
+but omit tracing metadata. The portal still uses majit's source macros alongside
+LLBC-generated helpers; this is not yet an LLBC-only generation pipeline.
+The artifact build translates an explicit set of runtime helpers, not a second
+unused copy of the portal or the JIT engine's own setup routines.
+
 ## Standalone non-JIT build
 
 ```sh
@@ -17,8 +26,9 @@ See [the compiler guide](compaheuiler/README.md) and
 
 ## Generated JIT bootstrap
 
-Rust source is translated through Charon LLBC and majit. A Git dependency fetch
-alone does not generate these inputs. Use this supported checkout layout:
+Runtime helpers are translated through Charon LLBC and majit; interpreter macros
+generate the portal. A Git dependency fetch alone does not generate the helper
+inputs. Use this supported checkout layout:
 
 ```text
 pyre/                  # youknowone/pyre, exact SHA from Cargo.toml
@@ -44,7 +54,9 @@ target/release/aheui snippets/hello-world/hello.puzzlet.aheui
 ```
 
 The local Cargo patch must point at that same majit checkout. Re-extract after
-runtime/interpreter source changes; extraction checks its inputs for freshness.
+runtime source changes; extraction checks its inputs for freshness. Interpreter
+portal changes take effect through its Rust build. Full interpreter LLBC
+extraction remains available separately for translator census work.
 To select Cranelift JIT, replace `dynasm` with `cranelift`; `aot-cranelift` is a
 separate compiler feature. Do not combine native backend features.
 

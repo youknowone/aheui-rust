@@ -195,8 +195,9 @@ survey의 corpus 출력은 각 프로그램 옆의 `.out`과 비교해 `ok`, `+n
 
 각 기록에는 카운터, 전체 `ABORT_*` 항목, `mc_diag` 감소 census, stdout 길이와
 SHA 및 종료 코드, 실행 시간, `-m` 메모와 함께 **aheui와 majit 양쪽 commit**이
-들어갑니다. `aheui-jit`는 `../../majit/*`를 path dependency로 사용하므로 이
-수치들은 대개 majit 변경의 영향을 받습니다. 어느 한쪽 commit만 적으면 나중에
+들어갑니다. majit 의존성은 Git revision으로 고정하며, 로컬 검증에서는 Cargo
+patch로 부모 checkout을 사용합니다. 수치들은 majit 변경의 영향도 받으므로
+어느 한쪽 commit만 적으면 나중에
 원인을 구분할 수 없습니다. `-dirty` 접미사는 commit하지 않은 변경이 있었다는
 뜻입니다. `MAJIT_*`와 `AHEUI_*` 환경 변수도 함께 기록하므로 서로 다른 knob로
 실행한 행을 잘못 비교하지 않습니다.
@@ -245,7 +246,7 @@ corpus와 jitstress는 같은 방향으로 판정하며, jitstress만 JIT thresh
 tracer가 작동하지 않게 합니다. 두 실행의 stdout과 종료 코드가 완전히 같아야
 합니다. 이 검사가 없으면 오컴파일한 실행도 기준선 수치만으로 통과할 수 있습니다.
 
-여기서는 `--no-jit` 대신 큰 `MAJIT_THRESHOLD`를 사용해야 합니다. `--no-jit`는
-다른 interpreter인 `aheuinterpreter`를 선택하고 `naive` build에서만 쓸 수
-있습니다. 큰 threshold는 tracer만 쉬게 하고 양쪽 모두 같은
-`aheui_jit::mainloop` 경로를 유지합니다.
+여기서는 큰 `MAJIT_THRESHOLD`를 사용해 양쪽 모두 JIT 설정과 계측 경로를
+유지한 채 컴파일 여부만 비교합니다. `--no-jit`도 이제 같은
+`aheuinterpreter::mainloop` 본문을 사용하지만 JIT driver를 끄며, 이 CLI 옵션은
+`naive` feature가 필요합니다.

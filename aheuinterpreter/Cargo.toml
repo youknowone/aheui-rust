@@ -5,9 +5,23 @@ edition = "2024"
 
 [features]
 default = ["malachite-bigint"]
-num-bigint = ["aheui-runtime/num-bigint"]
-malachite-bigint = ["aheui-runtime/malachite-bigint"]
-runtime-rbigint = ["aheui-runtime/runtime-rbigint"]
+bigint-backend = []
+num-bigint = ["aheui-runtime/num-bigint", "bigint-backend"]
+malachite-bigint = ["aheui-runtime/malachite-bigint", "bigint-backend"]
+runtime-rbigint = ["aheui-runtime/runtime-rbigint", "bigint-backend"]
+jit = ["aheui-runtime/jit", "dep:majit-metainterp", "dep:majit-backend", "dep:majit-backend-wasm"]
+dynasm = ["jit", "majit-metainterp/dynasm"]
+cranelift = ["jit", "majit-metainterp/cranelift"]
+wasm-web = ["jit", "majit-backend-wasm/web"]
+wasm-host = ["jit", "majit-backend-wasm/host-import"]
 
 [dependencies]
 aheui-runtime = { path = "../aheui-runtime", default-features = false }
+majit-ir = { workspace = true }
+majit-gc = { workspace = true, features = ["gc_box"] }
+majit-macros = { workspace = true }
+majit-metainterp = { workspace = true, optional = true }
+majit-backend = { workspace = true, optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+majit-backend-wasm = { workspace = true, default-features = false, optional = true }

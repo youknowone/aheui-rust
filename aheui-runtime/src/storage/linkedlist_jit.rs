@@ -1,6 +1,6 @@
 //! Monomorphic JIT helpers for LinkedList storage ops.
 //!
-//! aheui-jit's mainloop branches on the `is_queue` / `is_port` JIT
+//! aheuinterpreter's mainloop branches on the `is_queue` / `is_port` JIT
 //! greens at each storage-op site to dispatch monomorphically through
 //! these helpers; the trace IR then sees concrete reads / writes on
 //! `*mut Stack` / `*mut Queue` instead of the polymorphic
@@ -21,6 +21,7 @@ use crate::value::*;
 
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -57,6 +58,7 @@ pub fn pop_base_known_nonempty(list: usize) -> Val {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -96,6 +98,7 @@ pub fn stack_add(stack: usize) {
 #[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -130,6 +133,7 @@ pub fn stack_add(stack: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -169,6 +173,7 @@ pub fn stack_sub(stack: usize) {
 #[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -203,6 +208,7 @@ pub fn stack_sub(stack: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -251,6 +257,7 @@ pub fn stack_mul(stack: usize) {
 #[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -294,6 +301,7 @@ pub fn stack_mod(stack: usize) {
 
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -336,6 +344,7 @@ pub fn swap_base_known_two(list: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -374,6 +383,7 @@ pub fn stack_cmp(stack: usize) {
 #[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -439,6 +449,7 @@ pub fn val_ge_jit(a: Val, b: Val) -> Val {
 
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -488,6 +499,7 @@ pub fn queue_push(queue: usize, value: Val) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -541,6 +553,7 @@ pub fn queue_add(queue: usize) {
 #[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -589,6 +602,7 @@ pub fn queue_add(queue: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -642,6 +656,7 @@ pub fn queue_sub(queue: usize) {
 #[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -690,6 +705,7 @@ pub fn queue_sub(queue: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -748,6 +764,7 @@ pub fn queue_mul(queue: usize) {
 #[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -805,6 +822,7 @@ pub fn queue_mod(queue: usize) {
 
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -839,6 +857,7 @@ pub fn queue_dup(queue: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -891,6 +910,7 @@ pub fn queue_cmp(queue: usize) {
 #[cfg(not(feature = "bigint-backend"))]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -961,6 +981,7 @@ pub fn queue_cmp(queue: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -997,6 +1018,7 @@ pub fn stack_add_raw(stack: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -1033,6 +1055,7 @@ pub fn stack_sub_raw(stack: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -1069,6 +1092,7 @@ pub fn stack_mul_raw(stack: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -1102,6 +1126,7 @@ pub fn stack_cmp_raw(stack: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -1145,6 +1170,7 @@ pub fn stack_div_raw(stack: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         stack: ref(super::linkedlist::Stack),
     },
@@ -1179,6 +1205,7 @@ pub fn stack_mod_raw(stack: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -1229,6 +1256,7 @@ pub fn queue_add_raw(queue: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -1279,6 +1307,7 @@ pub fn queue_sub_raw(queue: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -1329,6 +1358,7 @@ pub fn queue_mul_raw(queue: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -1376,6 +1406,7 @@ pub fn queue_cmp_raw(queue: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
@@ -1429,6 +1460,7 @@ pub fn queue_div_raw(queue: usize) {
 #[cfg(feature = "bigint-backend")]
 #[inline(always)]
 #[majit_macros::jit_inline(
+    trace_cfg = (feature = "jit"),
     ref_params = {
         queue: ref(super::linkedlist::Queue),
     },
