@@ -51,7 +51,7 @@ PASS만 출력해서는 JIT가 실제로 무엇을 했는지 알 수 없기 때�
 
 `bench/` 바로 아래 디렉토리는 기준선을 만든 **설정**의 이름입니다 — `default`는
 실사용 threshold, `jitstress`는 threshold 50. 확장자는 그 실행을 읽은
-**계측기**를 가리킵니다(`.jitstats`는 `MAJIT_STATS`, `.opcensus`는 `MAJIT_LOG`).
+**계측기**를 가리킵니다(`.jitstats`는 `MAJIT_STATS`, `.opcensus`는 `MAJIT_LOG_OPS`).
 
 ### π의 unroll 기준선
 
@@ -153,7 +153,7 @@ threshold가 바뀌면 같은 프로그램에서도 서로 다른 trace 모양�
 
 ## backend opcode census
 
-`scripts/opcensus.py`는 `MAJIT_LOG=1`, `MAJIT_THRESHOLD=50`으로 trace를 만들고
+`scripts/opcensus.py`는 `MAJIT_LOG_OPS=1`, `MAJIT_THRESHOLD=50`으로 trace를 만들고
 backend가 내보낸 기계 수준 연산의 수를 기록합니다. threshold 50은 jitstress
 축과 같은 설정이므로 기준선도 `bench/jitstress/<디렉토리>/<이름>.opcensus`로,
 같은 실행을 다른 계측기로 읽은 `.jitstats` 옆에 둡니다. `bench/` 아래 디렉토리는
@@ -163,6 +163,14 @@ backend가 내보낸 기계 수준 연산의 수를 기록합니다. threshold 5
   목표이기 때문입니다.
 - `out_bytes`와 `exit`는 정확히 같아야 합니다.
 - `traces`는 진단용으로 표시하되 판정하지 않습니다.
+
+`MAJIT_LOG_OPS`는 compile-time assemble/emit/guard/discard 이벤트만 켭니다.
+전체 실행 로그인 `MAJIT_LOG`는 census 실행 환경에서 제거합니다. stdout/stderr
+각8MiB 한도와60초 제한은 그대로 적용하며, 제한 초과·신호 종료·지원하지 않는
+바이너리는 정상 측정값으로 비교하거나 기록하지 않습니다. `record`는 선택한
+모든 프로그램의 측정을 마친 뒤 기준선을 쓰므로 중간 실행 실패가 기존 기준선을
+일부만 바꾸지 않습니다. 이 옵션을 지원하는 majit으로 바이너리를 다시 빌드해야
+합니다.
 
 새 기준선은 `scripts/opcensus.py record`로 만들고, `check.sh`에서는
 `scripts/opcensus.py check`가 증가 여부를 검사합니다.

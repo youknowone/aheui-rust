@@ -11,6 +11,19 @@ class ProcessLimits(unittest.TestCase):
         result = bounded_run([sys.executable, "-c", "print('ok'); raise SystemExit(7)"], timeout=5)
         self.assertEqual(result.stdout, b"ok\n")
         self.assertEqual(result.returncode, 7)
+        self.assertIsNone(result.limit_reason)
+
+    def test_exit125_is_distinct_from_capture_overflow(self):
+        result = bounded_run([sys.executable, "-c", "raise SystemExit(125)"], timeout=5)
+        self.assertEqual(result.returncode, 125)
+        self.assertIsNone(result.limit_reason)
+
+    def test_unlimited_diagnostic_output_reports_the_limit(self):
+        code = "import os\nwhile True: os.write(2, b'x'*65536)"
+        result = bounded_run([sys.executable, "-c", code], timeout=5)
+        self.assertEqual(result.returncode, 125)
+        self.assertIn("output limit exceeded", result.limit_reason)
+        self.assertLessEqual(len(result.stderr), 8 * 1024 * 1024 + 23)
 
     def test_unlimited_output_is_bounded(self):
         code = "import os\nwhile True: os.write(1, b'x'*65536)"

@@ -9,7 +9,8 @@
 
 use crate::compiler::Program;
 use crate::consts::*;
-use std::collections::{HashMap, VecDeque};
+use indexmap::{IndexMap, map::Entry};
+use std::collections::VecDeque;
 
 /// An upper bound on a pool's element count, or the admission that none was
 /// proven.
@@ -19,47 +20,58 @@ pub enum DepthBound {
     Unbounded,
 }
 
-impl DepthBound {
-    fn join(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Bounded(a), Self::Bounded(b)) => Self::Bounded(a.max(b)),
-            _ => Self::Unbounded,
+/// Internal lattice word: finite u32 depths sort below the unbounded sentinel.
+/// Keeping the join as an integer max lets the whole state merge vectorize.
+/// The public enum stays lossless even for a finite u32::MAX bound.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Depth(u64);
+
+impl Depth {
+    const ZERO: Self = Self(0);
+    const UNBOUNDED: Self = Self(u64::MAX);
+
+    fn bounded(value: u64) -> Self {
+        assert!(value <= u32::MAX as u64);
+        Self(value)
+    }
+
+    fn bound(self) -> DepthBound {
+        if self == Self::UNBOUNDED {
+            DepthBound::Unbounded
+        } else {
+            debug_assert!(self.0 <= u32::MAX as u64);
+            DepthBound::Bounded(self.0 as u32)
         }
+    }
+
+    fn join(self, other: Self) -> Self {
+        Self(self.0.max(other.0))
     }
 
     /// `delta` may be negative; the count cannot be. A bound past
     /// [`WIDEN_LIMIT`] stops growing by becoming unbounded, which is what
-    /// makes the fixpoint finite: masks only gain bits and bounds only move
-    /// up a finite lattice.
+    /// makes the fixpoint finite: joins only move bounds up a finite lattice.
     fn add(self, delta: i32, ceiling: u32) -> Self {
-        match self {
-            Self::Bounded(b) => {
-                let next = (b as i64 + delta as i64).max(0);
-                if next > ceiling as i64 {
-                    Self::Unbounded
-                } else {
-                    Self::Bounded(next as u32)
-                }
-            }
-            Self::Unbounded => Self::Unbounded,
+        if self == Self::UNBOUNDED {
+            return self;
+        }
+        let next = (self.0 as i64 + delta as i64).max(0) as u64;
+        if next > ceiling as u64 {
+            Self::UNBOUNDED
+        } else {
+            Self::bounded(next)
         }
     }
 
     /// Meet with a known upper bound. An unbounded value becomes `hi`: the
     /// caller states a limit that holds on every path it applies this to.
     fn at_most(self, hi: u32) -> Self {
-        match self {
-            Self::Bounded(b) => Self::Bounded(b.min(hi)),
-            Self::Unbounded => Self::Bounded(hi),
-        }
+        Self::bounded(self.0.min(hi as u64))
     }
 
     /// Whether this bound admits a depth of `n` or more.
     fn can_reach(self, n: u32) -> bool {
-        match self {
-            Self::Bounded(b) => b >= n,
-            Self::Unbounded => true,
-        }
+        self.0 >= n as u64
     }
 }
 
@@ -70,7 +82,7 @@ impl DepthBound {
 const WIDEN_LIMIT: u32 = 4096;
 
 /// Depth bounds for every pool at one program point.
-type Depths = [DepthBound; STORAGE_COUNT];
+type Depths = [Depth; STORAGE_COUNT];
 
 /// The sound direction for every ambiguity is "the pool got deeper", and the
 /// one ambiguity the analysis refuses to carry is *which* pool is selected.
@@ -120,38 +132,40 @@ pub fn max_pool_depths(program: &Program) -> [DepthBound; STORAGE_COUNT] {
 /// as tall as the ceiling, so a lower one converges in fewer steps. A pool
 /// whose true depth is above the ceiling comes back unbounded.
 pub fn max_pool_depths_up_to(program: &Program, ceiling: u32) -> [DepthBound; STORAGE_COUNT] {
-    let mut result = [DepthBound::Bounded(0); STORAGE_COUNT];
+    let mut result = [Depth::ZERO; STORAGE_COUNT];
     if program.size == 0 {
-        return result;
+        return result.map(Depth::bound);
     }
 
-    // Keyed by `(pc, selected)` — see `transfer`.
-    let mut states: HashMap<(usize, usize), Depths> = HashMap::new();
-    let mut worklist: Vec<(usize, usize)> = Vec::new();
+    // States are never removed, so queued indices remain stable. Keep storage
+    // proportional to reached states, not program.size * STORAGE_COUNT.
+    let mut states: IndexMap<(usize, usize), Depths> = IndexMap::new();
+    let mut worklist: Vec<usize> = Vec::new();
 
     fn propagate(
-        states: &mut HashMap<(usize, usize), Depths>,
-        worklist: &mut Vec<(usize, usize)>,
+        states: &mut IndexMap<(usize, usize), Depths>,
+        worklist: &mut Vec<usize>,
         key: (usize, usize),
         depths: &Depths,
     ) {
-        match states.get_mut(&key) {
-            Some(old) => {
+        let entry = states.entry(key);
+        let index = entry.index();
+        match entry {
+            Entry::Occupied(mut entry) => {
+                let old = entry.get_mut();
                 let mut changed = false;
                 for (o, n) in old.iter_mut().zip(depths.iter()) {
                     let joined = o.join(*n);
-                    if joined != *o {
-                        *o = joined;
-                        changed = true;
-                    }
+                    changed |= joined != *o;
+                    *o = joined;
                 }
                 if changed {
-                    worklist.push(key);
+                    worklist.push(index);
                 }
             }
-            None => {
-                states.insert(key, *depths);
-                worklist.push(key);
+            Entry::Vacant(entry) => {
+                entry.insert(*depths);
+                worklist.push(index);
             }
         }
     }
@@ -161,19 +175,16 @@ pub fn max_pool_depths_up_to(program: &Program, ceiling: u32) -> [DepthBound; ST
         &mut states,
         &mut worklist,
         (0, 0),
-        &[DepthBound::Bounded(0); STORAGE_COUNT],
+        &[Depth::ZERO; STORAGE_COUNT],
     );
 
     let mut expanded = 0usize;
-    while let Some(key) = worklist.pop() {
+    while let Some(index) = worklist.pop() {
         expanded += 1;
         if expanded > STATE_BUDGET {
             return [DepthBound::Unbounded; STORAGE_COUNT];
         }
-        let (pc, selected) = key;
-        let Some(entry) = states.get(&key).copied() else {
-            continue;
-        };
+        let (&(pc, selected), &entry) = states.get_index(index).unwrap();
         let op = program.get_op(pc);
         let operand = program.get_operand(pc);
 
@@ -191,9 +202,15 @@ pub fn max_pool_depths_up_to(program: &Program, ceiling: u32) -> [DepthBound; ST
 
         let mut depths = entry;
         transfer(&mut depths, selected, op, operand, ceiling);
-        for (r, d) in result.iter_mut().zip(depths.iter()) {
-            *r = r.join(*d);
+        // Every incoming state is a join of already accumulated predecessors;
+        // BRPOP only lowers it. Only pools written by transfer can raise peaks.
+        // Accumulate before propagating to preserve that invariant.
+        result[selected] = result[selected].join(depths[selected]);
+        if op == OP_MOV {
+            let target = operand as usize;
+            result[target] = result[target].join(depths[target]);
         }
+        debug_assert!(depths.iter().zip(&result).all(|(d, r)| d.0 <= r.0));
 
         match op {
             OP_HALT => {}
@@ -242,7 +259,7 @@ pub fn max_pool_depths_up_to(program: &Program, ceiling: u32) -> [DepthBound; ST
         }
     }
 
-    result
+    result.map(Depth::bound)
 }
 
 /// Exact per-pool peak depths, measured by running the program.
@@ -433,6 +450,31 @@ mod tests {
     use super::*;
     use crate::OptimizationLevel;
 
+    #[test]
+    fn lattice_word_preserves_finite_max_and_unbounded() {
+        let finite = Depth::bounded(u32::MAX as u64);
+        assert_eq!(finite.bound(), DepthBound::Bounded(u32::MAX));
+        assert_eq!(
+            finite.add(-1, u32::MAX).bound(),
+            DepthBound::Bounded(u32::MAX - 1)
+        );
+        assert_eq!(finite.add(1, u32::MAX).bound(), DepthBound::Unbounded);
+        assert_eq!(finite.join(Depth::UNBOUNDED).bound(), DepthBound::Unbounded);
+        assert_eq!(
+            Depth::UNBOUNDED.add(i32::MIN, u32::MAX).bound(),
+            DepthBound::Unbounded
+        );
+        assert_eq!(Depth::UNBOUNDED.at_most(u32::MAX).bound(), finite.bound());
+        assert_eq!(
+            Depth::ZERO.add(-1, u32::MAX).bound(),
+            DepthBound::Bounded(0)
+        );
+        assert_eq!(
+            std::mem::size_of::<Depth>(),
+            std::mem::size_of::<DepthBound>()
+        );
+    }
+
     fn depths_of(source: &str) -> [DepthBound; STORAGE_COUNT] {
         let program = crate::compile(source, OptimizationLevel::O1);
         max_pool_depths(&program)
@@ -459,6 +501,45 @@ mod tests {
         let d = depths_of("반반반희");
         assert_eq!(d[0], DepthBound::Bounded(3));
         assert_eq!(d[1], DepthBound::Bounded(0));
+    }
+
+    #[test]
+    fn queued_state_indices_survive_growth_and_revisits() {
+        let mut program = Program {
+            opcodes: Vec::new(),
+            values: Vec::new(),
+            labels: Default::default(),
+            size: 0,
+        };
+        for _ in 0..8 {
+            for pool in 0..STORAGE_COUNT {
+                program.opcodes.extend([OP_SEL, OP_PUSH, OP_POP]);
+                program.values.extend([pool as i32, 1, 0]);
+            }
+        }
+        program.opcodes.push(OP_JMP);
+        program.values.push(0);
+        program.size = program.opcodes.len();
+        assert_eq!(
+            max_pool_depths(&program),
+            [DepthBound::Bounded(1); STORAGE_COUNT]
+        );
+    }
+
+    #[test]
+    fn sparse_jump_only_visits_reachable_states() {
+        let mut program = Program {
+            opcodes: vec![OP_HALT; 100_000],
+            values: vec![0; 100_000],
+            labels: Default::default(),
+            size: 100_000,
+        };
+        program.opcodes[0] = OP_JMP;
+        program.values[0] = 99_999;
+        assert_eq!(
+            max_pool_depths(&program),
+            [DepthBound::Bounded(0); STORAGE_COUNT]
+        );
     }
 
     #[test]

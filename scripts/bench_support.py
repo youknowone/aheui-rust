@@ -10,6 +10,11 @@ import tempfile
 import time
 
 
+class BoundedCompletedProcess(subprocess.CompletedProcess):
+    # Separate the watchdog outcome from a program that legitimately exits125.
+    limit_reason: str | None = None
+
+
 def bounded_run(command, *, input=b"", timeout=60, cwd=None, env=None, memory_mib=1024, file_mib=8):
     """Capture to bounded files, not an unbounded communicate() byte buffer.
 
@@ -70,8 +75,10 @@ def bounded_run(command, *, input=b"", timeout=60, cwd=None, env=None, memory_mi
         if expired:
             raise subprocess.TimeoutExpired(command, timeout, output=out, stderr=err)
         if overflowed or len(out) == limit or len(err) == limit:
-            return subprocess.CompletedProcess(command, 125, out, err + b"\noutput limit exceeded\n")
-        return subprocess.CompletedProcess(command, proc.returncode, out, err)
+            result = BoundedCompletedProcess(command, 125, out, err + b"\noutput limit exceeded\n")
+            result.limit_reason = "output limit exceeded (8 MiB per stream)"
+            return result
+        return BoundedCompletedProcess(command, proc.returncode, out, err)
 
 
 def parse_fields(text: str) -> dict[str, str]:

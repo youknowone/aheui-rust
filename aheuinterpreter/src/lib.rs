@@ -2041,18 +2041,13 @@ pub fn mainloop(program: &Program, threshold: Option<u32>) -> Val {
                 } else {
                     jit_win_store(lj::pop_base_known_nonempty(state.selected_ref))
                 };
-                // pop_val is Val (= i64 repr-transparent). val_is_zero
-                // checks `*v == 0` for smallint, or the tagged form
-                // `(0 << 1) | 1 = 1` for bigint. Use the raw int
-                // comparison `pop_val == jit_tag_val(0)` which the
-                // lowerer handles natively as IntEq.
+                // Zero is 0 in raw mode and 1 in tagged mode.
                 let zero_word = if bm != 0 {
                     jit_tag_word(0i64)
                 } else {
                     jit_tag_word_raw(0i64)
                 };
-                let zero = if pop_word == zero_word { 1i64 } else { 0i64 };
-                if zero != 0 {
+                if pop_word == zero_word {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
                     can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, cap, program);
