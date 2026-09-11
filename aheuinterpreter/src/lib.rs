@@ -1731,19 +1731,16 @@ pub fn mainloop(program: &Program, threshold: Option<u32>) -> Val {
             driver.set_param("trace_eagerness", eagerness);
         }
 
-        // The full pass list. Peeling the preamble buys this driver little
-        // optimization — the loop body carries almost nothing loop-invariant to
+        // ALL_OPTS minus `unroll`. Peeling the preamble buys this driver
+        // little — the loop body carries almost nothing loop-invariant to
         // hoist, because every operation reads or writes the mutable selected
-        // stack — but it is what gives a compiled loop a general entry point.
-        // Without it a loop has a single label whose own closing JUMP writes the
-        // traced iteration's constants back over loop-carried slots the body never
-        // reads, so anything entering that label with a different value in one of
-        // them has it overwritten on the first back edge; peeling puts the
-        // unspecialized preamble in front, and specializes the peeled label with a
-        // virtual state an entry has to match. `AHEUI_ENABLE_OPTS` overrides the
-        // list, which is how a suspect pass is taken out of one arm without a
-        // second binary.
-        const ENABLE_OPTS: &str = "all";
+        // stack — and the two-phase walk of a ~27k-op logo recording already
+        // costs more than the 120 ms wall this host has recorded. Unread
+        // JUMP constants that would specialize the single label are rewritten
+        // back onto the LABEL boxes (`despecialize_unread_closing_jump_slots`),
+        // so the simple-loop entry stays general without a peel.
+        // `AHEUI_ENABLE_OPTS` overrides the list.
+        const ENABLE_OPTS: &str = "intbounds:rewrite:virtualize:string:pure:earlyforce:heap";
         match std::env::var("AHEUI_ENABLE_OPTS") {
             Ok(text) => driver.set_param_enable_opts(&text),
             Err(_) => driver.set_param_enable_opts(ENABLE_OPTS),

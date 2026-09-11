@@ -26,7 +26,30 @@ pub use bigint::*;
 #[cfg(not(feature = "bigint-backend"))]
 pub use smallint::*;
 
-pub use ahsembler::consts::{floor_correction_mask, floor_div_i64, floor_mod_i64};
+pub use ahsembler::consts::floor_correction_mask;
+
+/// Machine-word floor division after the caller has ruled out a zero
+/// divisor (and, for raw mode, `i64::MIN / -1`).
+///
+/// `jtransform._handle_int_special` maps `int.py_div` to
+/// `OS_INT_PY_DIV` + `EF_ELIDABLE_CANNOT_RAISE` — the same descr
+/// `ll_int_py_div` carries once `ll_int_py_div_zer` has been inlined
+/// away — so `rewrite.optimize_call_int_py_div` can fold `x // 2**k`
+/// to `int_rshift`.
+#[cfg_attr(feature = "jit", majit_macros::dont_look_inside_cannot_raise)]
+#[cfg_attr(feature = "jit", majit_macros::oopspec("int.py_div(x, y)"))]
+#[inline(always)]
+pub fn floor_div_i64(a: i64, b: i64) -> i64 {
+    ahsembler::consts::floor_div_i64(a, b)
+}
+
+/// Machine-word floor remainder, same preconditions as [`floor_div_i64`].
+#[cfg_attr(feature = "jit", majit_macros::dont_look_inside_cannot_raise)]
+#[cfg_attr(feature = "jit", majit_macros::oopspec("int.py_mod(x, y)"))]
+#[inline(always)]
+pub fn floor_mod_i64(a: i64, b: i64) -> i64 {
+    ahsembler::consts::floor_mod_i64(a, b)
+}
 
 #[cfg(test)]
 mod tests {
