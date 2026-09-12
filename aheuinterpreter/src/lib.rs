@@ -1773,6 +1773,13 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // as no-arg `elidable_int_cannot_raise` calls (`jit_band_count` /
     // `jit_cap`); promoting them at every merge only re-guards values that
     // cannot change for the life of the run.
+    //
+    // `stackok` must stay green. `jit_effective_stacksize_delta(op, stackok)`
+    // folds only when the polarity is a merge-point constant; dropping it
+    // left logo's body at ~21k residual ops (~10s) and aheui.aheui(99dan)
+    // about 3× slower. `is_queue` is already a function of the red
+    // `selected`, but promoting it does not change the aheui.aheui
+    // guard-failure count (still ~11k), so it stays with rpaheui.
     greens = [pc, stackok, is_queue, bm, program],
     recover = refresh_state_from_storage,
     switch_dispatch = true,
