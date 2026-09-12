@@ -23,10 +23,8 @@ pub fn build_cfg(compiler: &Compiler) -> Cfg {
     let mut block_starts: Vec<usize> = vec![0];
 
     for (pc, &(op, _)) in lines.iter().enumerate() {
-        if is_jump_op(op) || op == OP_HALT {
-            if pc + 1 < lines.len() {
-                block_starts.push(pc + 1);
-            }
+        if (is_jump_op(op) || op == OP_HALT) && pc + 1 < lines.len() {
+            block_starts.push(pc + 1);
         }
         // SEL does NOT create a block boundary. The codegen handles
         // intra-block SEL by switching the active storage Variable.

@@ -1,0 +1,39 @@
+
+use std::io::{Read, Write};
+use std::collections::VecDeque;
+const QUEUE: usize = 21;
+const PORT: usize = 27;
+const STORAGE_COUNT: usize = 28;
+const MAX_STACK: usize = 65536;
+struct SpecialStorage { queue: VecDeque<Int>, port: Vec<Int>, port_last: Int }
+impl SpecialStorage {
+    fn new() -> Self { SpecialStorage { queue: VecDeque::new(), port: Vec::new(), port_last: Int(0) } }
+    fn push(&mut self, sel: usize, v: Int) { if sel == QUEUE { self.queue.push_back(v); } else { self.port_last = v; self.port.push(v); } }
+    fn pop(&mut self, sel: usize) -> Int { if sel == QUEUE { self.queue.pop_front().unwrap_or(Int(0)) } else { self.port.pop().unwrap_or(Int(0)) } }
+    fn depth(&self, sel: usize) -> usize { if sel == QUEUE { self.queue.len() } else { self.port.len() } }
+    fn dup(&mut self, sel: usize) { if sel == QUEUE { if let Some(&v) = self.queue.front() { self.queue.push_front(v); } } else { self.port.push(self.port_last); } }
+    fn swap(&mut self, sel: usize) { if sel == QUEUE && self.queue.len() >= 2 { let a = self.queue.pop_front().unwrap(); let b = self.queue.pop_front().unwrap(); self.queue.push_front(a); self.queue.push_front(b); } else if sel == PORT && self.port.len() >= 2 { let n = self.port.len(); self.port.swap(n-1, n-2); } }
+    fn peek(&self, sel: usize) -> Int { if sel == QUEUE { self.queue.front().copied().unwrap_or(Int(0)) } else { self.port.last().copied().unwrap_or(Int(0)) } }
+    fn scan_to_zero(&mut self) -> Int {
+        let zero = int_lit(0);
+        if let Some(pos) = self.queue.iter().position(|v| *v == zero) {
+            self.queue.rotate_left(pos + 1);
+            zero
+        } else { zero }
+    }
+    fn promote(&mut self) {
+        for value in &mut self.queue { *value = promote_val(*value); }
+        for value in &mut self.port { *value = promote_val(*value); }
+        self.port_last = promote_val(self.port_last);
+    }
+}
+#[inline(always)] fn write_i64(w: &mut impl Write, n: i64) { let mut buf = [0u8; 20]; let mut u = if n < 0 { w.write_all(b"-").ok(); (n as u64).wrapping_neg() } else { n as u64 }; let mut i = 20; loop { i -= 1; buf[i] = b'0' + (u % 10) as u8; u /= 10; if u == 0 { break; } } w.write_all(&buf[i..]).ok(); }
+#[inline(always)] fn write_char(w: &mut impl Write, v: Int) { let c = int_to_i64(v) as u32; if c <= 0x7F { w.write_all(&[c as u8]).ok(); return; } let mut buf = [0u8; 4]; if let Some(ch) = char::from_u32(c) { let s = ch.encode_utf8(&mut buf); w.write_all(s.as_bytes()).ok(); } }
+fn read_num() -> Int { let mut s = String::new(); std::io::stdin().read_line(&mut s).ok(); int_lit(s.trim().parse().unwrap_or(0)) }
+fn read_char() -> Int { let mut buf = [0u8; 4]; match std::io::stdin().read(&mut buf[..1]) { Ok(0) | Err(_) => int_lit(-1), Ok(_) => { let b = buf[0]; if b < 0x80 { return int_lit(b as i64); } let (n, mut val) = if b >> 5 == 6 { (1, (b & 0x1F) as i32) } else if b >> 4 == 14 { (2, (b & 0x0F) as i32) } else if b >> 3 == 30 { (3, (b & 0x07) as i32) } else { return int_lit(-1) }; for _ in 0..n { if std::io::stdin().read(&mut buf[..1]).unwrap_or(0) == 0 { return int_lit(-1); } val = (val << 6) | (buf[0] & 0x3F) as i32; } int_lit(val as i64) } } }
+#[inline(always)] fn floor_div_i64(a: i64, b: i64) -> i64 { let mut q = a.wrapping_div(b); let r = a.wrapping_rem(b); if r != 0 && (r < 0) != (b < 0) { q -= 1; } q }
+#[inline(always)] fn floor_mod_i64(a: i64, b: i64) -> i64 { let _q = a.wrapping_div(b); let mut r = a.wrapping_rem(b); if r != 0 && (r < 0) != (b < 0) { r += b; } r }
+#[cold] #[inline(never)] unsafe fn dyn_push_sp(sp: &mut SpecialStorage, sel: usize, v: Int) { sp.push(sel, v); }
+#[cold] #[inline(never)] unsafe fn dyn_pop_sp(sp: &mut SpecialStorage, sel: usize) -> Int { sp.pop(sel) }
+#[cold] #[inline(never)] unsafe fn dyn_dup_sp(sp: &mut SpecialStorage, sel: usize) { sp.dup(sel); }
+#[cold] #[inline(never)] unsafe fn dyn_swap_sp(sp: &mut SpecialStorage, sel: usize) { sp.swap(sel); }

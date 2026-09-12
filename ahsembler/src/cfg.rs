@@ -16,6 +16,20 @@ pub enum BinOpKind {
     Cmp,
 }
 
+impl BinOpKind {
+    pub fn opcode(self) -> u8 {
+        use crate::consts::*;
+        match self {
+            Self::Add => OP_ADD,
+            Self::Sub => OP_SUB,
+            Self::Mul => OP_MUL,
+            Self::Div => OP_DIV,
+            Self::Mod => OP_MOD,
+            Self::Cmp => OP_CMP,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inst {
     Push(i64),
@@ -225,6 +239,12 @@ impl AbstractState {
 pub struct Cfg {
     pub blocks: Vec<CfgBlock>,
     pub entry: BlockId,
+}
+
+impl Default for Cfg {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Cfg {

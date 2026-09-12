@@ -1,10 +1,9 @@
-/// Build script for aheui-jit: analyzes the Aheui interpreter via the
-/// majit-codewriter graph pipeline and emits the generated trace code.
-///
-/// This uses the same graph-based analysis path as pyre-jit.
+//! Generate LLBC helper artifacts for aheuinterpreter's macro-owned portal.
 
 #[path = "src/jit/call_spec.rs"]
 mod call_spec;
+#[path = "src/jit/helper_spec.rs"]
+mod helper_spec;
 #[path = "src/jit/virtualizable_spec.rs"]
 mod virtualizable_spec;
 
@@ -12,33 +11,106 @@ fn main() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let base = format!("{manifest_dir}/..");
 
-    let source_dirs = [
-        format!("{base}/aheui-interp/src"),
-        format!("{base}/aheui-runtime/src"),
-    ];
+    // The majit-translate graph pipeline lowers Charon-extracted MIR
+    // (`.ullbc`). The shared front-end auto-discovers only the parent
+    // repo's pyre artefact pair,
+    // so point it at aheui's own crate LLBC (extracted by
+    // `scripts/extract-llbc.py` into `<aheui>/build/llbc/`) via
+    // `MAJIT_MIR_FRONTEND_LLBC`, which the front-end honours ahead of
+    // auto-discovery. An explicit env override still wins.
+    if std::env::var_os("MAJIT_MIR_FRONTEND_LLBC").is_none() {
+        let llbc_dir = std::path::Path::new(&base).join("build").join("llbc");
+        let rt = llbc_dir.join("aheui-runtime.ullbc");
+        if rt.exists() {
+            let mut paths: Vec<std::path::PathBuf> = vec![rt];
+            // Cross-target layout sidecars go LAST. `build/llbc` is one set
+            // shared by every build, and struct layout is not: a pointer is 4
+            // bytes on wasm32, so `ListBase.size` sits at offset 4 there and at
+            // 8 on a 64-bit host, and a descr carrying the host offset names a
+            // word past the end of the struct that the JIT then reads and
+            // writes. The front-end merges exact layouts last-writer-wins and
+            // everything else first-writer-wins, so appending the sidecars puts
+            // their target offsets on top while their body-stripped tables lose
+            // to the host artefacts. A missing sidecar is a hard error rather
+            // than a silent fallback to layouts that do not describe this
+            // target.
+            let target = std::env::var("TARGET").unwrap_or_default();
+            let host = std::env::var("HOST").unwrap_or_default();
+            if majit_translate::layout::is_cross_target(&target, &host) {
+                for stem in ["aheui-runtime"] {
+                    let name = majit_translate::layout::layout_sidecar_filename(stem, &target);
+                    let sidecar = llbc_dir.join(&name);
+                    assert!(
+                        sidecar.exists(),
+                        "aheui layout sidecar {} is missing under {}.\n\
+                         Re-run `aheui/scripts/extract-llbc.py`, whose \
+                         `LAYOUT_TARGETS` names the cross targets that get one.",
+                        name,
+                        llbc_dir.display()
+                    );
+                    paths.push(sidecar);
+                }
+            }
+            let joined =
+                std::env::join_paths(paths).expect("aheui LLBC paths contain no path separator");
+            // SAFETY: build scripts are single-threaded; no other thread
+            // observes the environment during this set.
+            unsafe { std::env::set_var("MAJIT_MIR_FRONTEND_LLBC", joined) };
+        } else {
+            panic!(
+                "aheui LLBC missing under {}.\n\
+                 Run `aheui/scripts/extract-llbc.py` to produce \
+                 `aheui-runtime.ullbc` \
+                 (install with the parent repo's \
+                 `python3 scripts/install-charon.py`), or set \
+                 `MAJIT_MIR_FRONTEND_LLBC` explicitly.",
+                llbc_dir.display()
+            );
+        }
+        println!("cargo::rerun-if-changed={}/build/llbc", base);
+    }
 
-    let mut sources = Vec::new();
+    // Every declared helper is owned by the runtime. The interpreter's
+    // macro-generated engine setup is not input to this helper pipeline.
+    let source_dirs = [format!("{base}/aheui-runtime/src")];
+
     let mut source_paths = Vec::new();
     for dir in &source_dirs {
-        collect_rs_files(dir, &mut sources, &mut source_paths);
+        source_paths.extend(majit_translate::module_path::collect_rs_files(dir));
     }
 
     eprintln!(
         "[aheui-jit build.rs] reading {} source files from {} dirs",
-        sources.len(),
+        source_paths.len(),
         source_dirs.len(),
     );
 
-    let source_refs: Vec<&str> = sources.iter().map(|s| s.as_str()).collect();
-    let pipeline = majit_codewriter::analyze_multiple_pipeline_with_config(
-        &source_refs,
-        &majit_codewriter::AnalyzeConfig {
-            pipeline: majit_codewriter::PipelineConfig {
-                transform: majit_codewriter::GraphTransformConfig {
+    // The graph surface comes from the Charon-extracted LLBC set
+    // (`MAJIT_MIR_FRONTEND_LLBC` above). `module_paths[i]` is the
+    // crate-stripped module path of the i-th source file, derived by the
+    // translator that consumes it — the spelling is its invariant, not a
+    // label this build script gets to choose.
+    // This pipeline needs no host vinfo or static-singleton configuration.
+    // Concrete function bindings are installed by jit::jitcode_runtime.
+    let module_paths: Vec<String> = source_paths
+        .iter()
+        .map(|p| majit_translate::module_path::module_path_from_source_file(p))
+        .collect();
+    let module_path_refs: Vec<&str> = module_paths.iter().map(|s| s.as_str()).collect();
+    let helper_roots: Vec<_> = helper_spec::HELPERS
+        .iter()
+        .map(|path| majit_translate::CallPath::from_segments(path.iter().copied()))
+        .collect();
+    let pipeline = majit_translate::analyze_helper_pipeline_with_modules(
+        &module_path_refs,
+        &helper_roots,
+        &majit_translate::AnalyzeConfig {
+            pipeline: majit_translate::PipelineConfig {
+                transform: majit_translate::GraphTransformConfig {
                     vable_fields: virtualizable_spec::AHEUI_VABLE_FIELDS
                         .iter()
                         .map(|(name, idx)| {
-                            majit_codewriter::VirtualizableFieldDescriptor::new(
+                            majit_translate::VirtualizableFieldDescriptor::new(
                                 *name,
                                 Some(virtualizable_spec::AHEUI_VABLE_OWNER_ROOT.to_string()),
                                 *idx,
@@ -48,7 +120,7 @@ fn main() {
                     vable_arrays: virtualizable_spec::AHEUI_VABLE_ARRAYS
                         .iter()
                         .map(|(name, idx)| {
-                            majit_codewriter::VirtualizableFieldDescriptor::new(
+                            majit_translate::VirtualizableFieldDescriptor::new(
                                 *name,
                                 Some(virtualizable_spec::AHEUI_VABLE_OWNER_ROOT.to_string()),
                                 *idx,
@@ -56,24 +128,52 @@ fn main() {
                         })
                         .collect(),
                     call_effects: build_call_effect_overrides(),
+                    struct_storage: vec![
+                        majit_translate::StructStorageDescriptor::raw(
+                            "storage::linkedlist::ListBase",
+                        ),
+                        majit_translate::StructStorageDescriptor::headerless(
+                            "storage::linkedlist::Node",
+                        ),
+                    ],
                     ..Default::default()
                 },
-                classify: Default::default(),
+                register_trait_families: Vec::new(),
+                // The live portal is macro-generated in aheuinterpreter.
+                jit_drivers: Vec::new(),
             },
         },
     );
+    for root in &helper_roots {
+        assert!(
+            pipeline.jitcodes_by_path.contains_key(root),
+            "missing generated helper {root:?}"
+        );
+    }
 
-    let code = majit_codewriter::generate_trace_code_from_pipeline(&pipeline);
+    // aheui drives the JIT from the `#[jit_interp]` proc macro, not from
+    // the pyre-oriented trace helpers. The `Minimal` flavor emits only
+    // the generic metadata tables so the included file compiles without
+    // `pyre_object` / `pyre_interpreter` in scope.
+    let code = majit_translate::generate_trace_code_from_pipeline_with_flavor(
+        &pipeline,
+        majit_translate::CodegenFlavor::Minimal,
+    );
 
     let out_dir = std::env::var("OUT_DIR").unwrap();
     std::fs::write(format!("{out_dir}/jit_trace_gen.rs"), &code).unwrap();
 
-    let json = serde_json::to_string_pretty(&pipeline).unwrap();
-    std::fs::write(format!("{out_dir}/jit_metadata.json"), &json).unwrap();
+    let artifacts = majit_translate::artifacts::EmbeddedArtifacts::from_pipeline(&pipeline)
+        .expect("encode Aheui pipeline artifacts");
+    std::fs::write(
+        format!("{out_dir}/jitcode_artifacts.bin"),
+        artifacts.encode().unwrap(),
+    )
+    .unwrap();
 
     eprintln!(
-        "[aheui-jit build.rs] canonical analysis: {} opcode arms, {} functions, {} blocks, {} flat ops, generated {} bytes",
-        pipeline.opcode_dispatch.len(),
+        "[aheui-jit build.rs] canonical analysis: {} jitcodes, {} functions, {} blocks, {} flat ops, generated {} bytes",
+        pipeline.jitcodes.len(),
         pipeline.functions.len(),
         pipeline.total_blocks,
         pipeline.total_ops,
@@ -87,7 +187,7 @@ fn main() {
     println!("cargo::rerun-if-changed=src/jit/call_spec.rs");
 }
 
-fn build_call_effect_overrides() -> Vec<majit_codewriter::CallEffectOverride> {
+fn build_call_effect_overrides() -> Vec<majit_translate::CallEffectOverride> {
     call_spec::AHEUI_CALL_EFFECTS
         .iter()
         .map(|spec| {
@@ -95,41 +195,16 @@ fn build_call_effect_overrides() -> Vec<majit_codewriter::CallEffectOverride> {
                 call_spec::CallTargetSpec::Method {
                     name,
                     receiver_root,
-                } => majit_codewriter::CallTarget::method(name, Some(receiver_root.to_string())),
+                } => majit_translate::CallTarget::method(name, Some(receiver_root.to_string())),
                 call_spec::CallTargetSpec::FunctionPath(segments) => {
-                    majit_codewriter::CallTarget::function_path(segments.iter().copied())
+                    majit_translate::CallTarget::function_path(segments.iter().copied())
                 }
             };
             let effect = match spec.effect {
-                call_spec::CallEffectKind::Elidable => majit_codewriter::CallEffectKind::Elidable,
-                call_spec::CallEffectKind::Residual => majit_codewriter::CallEffectKind::Residual,
+                call_spec::CallEffectKind::Elidable => majit_translate::CallEffectKind::Elidable,
+                call_spec::CallEffectKind::Residual => majit_translate::CallEffectKind::Residual,
             };
-            majit_codewriter::CallEffectOverride::new(target, effect)
+            majit_translate::CallEffectOverride::new(target, effect)
         })
         .collect()
-}
-
-fn collect_rs_files(dir: &str, sources: &mut Vec<String>, paths: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        eprintln!("[aheui-jit build.rs] warning: cannot read {dir}");
-        return;
-    };
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rs_files(&path.to_string_lossy(), sources, paths);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            let path_str = path.to_string_lossy().to_string();
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    paths.push(path_str);
-                    sources.push(content);
-                }
-                Err(e) => {
-                    eprintln!("[aheui-jit build.rs] warning: cannot read {path_str}: {e}");
-                }
-            }
-        }
-    }
 }

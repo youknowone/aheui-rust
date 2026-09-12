@@ -1,0 +1,103 @@
+use num_traits::ToPrimitive;
+const SMALL_MIN: i64 = -(1i64 << 62);
+const SMALL_MAX: i64 = (1i64 << 62) - 1;
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+struct Int(i64);
+#[inline(never)] fn box_bigint(value: BigInt) -> Int {
+    Int(alloc_bigint(value))
+}
+#[cold] #[inline(never)] unsafe fn collect_bigints(bases: &[*mut Int; 28], tops: &[*mut Int; 28], sp: &SpecialStorage) {
+    let mut roots = Vec::new();
+    let bases = bases.map(|p| p.cast::<i64>());
+    let tops = tops.map(|p| p.cast::<i64>());
+    unsafe { bigint_stack_roots(&mut roots, &bases, &tops); }
+    for v in sp.queue.iter().chain(sp.port.iter()).chain(std::iter::once(&sp.port_last)) {
+        bigint_root(&mut roots, v.0);
+    }
+    collect_bigint_roots(roots);
+}
+#[inline(always)] fn promote_val(v: Int) -> Int {
+    let r = v.0;
+    if r >= SMALL_MIN && r <= SMALL_MAX { Int((r << 1) | 1) }
+    else { box_bigint(BigInt::from(r)) }
+}
+fn to_big(v: i64) -> BigInt { if v & 1 != 0 { BigInt::from(v >> 1) } else { unsafe { &*(v as *const BigInt) }.clone() } }
+fn normalize(b: BigInt) -> Int { match b.to_i64() { Some(v) if v >= SMALL_MIN && v <= SMALL_MAX => Int((v << 1) | 1), _ => box_bigint(b) } }
+#[cold] #[inline(never)] fn big_add(a: Int, b: Int) -> Int { normalize(to_big(a.0) + to_big(b.0)) }
+#[cold] #[inline(never)] fn big_sub(a: Int, b: Int) -> Int { normalize(to_big(a.0) - to_big(b.0)) }
+#[cold] #[inline(never)] fn big_mul(a: Int, b: Int) -> Int { normalize(to_big(a.0) * to_big(b.0)) }
+fn big_divmod_floor(a: BigInt, b: BigInt) -> (BigInt, BigInt) { let mut q = a.clone() / b.clone(); let mut r = a % b.clone(); if r != BigInt::from(0) && (r < BigInt::from(0)) != (b < BigInt::from(0)) { q -= BigInt::from(1); r += b; } (q, r) }
+#[cold] #[inline(never)] fn big_div(a: Int, b: Int) -> Int { normalize(big_divmod_floor(to_big(a.0), to_big(b.0)).0) }
+#[cold] #[inline(never)] fn big_rem(a: Int, b: Int) -> Int { normalize(big_divmod_floor(to_big(a.0), to_big(b.0)).1) }
+unsafe fn promote_stacks(bases: &[*mut Int; 28], tops: &[*mut Int; 28]) {
+    for s in 0..28 {
+        if bases[s].is_null() { continue; }
+        let mut p = bases[s];
+        while p < tops[s] { *p = promote_val(*p); p = p.add(1); }
+    }
+}
+#[cold] #[inline(never)]
+unsafe fn do_promote(bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) {
+    *bm = true; BM = true;
+    promote_stacks(bases, tops);
+    sp.promote();
+}
+#[inline(always)]
+unsafe fn dual_add(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) -> Int {
+    if !*bm {
+        match Int::raw_add(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops, sp); Int::tag_add(promote_val(a), promote_val(b)) } }
+    } else { Int::tag_add(a, b) }
+}
+#[inline(always)]
+unsafe fn dual_sub(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) -> Int {
+    if !*bm {
+        match Int::raw_sub(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops, sp); Int::tag_sub(promote_val(a), promote_val(b)) } }
+    } else { Int::tag_sub(a, b) }
+}
+#[inline(always)]
+unsafe fn dual_mul(a: Int, b: Int, bm: &mut bool, bases: &[*mut Int; 28], tops: &mut [*mut Int; 28], sp: &mut SpecialStorage) -> Int {
+    if !*bm {
+        match Int::raw_mul(a, b) { Some(r) => r, None => { do_promote(bm, bases, tops, sp); Int::tag_mul(promote_val(a), promote_val(b)) } }
+    } else { Int::tag_mul(a, b) }
+}
+impl Int {
+    // Mode-aware operations: _bm=false → raw i64, _bm=true → tagged
+    #[inline(always)] fn lit(v: i64, _bm: bool) -> Int { if _bm { promote_val(Int(v)) } else { Int(v) } }
+    #[inline(always)] fn to_i64(v: Int, _bm: bool) -> i64 { if _bm { if v.0 & 1 != 0 { v.0 >> 1 } else { unsafe { &*(v.0 as *const BigInt) }.to_i64().unwrap_or(0) } } else { v.0 } }
+}
+// Static flag for free functions (PRELUDE_COMMON) to detect mode
+static mut BM: bool = false;
+#[inline(always)] fn int_lit(v: i64) -> Int { if unsafe { BM } { promote_val(Int(v)) } else { Int(v) } }
+#[inline(always)] fn int_to_i64(v: Int) -> i64 { if unsafe { BM } { if v.0 & 1 != 0 { v.0 >> 1 } else { unsafe { &*(v.0 as *const BigInt) }.to_i64().unwrap_or(0) } } else { v.0 } }
+impl Int {
+    #[inline(always)] fn is_zero(v: Int, _bm: bool) -> bool { if _bm { v.0 == 1 } else { v.0 == 0 } }
+    #[inline(always)] fn ge(a: Int, b: Int, _bm: bool) -> bool { if _bm { if a.0 & b.0 & 1 != 0 { a.0 >= b.0 } else { to_big(a.0) >= to_big(b.0) } } else { a.0 >= b.0 } }
+    // Fast-path add/sub: raw checked arithmetic. Overflow handled by caller.
+    #[inline(always)] fn raw_add(a: Int, b: Int) -> Option<Int> { a.0.checked_add(b.0).map(Int) }
+    #[inline(always)] fn raw_sub(a: Int, b: Int) -> Option<Int> { a.0.checked_sub(b.0).map(Int) }
+    #[inline(always)] fn raw_mul(a: Int, b: Int) -> Option<Int> { a.0.checked_mul(b.0).map(Int) }
+    // Tagged-path operations (after promotion)
+    #[inline(always)] fn tag_add(a: Int, b: Int) -> Int {
+        if a.0 & b.0 & 1 != 0 { if let Some(r) = a.0.checked_add(b.0 - 1) { return Int(r); } }
+        big_add(a, b)
+    }
+    #[inline(always)] fn tag_sub(a: Int, b: Int) -> Int {
+        if a.0 & b.0 & 1 != 0 { if let Some(r) = a.0.checked_sub(b.0 - 1) { return Int(r); } }
+        big_sub(a, b)
+    }
+    #[inline(always)] fn tag_mul(a: Int, b: Int) -> Int {
+        if a.0 & b.0 & 1 != 0 { let av = a.0 >> 1; let bv = b.0 >> 1;
+            if let Some(r) = av.checked_mul(bv) { if r >= SMALL_MIN && r <= SMALL_MAX { return Int((r << 1) | 1); } } }
+        big_mul(a, b)
+    }
+    #[inline(always)] fn div(a: Int, b: Int, _bm: bool) -> Int {
+        if _bm { if b.0 == 1 { return Int(1); } if a.0 & b.0 & 1 != 0 { return Int((floor_div_i64(a.0>>1, b.0>>1)<<1)|1); } big_div(a, b) }
+        else { Int(if b.0 != 0 { floor_div_i64(a.0, b.0) } else { 0 }) }
+    }
+    #[inline(always)] fn rem(a: Int, b: Int, _bm: bool) -> Int {
+        if _bm { if b.0 == 1 { return Int(1); } if a.0 & b.0 & 1 != 0 { return Int((floor_mod_i64(a.0>>1, b.0>>1)<<1)|1); } big_rem(a, b) }
+        else { Int(if b.0 != 0 { floor_mod_i64(a.0, b.0) } else { 0 }) }
+    }
+}
+fn write_num(w: &mut impl std::io::Write, v: Int) { if !unsafe { BM } { write_i64(w, v.0); } else if v.0 & 1 != 0 { write_i64(w, v.0 >> 1); } else { use std::io::Write as _; write!(w, "{}", unsafe { &*(v.0 as *const BigInt) }).ok(); } }

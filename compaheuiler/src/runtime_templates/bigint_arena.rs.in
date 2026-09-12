@@ -1,0 +1,85 @@
+// Boxed integers contain no managed pointers. At a generated block entry all
+// live values reside in stack slots or special storage; never collect mid-op.
+struct BigIntArena {
+    values: Vec<Box<BigInt>>,
+    bytes: usize,
+    threshold: usize,
+}
+const BIGINT_MIN_COLLECTION_BYTES: usize = 8 * 1024 * 1024;
+static BIGINT_ARENA: std::sync::Mutex<BigIntArena> = std::sync::Mutex::new(BigIntArena {
+    values: Vec::new(),
+    bytes: 0,
+    threshold: BIGINT_MIN_COLLECTION_BYTES,
+});
+// The generated program, including its representation-mode flag, is single-threaded.
+#[unsafe(no_mangle)]
+pub static mut cbig_collection_due: u8 = 0;
+fn bigint_bytes(value: &BigInt) -> usize {
+    std::mem::size_of::<BigInt>().saturating_add((value.bits() / 8) as usize + 1)
+}
+fn alloc_bigint(value: BigInt) -> i64 {
+    let mut arena = BIGINT_ARENA.lock().unwrap_or_else(|e| e.into_inner());
+    arena.bytes = arena.bytes.saturating_add(bigint_bytes(&value));
+    let value = Box::new(value);
+    let ptr = (&*value as *const BigInt) as i64;
+    arena.values.push(value);
+    unsafe {
+        cbig_collection_due = u8::from(arena.bytes >= arena.threshold);
+    }
+    ptr
+}
+fn bigint_root(roots: &mut Vec<usize>, value: i64) {
+    if value != 0 && value & 1 == 0 {
+        roots.push(value as usize);
+    }
+}
+unsafe fn bigint_stack_roots(
+    roots: &mut Vec<usize>,
+    bases: &[*mut i64; 28],
+    tops: &[*mut i64; 28],
+) {
+    for s in 0..28 {
+        if tops[s].is_null() {
+            continue;
+        }
+        let mut p = bases[s];
+        while p < tops[s] {
+            bigint_root(roots, unsafe { *p });
+            p = unsafe { p.add(1) };
+        }
+    }
+}
+#[cold]
+#[inline(never)]
+fn collect_bigint_roots(mut roots: Vec<usize>) {
+    roots.sort_unstable();
+    roots.dedup();
+    let mut arena = BIGINT_ARENA.lock().unwrap_or_else(|e| e.into_inner());
+    arena.values.retain(|value| {
+        roots
+            .binary_search(&((&**value as *const BigInt) as usize))
+            .is_ok()
+    });
+    arena.bytes = arena
+        .values
+        .iter()
+        .map(|v| bigint_bytes(v))
+        .fold(0usize, usize::saturating_add);
+    arena.threshold = BIGINT_MIN_COLLECTION_BYTES.max(arena.bytes.saturating_mul(2));
+    // Do not retain an arena backing allocation proportional to historical peak.
+    if arena.values.capacity() > arena.values.len().saturating_mul(4).max(1024) {
+        arena.values.shrink_to_fit();
+    }
+    unsafe {
+        cbig_collection_due = 0;
+    }
+}
+fn clear_bigints() {
+    let mut arena = BIGINT_ARENA.lock().unwrap_or_else(|e| e.into_inner());
+    arena.values = Vec::new();
+    arena.bytes = 0;
+    arena.threshold = BIGINT_MIN_COLLECTION_BYTES;
+    unsafe {
+        cbig_collection_due = 0;
+    }
+}

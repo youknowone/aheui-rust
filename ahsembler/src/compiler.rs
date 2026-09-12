@@ -29,7 +29,7 @@ impl Program {
         OP_REQSIZE[self.opcodes[pc] as usize]
     }
 
-    /// rpaheui/aheui/aheui.py:175-189 `Program.get_label` resolves a label
+    /// rpaheui/aheui/aheui.py `Program.get_label` resolves a label
     /// id through the `labels` dict on every jump.  After
     /// `resolve_jump_targets` rewrites `values[pc]` for jump ops to point
     /// at the target PC directly the lookup collapses to a single array
@@ -411,85 +411,6 @@ impl Compiler {
         min_stacksize_map.iter().map(|&s| s >= 0).collect()
     }
 
-    pub(crate) fn optimize_deadcode2(&self) -> Vec<bool> {
-        let n = self.lines.len();
-        let mut min_map: Vec<[i32; STORAGE_COUNT]> = vec![[-1i32; STORAGE_COUNT]; n];
-        let label_targets: HashSet<usize> = self.label_map.values().copied().collect();
-
-        fn min_merge(a: &[i32; STORAGE_COUNT], b: &[i32; STORAGE_COUNT]) -> [i32; STORAGE_COUNT] {
-            if a[0] == -1 {
-                return *b;
-            }
-            let mut out = [0i32; STORAGE_COUNT];
-            for i in 0..STORAGE_COUNT {
-                out[i] = a[i].min(b[i]);
-            }
-            out
-        }
-
-        let mut job_queue: VecDeque<(usize, usize, [i32; STORAGE_COUNT])> =
-            VecDeque::from([(0, 0, [0i32; STORAGE_COUNT])]);
-
-        while let Some((mut pc, mut selected, mut stacksizes)) = job_queue.pop_front() {
-            while pc < n {
-                let stacksize = stacksizes[selected];
-                debug_assert!(stacksize >= 0);
-                let (op, val) = self.lines[pc];
-                let prev = min_map[pc];
-                if prev[selected] >= 0 {
-                    let min_diff = prev[selected] - stacksizes[selected];
-                    let stack_delta = OP_STACKADD[op as usize] - OP_STACKDEL[op as usize];
-                    let merged = min_merge(&prev, &stacksizes);
-                    if min_diff <= stack_delta && merged == prev {
-                        break;
-                    }
-                }
-                if op == OP_BRPOP1 || op == OP_BRPOP2 {
-                    let reqsize = OP_REQSIZE[op as usize] as i32;
-                    if stacksize >= reqsize && !label_targets.contains(&pc) {
-                        pc += 1;
-                        continue;
-                    } else {
-                        min_map[pc] = min_merge(&prev, &stacksizes);
-                        if let Some(&target) = self.label_map.get(&val) {
-                            job_queue.push_back((target, selected, stacksizes));
-                        }
-                    }
-                } else {
-                    min_map[pc] = min_merge(&prev, &stacksizes);
-                    let mut ss = stacksizes[selected] - OP_STACKDEL[op as usize];
-                    if ss < 0 {
-                        ss = 0;
-                    }
-                    ss += OP_STACKADD[op as usize];
-                    stacksizes[selected] = ss;
-                    if op == OP_BRZ {
-                        if let Some(&target) = self.label_map.get(&val) {
-                            job_queue.push_back((target, selected, stacksizes));
-                        }
-                    } else if op == OP_JMP {
-                        if let Some(&target) = self.label_map.get(&val) {
-                            pc = target;
-                            continue;
-                        } else {
-                            break;
-                        }
-                    } else if op == OP_SEL {
-                        min_map[pc] = min_merge(&min_map[pc], &stacksizes);
-                        selected = val as usize;
-                    } else if op == OP_MOV {
-                        stacksizes[val as usize] += 1;
-                    } else if op == OP_HALT {
-                        break;
-                    }
-                }
-                pc += 1;
-            }
-        }
-
-        min_map.iter().map(|sizes| sizes[0] >= 0).collect()
-    }
-
     pub(crate) fn optimize_adjust(&mut self, reachability: &[bool]) {
         let mut useless_map = vec![0usize; reachability.len()];
         let mut count = 0usize;
@@ -643,54 +564,10 @@ impl Compiler {
                 continue;
             }
 
-            let result = match actual_op {
-                OP_ADD => match v2.checked_add(effective_v1) {
-                    Some(r) => r,
-                    None => continue, // overflow — skip folding
-                },
-                OP_SUB => match v2.checked_sub(effective_v1) {
-                    Some(r) => r,
-                    None => continue,
-                },
-                OP_MUL => match v2.checked_mul(effective_v1) {
-                    Some(r) => r,
-                    None => continue,
-                },
-                OP_DIV => {
-                    if effective_v1 != 0 {
-                        // `checked_div` is asked only whether the quotient fits
-                        // the operand width: `i32::MIN / -1` does not, and a
-                        // run-time division promotes there rather than
-                        // wrapping, so the folder declines instead of
-                        // answering. Flooring in `i64` cannot leave the range
-                        // for a pair that clears that check — the correction
-                        // only fires when `|divisor| >= 2`, which halves the
-                        // quotient's magnitude.
-                        match v2.checked_div(effective_v1) {
-                            Some(_) => floor_div_i64(v2 as i64, effective_v1 as i64) as i32,
-                            None => continue,
-                        }
-                    } else {
-                        0
-                    }
-                }
-                OP_MOD => {
-                    // `|remainder| < |divisor|`, floored or not, so this always
-                    // fits the operand width.
-                    if effective_v1 != 0 {
-                        floor_mod_i64(v2 as i64, effective_v1 as i64) as i32
-                    } else {
-                        0
-                    }
-                }
-                OP_CMP => {
-                    if v2 >= effective_v1 {
-                        1
-                    } else {
-                        0
-                    }
-                }
-                _ => continue,
+            let Some(result) = checked_binary_i64(actual_op, v2 as i64, effective_v1 as i64)
+                .and_then(|value| i32::try_from(value).ok())
+            else {
+                continue;
             };
 
             if op == OP_JMP {
@@ -923,25 +800,6 @@ mod tests {
         assert_eq!(program.opcodes, vec![OP_JMP, OP_PUSH, OP_HALT]);
         assert_eq!(program.values, vec![1, 7, -1]);
         assert_eq!(program.labels[&1], 1);
-    }
-
-    #[test]
-    fn test_deadcode2_keeps_block_entry_brpop() {
-        let mut c = Compiler::new();
-        c.lines = vec![
-            (OP_PUSH, 1),
-            (OP_JMP, 10),
-            (OP_BRPOP1, 11),
-            (OP_DUP, -1),
-            (OP_HALT, -1),
-            (OP_HALT, -1),
-        ];
-        c.label_map = HashMap::from([(10, 2), (11, 5)]);
-
-        let reachability = c.optimize_deadcode2();
-        c.optimize_adjust(&reachability);
-
-        assert!(c.lines.iter().any(|&(op, _)| op == OP_BRPOP1));
     }
 
     /// Locate the snippet corpus with the same precedence as `check.sh`:

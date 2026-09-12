@@ -8,6 +8,12 @@
 //! The `aheui.aheui` self-interpreter is a separate project and is in none of
 //! them, so its caller gets an `Option` and skips loudly rather than failing.
 
+// Every integration-test binary compiles this whole module and uses a subset of
+// it, so the rest is unreachable *from that binary* and reported dead. The
+// report is per-binary and the module is shared, so it can never be satisfied:
+// an item used by one test is dead code in the other eight.
+#![allow(dead_code)]
+
 /// Computes 2^64 three times, then exercises division, remainder, and compare
 /// after the first multiplication has promoted the execution to bigint mode.
 pub const DUAL_MODE_POST_PROMOTION_OPS: &str = "반빠따빠따빠따빠따빠따빠따받나망반빠따빠따빠따빠따빠따빠따받라망반빠따빠따빠따빠따빠따빠따받자망희";
@@ -17,6 +23,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+mod process;
+pub use process::bounded_output;
 
 pub struct ScratchDir(PathBuf);
 
@@ -30,6 +39,33 @@ impl Drop for ScratchDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// A build directory that outlives the test which fills it.
+///
+/// Two kinds of output need this rather than [`scratch_dir`]: generated Rust
+/// that something else reads afterwards — `check.sh` recompiles what
+/// `rgen_test` leaves at a higher opt level and grades the result — and the
+/// scratch cargo projects the bigint suites build in, whose whole value is
+/// that the dependency stays built between runs.
+///
+/// Under `target/` because a fixed name in the process-wide temp directory is
+/// one that any concurrently running test binary, or any other user of the
+/// machine, can be writing at the same moment. `cargo clean` reaches it.
+pub fn build_dir(label: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("target")
+        .join(label);
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|e| panic!("cannot create {}: {e}", dir.display()));
+    dir
+}
+
+/// Generated Rust kept for `check.sh` and for reading after a failure.
+pub fn codegen_dir() -> PathBuf {
+    build_dir("codegen")
 }
 
 /// Creates a process-unique scratch directory and removes it after the test.
@@ -61,12 +97,19 @@ pub fn compile_c_bigint(scratch: &Path, name: &str, c_code: &str) -> PathBuf {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     let c_path = dir.join("program.c");
     let object_path = dir.join("program.o");
-    std::fs::write(&c_path, c_code).unwrap();
+    // Run the semantic suite with collection at every tagged block boundary.
+    std::fs::write(
+        &c_path,
+        c_code.replace("if (_bm && cbig_collection_due)", "if (_bm)"),
+    )
+    .unwrap();
     std::fs::write(dir.join("src/main.rs"), compaheuiler::c_bigint_bridge_rs()).unwrap();
     std::fs::write(
         dir.join("Cargo.toml"),
         format!(
-            r#"[package]
+            r#"[workspace]
+
+[package]
 name = {package:?}
 version = "0.0.0"
 edition = "2024"
@@ -97,7 +140,7 @@ opt-level = 1
     std::fs::write(
         dir.join("build.rs"),
         format!(
-            "fn main() {{\n  let object = {object:?};\n  println!(\"cargo:rerun-if-changed={{object}}\");\n  println!(\"cargo:rustc-link-arg-bin={package}={{object}}\");\n}}\n",
+            "fn main() {{\n  let object = {object:?};\n  println!(\"cargo:rerun-if-changed={{object}}\");\n  println!(\"cargo:rustc-link-arg-bin={package}={{object}}\");\n  // The C object follows rustc's libraries; repeat libc after its references.\n  if std::env::var(\"CARGO_CFG_TARGET_OS\").as_deref() == Ok(\"linux\") {{ println!(\"cargo:rustc-link-arg-bin={package}=-lc\"); }}\n}}\n",
             object = object_path.to_string_lossy(),
         ),
     )
@@ -127,11 +170,11 @@ pub fn snippets_dir() -> &'static Path {
             return PathBuf::from(p);
         }
         // The pinned submodule, found by walking up so this works from any
-        // crate. `is_dir` also rejects an uninitialized submodule.
+        // crate. Require a known fixture, not an empty submodule directory.
         let mut dir = Some(Path::new(env!("CARGO_MANIFEST_DIR")));
         while let Some(d) = dir {
             let candidate = d.join("snippets");
-            if candidate.is_dir() {
+            if candidate.join("logo/logo.aheui").is_file() {
                 return candidate;
             }
             dir = d.parent();
@@ -139,7 +182,7 @@ pub fn snippets_dir() -> &'static Path {
         let mut dir = Some(Path::new(env!("CARGO_MANIFEST_DIR")));
         while let Some(d) = dir {
             let candidate = d.join("rpaheui").join("snippets");
-            if candidate.is_dir() {
+            if candidate.join("logo/logo.aheui").is_file() {
                 return candidate;
             }
             dir = d.parent();

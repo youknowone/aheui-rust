@@ -4,22 +4,62 @@ version = "0.0.1"
 edition = "2024"
 
 [workspace]
-members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler", "aheui-wasm"]
+members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compaheuiler", "aheui-wasm", "aheui-wasm-runner"]
+
+# majit lives in the `pyre` repository, which this one does not vendor or
+# submodule.  Pinning a revision here rather than a path makes a checkout of
+# this repo alone buildable, and makes which majit a given aheui build was
+# compiled against a recorded fact instead of whatever happened to be in a
+# sibling directory.
+#
+# All workspace entries use one revision, checked by scripts/check_config.py.
+# Two members resolving
+# different revisions would each get their own clone, and the same type from
+# the two clones (`majit_ir::DescrRef`, say) would not unify — the failure
+# reads as an unrelated type error deep in a generic.
+#
+# To work on majit and aheui together, override the whole origin locally
+# without touching these lines:
+#
+#     [patch."https://github.com/youknowone/pyre"]
+#     majit-ir = { path = "../pyre/majit/majit-ir" }
+#     # ... one line per crate used below
+[workspace.dependencies]
+majit-backend-wasm-host = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-ir = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-macros = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-metainterp = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-rlib = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-gc = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-translate = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-backend = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-backend-cranelift = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-backend-dynasm = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-backend-wasm = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42", default-features = false }
 
 [features]
-default = ["jit", "malachite-bigint"]
+default = ["jit", "dynasm", "malachite-bigint"]
 naive = ["dep:aheuinterpreter"]
 jit = ["dep:aheui-jit"]
+# The JIT dependency has no default backend; exactly one root feature selects it.
+dynasm = ["aheui-jit?/dynasm"]
+cranelift = ["aheui-jit?/cranelift"]
 # `build --codegen cranelift`, compaheuiler's AOT backend. Separate from the JIT
 # selector above — they share a name and nothing else, and enabling `cranelift`
 # to reach this one would drag the JIT onto a second backend.
 aot-cranelift = ["compaheuiler/cranelift"]
+# Host binding for the wasm JIT backend, forwarded to aheui-jit. Only
+# meaningful on wasm32; exactly one is selected by a wasm build.
+wasm-web = ["aheui-jit?/wasm-web"]
+wasm-host = ["aheui-jit?/wasm-host"]
 num-bigint = ["aheuinterpreter?/num-bigint", "aheui-jit?/num-bigint", "compaheuiler/num-bigint"]
 malachite-bigint = ["aheuinterpreter?/malachite-bigint", "aheui-jit?/malachite-bigint", "compaheuiler/malachite-bigint"]
+# compaheuiler is deliberately absent because its bigint features select AOT-generated arithmetic, not the interpreter runtime.
+runtime-rbigint = ["aheuinterpreter?/runtime-rbigint", "aheui-jit?/runtime-rbigint"]
 
 [dependencies]
-aheuinterpreter = { path = "aheuinterpreter", optional = true }
-aheui-jit = { path = "aheui-jit", optional = true }
+aheuinterpreter = { path = "aheuinterpreter", optional = true, default-features = false }
+aheui-jit = { path = "aheui-jit", optional = true, default-features = false }
 ahsembler = { path = "ahsembler" }
 compaheuiler = { path = "compaheuiler", default-features = false }
 clap = { version = "4.5.32", features = ["derive"] }

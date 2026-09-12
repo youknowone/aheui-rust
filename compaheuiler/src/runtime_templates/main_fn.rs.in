@@ -1,0 +1,15 @@
+
+fn main() {
+    let mut data: [Vec<Int>; STORAGE_COUNT] = std::array::from_fn(|_| Vec::new());
+    for &storage in USED_STORAGES { data[storage] = vec![Int(0); MAX_STACK]; }
+    let mut bases: [*mut Int; 28] = { let mut b = [std::ptr::null_mut(); 28]; for i in 0..28 { b[i] = data[i].as_mut_ptr(); } b };
+    let mut lengths = [0i32; 28];
+    let stdout = std::io::stdout();
+    let mut w = std::io::BufWriter::with_capacity(16384, stdout.lock());
+    let result = unsafe { aheui_main(&mut bases, &mut lengths, &mut w) };
+    w.flush().ok();
+    let exit_code = int_to_i64(result) as i32;
+    drop(w);
+    clear_bigints();
+    std::process::exit(exit_code);
+}

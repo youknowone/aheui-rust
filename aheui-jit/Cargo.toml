@@ -4,20 +4,34 @@ version = "0.0.1"
 edition = "2024"
 
 [features]
-default = ["malachite-bigint"]
-num-bigint = ["aheui-runtime/num-bigint"]
-malachite-bigint = ["aheui-runtime/malachite-bigint"]
+default = ["malachite-bigint", "dynasm"]
+# Set by the three backend features; means a big-integer backend is selected. Nothing enables it directly.
+bigint-backend = []
+num-bigint = ["aheui-runtime/num-bigint", "aheuinterpreter/num-bigint", "bigint-backend"]
+malachite-bigint = ["aheui-runtime/malachite-bigint", "aheuinterpreter/malachite-bigint", "bigint-backend"]
+runtime-rbigint = ["aheui-runtime/runtime-rbigint", "aheuinterpreter/runtime-rbigint", "bigint-backend"]
+cranelift = ["aheuinterpreter/cranelift"]
+dynasm = ["aheuinterpreter/dynasm"]
+# Host binding for the wasm backend. On wasm32 majit-metainterp already
+# selects `WasmBackend` by target_arch, so no backend feature applies there;
+# what is still missing is who instantiates an emitted trace module. Exactly
+# one of these picks that: `wasm-web` goes through the browser `WebAssembly`
+# API, `wasm-host` through plain `majit_host.*` imports a native embedder
+# supplies. With neither, `glue.rs` keeps its panicking stubs and the JIT
+# traps the first time it tries to run a trace.
+wasm-web = ["aheuinterpreter/wasm-web"]
+wasm-host = ["aheuinterpreter/wasm-host"]
 
 [dependencies]
-aheui-runtime = { path = "../aheui-runtime" }
+aheuinterpreter = { path = "../aheuinterpreter", features = ["jit"], default-features = false }
+aheui-runtime = { path = "../aheui-runtime", features = ["jit"], default-features = false }
+majit-ir = { workspace = true }
+majit-metainterp = { workspace = true }
+majit-translate = { workspace = true }
+
+[dev-dependencies]
 ahsembler = { path = "../ahsembler" }
-majit-ir = { path = "../../majit/majit-ir" }
-majit-macros = { path = "../../majit/majit-macros" }
-majit-gc = { path = "../../majit/majit-gc" }
-majit-metainterp = { path = "../../majit/majit-metainterp" }
-majit-backend = { path = "../../majit/majit-backend" }
+majit-macros = { workspace = true }
 
 [build-dependencies]
-majit-codewriter = { path = "../../majit/majit-codewriter" }
-serde_json = "1"
-syn = { version = "2", features = ["full", "visit"] }
+majit-translate = { workspace = true }

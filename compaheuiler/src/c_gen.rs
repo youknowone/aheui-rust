@@ -41,7 +41,11 @@ pub fn c_bigint_bridge_rs() -> String {
     } else {
         "use malachite_bigint::BigInt;\n"
     };
-    format!("{bigint_import}{}", include_str!("c_bigint_bridge.rs"))
+    format!(
+        "{bigint_import}{}{}",
+        include_str!("runtime_templates/bigint_arena.rs.in"),
+        include_str!("c_bigint_bridge.rs")
+    )
 }
 
 /// Cargo dependency declarations matching [`c_bigint_bridge_rs`].
@@ -78,7 +82,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
     let mut live_blocks: Vec<BlockId> = Vec::new();
     for block_id in 0..cfg.num_blocks() as BlockId {
         let entry_state = states.get(block_id as usize);
-        if entry_state.map_or(true, |s| s.is_bottom()) {
+        if entry_state.is_none_or(|s| s.is_bottom()) {
             continue;
         }
         live_blocks.push(block_id);
@@ -116,6 +120,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
         block_order.get(&cfg.entry).copied().unwrap_or(0)
     ));
     out.push_str("  for (;;) {\n");
+    out.push_str("  /*DISPATCH*/\n");
     if use_match {
         out.push_str("    switch (_pc) {\n");
     }
@@ -176,11 +181,11 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                 let exit_seq = block_order.get(exit_target).copied().unwrap_or(0);
                 if let Some(guard_fail_seq) = scan_guard_fail {
                     out.push_str(&format!(
-                        "{ind}  if (sp.q_len == 0) {{ _pc = {guard_fail_seq}; continue; }}\n"
+                        "{ind}  if (sp_depth(&sp, {QUEUE}) == 0) {{ _pc = {guard_fail_seq}; goto _dispatch; }}\n"
                     ));
                 }
                 out.push_str(&format!("{ind}  sp_scan_to_zero(&sp);\n"));
-                out.push_str(&format!("{ind}  _pc = {exit_seq}; continue;\n"));
+                out.push_str(&format!("{ind}  _pc = {exit_seq}; goto _dispatch;\n"));
             }
             if use_match {
                 out.push_str("    } break;\n");
@@ -193,12 +198,18 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
         if is_self_loop {
             out.push_str(&format!("{ind}  for (;;) {{\n"));
         }
+        // All predecessor register locals have been flushed to storage.
+        if bigint {
+            out.push_str(&format!(
+                "{ind}  if (_bm && cbig_collection_due) cbig_collect(bases, tops_snapshot, sp.h);\n"
+            ));
+        }
 
         // Entry sync
         let has_dyn_sel = live_blocks.iter().any(|&bid| {
             states
                 .get(bid as usize)
-                .map_or(false, |s| s.selected.is_none())
+                .is_some_and(|s| s.selected.is_none())
         });
         let skip_entry_sync = entry_sel.is_none() && has_dyn_sel;
         if entry_sel.is_none() && !skip_entry_sync {
@@ -303,14 +314,13 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                     if sp_known {
                         let s = sel.unwrap();
                         let next = insts.get(ii + 1);
-                        if s == QUEUE {
-                            if let Some(Inst::Mov(t)) = next {
-                                if *t == s {
-                                    out.push_str(&format!("{ind}  if (sp.q_len > 0) {{ int64_t _v = sp.queue[sp.q_head]; sp.queue[(sp.q_head + sp.q_len) % QUEUE_CAP] = _v; sp.q_len++; }}\n"));
-                                    ii += 2;
-                                    continue;
-                                }
-                            }
+                        if s == QUEUE
+                            && let Some(Inst::Mov(t)) = next
+                            && *t == s
+                        {
+                            out.push_str(&format!("{ind}  sp_dup_back(&sp);\n"));
+                            ii += 2;
+                            continue;
                         }
                         out.push_str(&format!("{ind}  sp_dup(&sp, {s});\n"));
                     } else if ds {
@@ -581,7 +591,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                         out.push_str("default: break; }\n");
                     }
                     let fail_seq = block_order.get(fail).copied().unwrap_or(0);
-                    out.push_str(&format!("{ind}  if (({depth_expr}) < (int64_t){min_depth}) {{ _pc = {fail_seq}; continue; }}\n"));
+                    out.push_str(&format!("{ind}  if (({depth_expr}) < (int64_t){min_depth}) {{ _pc = {fail_seq}; goto _dispatch; }}\n"));
                 }
             }
             ii += 1;
@@ -631,7 +641,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                 if !use_match && target_seq == next_seq {
                     out.push_str(&format!("{ind}  _pc = {next_seq};\n"));
                 } else {
-                    out.push_str(&format!("{ind}  _pc = {target_seq}; continue;\n"));
+                    out.push_str(&format!("{ind}  _pc = {target_seq}; goto _dispatch;\n"));
                 }
             }
             Terminator::StackGuard {
@@ -656,10 +666,10 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                 let ok_seq = block_order.get(ok).copied().unwrap_or(0);
                 let fail_seq = block_order.get(fail).copied().unwrap_or(0);
                 if ok_seq == next_seq {
-                    out.push_str(&format!("{ind}  if (({depth_expr}) < (int64_t){min_depth}) {{ _pc = {fail_seq}; continue; }}\n"));
+                    out.push_str(&format!("{ind}  if (({depth_expr}) < (int64_t){min_depth}) {{ _pc = {fail_seq}; goto _dispatch; }}\n"));
                     out.push_str(&format!("{ind}  _pc = {next_seq};\n"));
                 } else {
-                    out.push_str(&format!("{ind}  _pc = (({depth_expr}) >= (int64_t){min_depth}) ? {ok_seq} : {fail_seq}; continue;\n"));
+                    out.push_str(&format!("{ind}  _pc = (({depth_expr}) >= (int64_t){min_depth}) ? {ok_seq} : {fail_seq}; goto _dispatch;\n"));
                 }
             }
             Terminator::BranchZero {
@@ -732,7 +742,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
                         format!("{vr} == 0")
                     };
                     out.push_str(&format!(
-                        "{ind}  _pc = ({zero}) ? {zero_seq} : {nonzero_seq}; continue;\n"
+                        "{ind}  _pc = ({zero}) ? {zero_seq} : {nonzero_seq}; goto _dispatch;\n"
                     ));
                 }
             }
@@ -772,7 +782,7 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
         // Close inner loop
         if is_self_loop {
             out.push_str(&format!("{ind}  }} /* end inner loop */\n"));
-            out.push_str(&format!("{ind}  continue;\n"));
+            out.push_str(&format!("{ind}  goto _dispatch;\n"));
         }
         // Close block
         if use_match {
@@ -794,6 +804,20 @@ fn generate_c_dispatch(cfg: &Cfg, bigint: bool) -> String {
         var_decl.push_str(&format!("  int64_t v{i} = 0;\n"));
     }
     out = out.replacen("  /*VARDECL*/\n", &var_decl, 1);
+
+    // Re-dispatch target for a block that hands control to another block. It
+    // has to be spelled as a label: a self-loop block wraps its body in a
+    // second `for (;;)`, and a plain `continue` written inside that binds to
+    // the inner loop, re-running the block it was leaving instead of
+    // dispatching on the `_pc` just assigned. Emitted only when something jumps
+    // to it, so a program whose only block falls straight to its terminator
+    // does not carry a label nothing names.
+    let dispatch_label = if out.contains("goto _dispatch;") {
+        "  _dispatch:\n"
+    } else {
+        ""
+    };
+    out = out.replacen("  /*DISPATCH*/\n", dispatch_label, 1);
 
     out.push_str(C_MAIN);
     out
@@ -900,197 +924,8 @@ fn ensure_depth_c(out: &mut String, abs: &mut Abs, depth: usize, indent: &str) {
     stack.append(&mut existing);
 }
 
-const C_PRELUDE: &str = r#"/* Generated by compaheuiler — https://github.com/youknowone/aheui-rust
- * This code includes runtime components licensed under AGPL-3.0-or-later.
- * Distributing binaries compiled from this code requires compliance with the AGPL.
- */
-#include <stdio.h>
-#include <stdint.h>
-#include <string.h>
-#include <stdlib.h>
-#include <limits.h>
-
-#define STORAGE_COUNT 28
-#define MAX_STACK 65536
-#define QUEUE_CAP 65536
-#define PORT_CAP 65536
-
-static inline int64_t wrapping_div(int64_t a, int64_t b) {
-    if (a == INT64_MIN && b == -1) return INT64_MIN;
-    int64_t q = a / b, r = a % b;
-    if (r != 0 && (r < 0) != (b < 0)) q -= 1;
-    return q;
-}
-static inline int64_t wrapping_rem(int64_t a, int64_t b) {
-    if (a == INT64_MIN && b == -1) return 0;
-    int64_t q = a / b, r = a % b;
-    (void)q;
-    if (r != 0 && (r < 0) != (b < 0)) r += b;
-    return r;
-}
-
-typedef struct {
-    int64_t queue[QUEUE_CAP];
-    size_t q_head;
-    size_t q_len;
-    int64_t port[PORT_CAP];
-    size_t p_len;
-    int64_t port_last;
-} SpecialStorage;
-
-static inline void sp_init(SpecialStorage* s) {
-    s->q_head = 0; s->q_len = 0; s->p_len = 0; s->port_last = 0;
-}
-
-static void sp_overflow(void) {
-    fputs("compaheuiler: special storage capacity exceeded\n", stderr);
-    exit(1);
-}
-
-static inline void sp_push(SpecialStorage* s, size_t sel, int64_t v) {
-    if (sel == 21) {
-        if (s->q_len >= QUEUE_CAP) sp_overflow();
-        s->queue[(s->q_head + s->q_len) % QUEUE_CAP] = v;
-        s->q_len++;
-    } else {
-        if (s->p_len >= PORT_CAP) sp_overflow();
-        s->port_last = v;
-        s->port[s->p_len++] = v;
-    }
-}
-
-static inline int64_t sp_pop(SpecialStorage* s, size_t sel) {
-    if (sel == 21) {
-        if (s->q_len == 0) return 0;
-        int64_t v = s->queue[s->q_head];
-        s->q_head = (s->q_head + 1) % QUEUE_CAP;
-        s->q_len--;
-        return v;
-    } else {
-        if (s->p_len == 0) return 0;
-        return s->port[--s->p_len];
-    }
-}
-
-static inline size_t sp_depth(SpecialStorage* s, size_t sel) {
-    return (sel == 21) ? s->q_len : s->p_len;
-}
-
-static inline void sp_dup(SpecialStorage* s, size_t sel) {
-    if (sel == 21) {
-        if (s->q_len > 0) {
-            if (s->q_len >= QUEUE_CAP) sp_overflow();
-            int64_t v = s->queue[s->q_head];
-            /* push_front: move head back */
-            s->q_head = (s->q_head + QUEUE_CAP - 1) % QUEUE_CAP;
-            s->queue[s->q_head] = v;
-            s->q_len++;
-        }
-    } else {
-        if (s->p_len >= PORT_CAP) sp_overflow();
-        s->port[s->p_len] = s->port_last;
-        s->p_len++;
-    }
-}
-
-static inline void sp_swap(SpecialStorage* s, size_t sel) {
-    if (sel == 21 && s->q_len >= 2) {
-        size_t i0 = s->q_head;
-        size_t i1 = (s->q_head + 1) % QUEUE_CAP;
-        int64_t tmp = s->queue[i0];
-        s->queue[i0] = s->queue[i1];
-        s->queue[i1] = tmp;
-    } else if (sel == 27 && s->p_len >= 2) {
-        int64_t tmp = s->port[s->p_len - 1];
-        s->port[s->p_len - 1] = s->port[s->p_len - 2];
-        s->port[s->p_len - 2] = tmp;
-    }
-}
-
-static inline void sp_scan_to_zero(SpecialStorage* s) {
-    for (size_t i = 0; i < s->q_len; i++) {
-        size_t idx = (s->q_head + i) % QUEUE_CAP;
-        if (s->queue[idx] == 0) {
-            /* rotate_left(pos+1): element at pos+1 becomes new front, length unchanged */
-            s->q_head = (s->q_head + i + 1) % QUEUE_CAP;
-            return;
-        }
-    }
-}
-
-static char _outbuf[16384];
-static size_t _outpos = 0;
-static inline void _flush(void) { if (_outpos > 0) { fwrite(_outbuf, 1, _outpos, stdout); _outpos = 0; } }
-static inline void _emit(char c) { _outbuf[_outpos++] = c; if (_outpos >= 16384) _flush(); }
-
-static inline void write_num(int64_t n) {
-    if (n < 0) {
-        _emit('-');
-        uint64_t u = (uint64_t)(-(n + 1)) + 1;
-        char buf[20]; int i = 20;
-        do { buf[--i] = '0' + (u % 10); u /= 10; } while (u > 0);
-        for (; i < 20; i++) _emit(buf[i]);
-    } else {
-        uint64_t u = (uint64_t)n;
-        char buf[20]; int i = 20;
-        do { buf[--i] = '0' + (u % 10); u /= 10; } while (u > 0);
-        for (; i < 20; i++) _emit(buf[i]);
-    }
-}
-
-static inline void write_char(int64_t v) {
-    uint32_t c = (uint32_t)v;
-    if (c <= 0x7F) { _emit((char)c); }
-    else if (c <= 0x7FF) { _emit(0xC0 | (c >> 6)); _emit(0x80 | (c & 0x3F)); }
-    else if (c <= 0xFFFF) { _emit(0xE0 | (c >> 12)); _emit(0x80 | ((c >> 6) & 0x3F)); _emit(0x80 | (c & 0x3F)); }
-    else if (c <= 0x10FFFF) { _emit(0xF0 | (c >> 18)); _emit(0x80 | ((c >> 12) & 0x3F)); _emit(0x80 | ((c >> 6) & 0x3F)); _emit(0x80 | (c & 0x3F)); }
-}
-
-static inline int64_t read_num(void) {
-    char buf[64];
-    if (fgets(buf, sizeof(buf), stdin) == NULL) return 0;
-    return (int64_t)atoll(buf);
-}
-
-static inline int64_t read_char_(void) {
-    int b = getchar();
-    if (b == EOF) return -1;
-    if (b < 0x80) return (int64_t)b;
-    int n; int32_t val;
-    if ((b >> 5) == 6) { n = 1; val = b & 0x1F; }
-    else if ((b >> 4) == 14) { n = 2; val = b & 0x0F; }
-    else if ((b >> 3) == 30) { n = 3; val = b & 0x07; }
-    else return -1;
-    for (int i = 0; i < n; i++) {
-        int c = getchar();
-        if (c == EOF) return -1;
-        val = (val << 6) | (c & 0x3F);
-    }
-    return (int64_t)val;
-}
-
-"#;
+const C_PRELUDE: &str = include_str!("runtime_templates/c_prelude.c");
 
 const C_BIGINT_PRELUDE: &str = include_str!("c_bigint_runtime.c");
 
-const C_MAIN: &str = r#"
-int64_t compaheuiler_c_entry(void) {
-    int64_t* data[STORAGE_COUNT];
-    int64_t* bases[STORAGE_COUNT];
-    int32_t lengths[STORAGE_COUNT];
-    for (int i = 0; i < STORAGE_COUNT; i++) {
-        data[i] = (int64_t*)calloc(MAX_STACK, sizeof(int64_t));
-        bases[i] = data[i];
-        lengths[i] = 0;
-    }
-    int64_t result = aheui_main(bases, lengths);
-    _flush();
-    fflush(stdout);
-    for (int i = 0; i < STORAGE_COUNT; i++) free(data[i]);
-    return result;
-}
-
-#ifndef COMPAHEUILER_RUST_BIGINT
-int main(void) { return (int)compaheuiler_c_entry(); }
-#endif
-"#;
+const C_MAIN: &str = include_str!("runtime_templates/c_main.c");

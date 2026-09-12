@@ -1,0 +1,8 @@
+bridges_compiled=1
+exit=99
+guard_failures=25
+internal_compile_panics=0
+loops_aborted=0
+loops_compiled=1
+out_ok=ok
+out_sha=a7978a59054a

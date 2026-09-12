@@ -1,0 +1,32 @@
+[package]
+name = "aheui-wasm-runner"
+version = "0.0.1"
+edition = "2024"
+publish = false
+description = "Native wasmtime host that runs the wasm32 build of aheui, satisfying the JIT host-import contract"
+
+[[bin]]
+name = "aheui-wasm-runner"
+path = "src/main.rs"
+
+[dependencies]
+majit-backend-wasm-host = { workspace = true }
+# wasmtime vendors its own error type (`wasmtime::Error`) and re-exports a
+# `Context` trait, so the runner needs no separate `anyhow` dependency.
+wasmtime = "47"
+# The guest is a `wasm32-wasip1` command: it reads its program from a preopened
+# directory, writes to stdout, and reads `MAJIT_*` knobs out of the environment.
+wasmtime-wasi = "47"
+# Disassemble a trace module to WAT — on a failed compile, and on demand for
+# every trace. Pinned to the version wasmtime already resolves in the lockfile.
+wasmprinter = "0.248"
+# Resolve a guest function-table slot to its symbol, so a dumped trace's
+# `call_indirect` targets read as names rather than as table indices. Pinned to
+# the version wasmtime already resolves in the lockfile, as wasmprinter is.
+wasmparser = "0.248"
+# Render a resolved symbol the way the codebase cites one rather than as its
+# v0 mangling. Already in the lockfile as a wasmtime backtrace dependency.
+rustc-demangle = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

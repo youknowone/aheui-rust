@@ -5,21 +5,16 @@ use std::time::Instant;
 
 fn compile_and_run_rs(name: &str, source: &str) -> (String, f64, f64) {
     let rs_code = compaheuiler::compile_to_rs(source);
-    let rs_path = format!("/tmp/aheui_{name}.rs");
-    let bin_path = format!("/tmp/aheui_{name}_rs");
+    let out_dir = common::codegen_dir();
+    let rs_path = out_dir.join(format!("aheui_{name}.rs"));
+    let bin_path = out_dir.join(format!("aheui_{name}_rs"));
     std::fs::write(&rs_path, &rs_code).unwrap();
 
     let t = Instant::now();
     let status = Command::new("rustc")
-        .args([
-            "-C",
-            "opt-level=3",
-            "-C",
-            "target-cpu=native",
-            "-o",
-            &bin_path,
-            &rs_path,
-        ])
+        .args(["-C", "opt-level=3", "-C", "target-cpu=native", "-o"])
+        .arg(&bin_path)
+        .arg(&rs_path)
         .status()
         .unwrap();
     let compile_ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -61,11 +56,14 @@ fn test_logo_rs() {
 
 fn compile_and_run_rs_stdin(name: &str, source: &str, stdin: &[u8]) -> (String, i32, f64) {
     let rs_code = compaheuiler::compile_to_rs(source);
-    let rs_path = format!("/tmp/aheui_{name}.rs");
-    let bin_path = format!("/tmp/aheui_{name}_rs");
+    let out_dir = common::codegen_dir();
+    let rs_path = out_dir.join(format!("aheui_{name}.rs"));
+    let bin_path = out_dir.join(format!("aheui_{name}_rs"));
     std::fs::write(&rs_path, &rs_code).unwrap();
     let status = Command::new("rustc")
-        .args(["-C", "opt-level=2", "-o", &bin_path, &rs_path])
+        .args(["-C", "opt-level=2", "-o"])
+        .arg(&bin_path)
+        .arg(&rs_path)
         .stderr(std::process::Stdio::piped())
         .status()
         .unwrap();

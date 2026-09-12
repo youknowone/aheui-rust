@@ -23,11 +23,13 @@ malachite-bigint = [
     "compaheuiler/malachite-bigint",
     "aheui-runtime/malachite-bigint",
 ]
+runtime-rbigint = ["aheuinterpreter/runtime-rbigint", "aheui-runtime/runtime-rbigint"]
 
 [dependencies]
 ahsembler = { path = "../ahsembler" }
 aheui-runtime = { path = "../aheui-runtime", default-features = false }
 aheuinterpreter = { path = "../aheuinterpreter", default-features = false }
 compaheuiler = { path = "../compaheuiler", default-features = false }
-wasm-bindgen = "0.2"
+# Keep the glue generator in pages.yml and build.sh on this exact version.
+wasm-bindgen = "=0.2.127"
 wat = "1.227"

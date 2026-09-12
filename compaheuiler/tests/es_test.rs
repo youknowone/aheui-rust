@@ -1,5 +1,13 @@
+/// `파` (swap) on a storage the program never pushed to.
+///
+/// The generated Rust is checked for existing, not written out: codegen for a
+/// swap with nothing under it used to be the interesting case, and what makes
+/// it interesting is whether `compile_to_rs` returns at all.
 #[test]
-fn gen_es() {
+fn empty_swap_generates_a_program() {
     let code = compaheuiler::compile_to_rs("뱐희파반망희");
-    std::fs::write("/tmp/aheui_emptyswap.rs", &code).unwrap();
+    assert!(
+        code.contains("fn main("),
+        "codegen produced no program:\n{code}"
+    );
 }

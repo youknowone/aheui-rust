@@ -141,29 +141,18 @@ pub fn is_binary_op(op: u8) -> bool {
 /// `OP_DIV` on a non-zero divisor: the quotient rounds toward negative
 /// infinity, as `int.__floordiv__` and `rbigint.div` both do.
 ///
-/// Rust's `/` and `wrapping_div` truncate toward zero, which answers the same
-/// as flooring whenever the operands share a sign or the division is exact and
-/// differs by one otherwise. A constant folder that truncates here would give
-/// a literal `-7 / 2` a different answer from the same division performed at
-/// run time.
-///
-/// `div_euclid` is a third convention — it forces a non-negative remainder —
-/// and is not this one.
+/// Shared by the compiler and both runtime value backends.
 ///
 /// # Preconditions
 ///
 /// `b` must be non-zero, and `(a, b)` must not be `(i64::MIN, -1)`. The first
 /// case panics; the second returns the wrapped `i64::MIN` even though the true
 /// quotient does not fit in `i64`. Constant folders must decline both cases.
-#[inline]
+#[inline(always)]
 pub fn floor_div_i64(a: i64, b: i64) -> i64 {
     let q = a.wrapping_div(b);
     let r = a.wrapping_rem(b);
-    if r != 0 && (r < 0) != (b < 0) {
-        q.wrapping_sub(1)
-    } else {
-        q
-    }
+    q.wrapping_add(floor_correction_mask(r, b))
 }
 
 /// `OP_MOD` on a non-zero divisor: the remainder carries the divisor's sign,
@@ -171,13 +160,31 @@ pub fn floor_div_i64(a: i64, b: i64) -> i64 {
 ///
 /// The corrected remainder cannot overflow — it is only computed when `r` and
 /// `b` have opposite signs, so `|r + b| < |b|`.
-#[inline]
+#[inline(always)]
 pub fn floor_mod_i64(a: i64, b: i64) -> i64 {
     let r = a.wrapping_rem(b);
-    if r != 0 && (r < 0) != (b < 0) {
-        r.wrapping_add(b)
-    } else {
-        r
+    r.wrapping_add(b & floor_correction_mask(r, b))
+}
+
+/// -1 iff truncating remainder `r` is nonzero and has the opposite sign to
+/// divisor `b`. The mask keeps the generated runtime division branch-free.
+#[inline(always)]
+pub fn floor_correction_mask(r: i64, b: i64) -> i64 {
+    ((r | 0i64.wrapping_sub(r)) & (r ^ b)) >> 63
+}
+
+/// Aheui arithmetic for bounded compiler evaluation. Overflow declines the
+/// fold; division by zero returns zero as in the runtime value backends.
+pub fn checked_binary_i64(op: u8, lhs: i64, rhs: i64) -> Option<i64> {
+    match op {
+        OP_ADD => lhs.checked_add(rhs),
+        OP_SUB => lhs.checked_sub(rhs),
+        OP_MUL => lhs.checked_mul(rhs),
+        OP_DIV if rhs != 0 => lhs.checked_div(rhs).map(|_| floor_div_i64(lhs, rhs)),
+        OP_MOD if rhs != 0 => Some(floor_mod_i64(lhs, rhs)),
+        OP_DIV | OP_MOD => Some(0),
+        OP_CMP => Some(i64::from(lhs >= rhs)),
+        _ => None,
     }
 }
 

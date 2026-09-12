@@ -9,3 +9,4 @@ keywords = ["aheui", "assembler", "esoteric", "hangul"]
 categories = ["compilers"]
 
 [dependencies]
+indexmap = "2.14"

@@ -78,7 +78,7 @@ fn generate_wat_dispatch(cfg: &Cfg, wasi: bool) -> String {
     let mut live_blocks: Vec<BlockId> = Vec::new();
     for block_id in 0..cfg.num_blocks() as BlockId {
         let entry_state = states.get(block_id as usize);
-        if entry_state.map_or(true, |s| s.is_bottom()) {
+        if entry_state.is_none_or(|s| s.is_bottom()) {
             continue;
         }
         live_blocks.push(block_id);
@@ -104,7 +104,7 @@ fn generate_wat_dispatch(cfg: &Cfg, wasi: bool) -> String {
     let has_dyn_sel = live_blocks.iter().any(|&bid| {
         states
             .get(bid as usize)
-            .map_or(false, |s| s.selected.is_none())
+            .is_some_and(|s| s.selected.is_none())
     });
 
     // Module header
@@ -250,7 +250,7 @@ fn emit_instruction(
 ) {
     let ind = "        ";
     let is_special = |s: usize| s == QUEUE || s == PORT;
-    let sp_known = sel.is_some_and(|s| is_special(s));
+    let sp_known = sel.is_some_and(&is_special);
     let ds = sel.is_none();
 
     match inst {
@@ -272,7 +272,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind})\n"));
             } else {
                 let s = sel.unwrap();
-                emit_stack_push(out, &format!("{ind}"), s, &format!("(i64.const {v})"));
+                emit_stack_push(out, ind, s, &format!("(i64.const {v})"));
             }
         }
         Inst::Pop => {
@@ -290,7 +290,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind})\n"));
             } else {
                 let s = sel.unwrap();
-                emit_stack_pop_drop(out, &format!("{ind}"), s);
+                emit_stack_pop_drop(out, ind, s);
             }
         }
         Inst::Dup => {
@@ -306,7 +306,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind})\n"));
             } else {
                 let s = sel.unwrap();
-                emit_stack_dup(out, &format!("{ind}"), s);
+                emit_stack_dup(out, ind, s);
             }
         }
         Inst::Swap => {
@@ -322,7 +322,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind})\n"));
             } else {
                 let s = sel.unwrap();
-                emit_stack_swap(out, &format!("{ind}"), s);
+                emit_stack_swap(out, ind, s);
             }
         }
         Inst::BinOp(kind) => {
@@ -357,7 +357,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind})\n"));
             } else {
                 let s = sel.unwrap();
-                emit_stack_binop(out, &format!("{ind}"), s, kind);
+                emit_stack_binop(out, ind, s, kind);
             }
         }
         Inst::Sel(new_sel) => {
@@ -375,7 +375,7 @@ fn emit_instruction(
                         "{ind}(call $sp_push (i32.const {target}) (local.get $v0))\n"
                     ));
                 } else {
-                    emit_stack_push(out, &format!("{ind}"), *target, "(local.get $v0)");
+                    emit_stack_push(out, ind, *target, "(local.get $v0)");
                 }
             } else if ds {
                 // Pop from dynamic source
@@ -393,17 +393,17 @@ fn emit_instruction(
                         "{ind}(call $sp_push (i32.const {target}) (local.get $v0))\n"
                     ));
                 } else {
-                    emit_stack_push(out, &format!("{ind}"), *target, "(local.get $v0)");
+                    emit_stack_push(out, ind, *target, "(local.get $v0)");
                 }
             } else {
                 let s = sel.unwrap();
-                emit_stack_pop_to_v0(out, &format!("{ind}"), s);
+                emit_stack_pop_to_v0(out, ind, s);
                 if is_special(*target) {
                     out.push_str(&format!(
                         "{ind}(call $sp_push (i32.const {target}) (local.get $v0))\n"
                     ));
                 } else {
-                    emit_stack_push(out, &format!("{ind}"), *target, "(local.get $v0)");
+                    emit_stack_push(out, ind, *target, "(local.get $v0)");
                 }
             }
         }
@@ -425,7 +425,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind})\n"));
             } else {
                 let s = sel.unwrap();
-                emit_stack_pop_to_v0(out, &format!("{ind}"), s);
+                emit_stack_pop_to_v0(out, ind, s);
                 out.push_str(&format!("{ind}(call $write_num (local.get $v0))\n"));
             }
         }
@@ -447,7 +447,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind})\n"));
             } else {
                 let s = sel.unwrap();
-                emit_stack_pop_to_v0(out, &format!("{ind}"), s);
+                emit_stack_pop_to_v0(out, ind, s);
                 out.push_str(&format!("{ind}(call $write_char (local.get $v0))\n"));
             }
         }
@@ -470,7 +470,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind})\n"));
             } else {
                 let s = sel.unwrap();
-                emit_stack_push(out, &format!("{ind}"), s, "(local.get $v0)");
+                emit_stack_push(out, ind, s, "(local.get $v0)");
             }
         }
         Inst::PushChar => {
@@ -492,7 +492,7 @@ fn emit_instruction(
                 out.push_str(&format!("{ind})\n"));
             } else {
                 let s = sel.unwrap();
-                emit_stack_push(out, &format!("{ind}"), s, "(local.get $v0)");
+                emit_stack_push(out, ind, s, "(local.get $v0)");
             }
         }
         Inst::GuardDepth { min_depth, fail } => {
@@ -550,7 +550,7 @@ fn emit_terminator(
             let fail_seq = block_order.get(fail).copied().unwrap_or(0);
 
             // Compute depth
-            if sel.is_some_and(|s| is_special(s)) {
+            if sel.is_some_and(&is_special) {
                 let s = sel.unwrap();
                 out.push_str(&format!(
                     "{ind}(if (i32.ge_s (call $sp_depth (i32.const {s})) (i32.const {min_depth}))\n"
@@ -589,7 +589,7 @@ fn emit_terminator(
             let nonzero_seq = block_order.get(on_nonzero).copied().unwrap_or(0);
 
             // Pop value
-            if sel.is_some_and(|s| is_special(s)) {
+            if sel.is_some_and(&is_special) {
                 let s = sel.unwrap();
                 out.push_str(&format!(
                     "{ind}(local.set $v0 (call $sp_pop (i32.const {s})))\n"
@@ -605,7 +605,7 @@ fn emit_terminator(
                 out.push_str(&format!("{ind})\n"));
             } else {
                 let s = sel.unwrap();
-                emit_stack_pop_to_v0(out, &format!("{ind}"), s);
+                emit_stack_pop_to_v0(out, ind, s);
             }
 
             // Branch
@@ -622,7 +622,7 @@ fn emit_terminator(
         Terminator::Halt => {
             out.push_str(&format!("{ind}(call $flush_out)\n"));
             // Get exit code from current storage top (or 0 if empty)
-            if sel.is_some_and(|s| is_special(s)) {
+            if sel.is_some_and(is_special) {
                 let s = sel.unwrap();
                 out.push_str(&format!(
                     "{ind}(if (i32.gt_s (call $sp_depth (i32.const {s})) (i32.const 0))\n"

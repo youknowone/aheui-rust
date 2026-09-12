@@ -16,14 +16,11 @@ use crate::consts::{STORAGE_COUNT, VAL_PORT, VAL_QUEUE};
 ///
 /// `Depth::AtLeast(i32)` under `meet = min` has an unbounded descending chain,
 /// so a loop that drains a deep stack one element per trip costs one whole
-/// round per unit of depth. Round counts measured over the snippets corpus:
-/// quine.puzzlet 587, pi.puzzlet 180, logo 54, vowel-advanced 14, everything
-/// else <= 11. The two outliers are small CFGs draining a deep stack (46 and
-/// 14 blocks), where the extra rounds buy at most one guard.
+/// round per unit of depth.
 ///
-/// 64 clears logo, the largest round count that still pays for itself, and cuts
-/// quine's analysis 9x and pi.puzzlet's 3x. Both come out faster end to end even
-/// though pi.puzzlet retains one more `BRPOP2` as a result.
+/// 64 clears every program in the snippet corpus but two, and those two are
+/// small CFGs draining a deep stack, where running to their several-hundred
+/// rounds buys at most one guard and costs multiples of the analysis time.
 ///
 /// Widening is sound in one direction only, which is why it is safe here: the
 /// result feeds `eliminate_guards` via [`Depth::is_at_least`], and `AtLeast(0)`
@@ -138,14 +135,14 @@ pub fn transfer_inst(inst: &Inst, state: &mut AbstractState) {
         }
         Inst::GuardDepth { min_depth, .. } => {
             // After passing GuardDepth, depth >= min_depth is guaranteed (ok path).
-            if let Some(sel) = state.selected {
-                if sel < STORAGE_COUNT {
-                    let min = *min_depth as i32;
-                    state.depths[sel] = match state.depths[sel] {
-                        Depth::Bottom => Depth::Bottom,
-                        Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
-                    };
-                }
+            if let Some(sel) = state.selected
+                && sel < STORAGE_COUNT
+            {
+                let min = *min_depth as i32;
+                state.depths[sel] = match state.depths[sel] {
+                    Depth::Bottom => Depth::Bottom,
+                    Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
+                };
             }
         }
         other => {
@@ -196,14 +193,14 @@ fn successor_states(
             fail,
         } => {
             let mut ok_state = exit_state.clone();
-            if let Some(sel) = ok_state.selected {
-                if sel < STORAGE_COUNT {
-                    let min = *min_depth as i32;
-                    ok_state.depths[sel] = match ok_state.depths[sel] {
-                        Depth::Bottom => Depth::Bottom,
-                        Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
-                    };
-                }
+            if let Some(sel) = ok_state.selected
+                && sel < STORAGE_COUNT
+            {
+                let min = *min_depth as i32;
+                ok_state.depths[sel] = match ok_state.depths[sel] {
+                    Depth::Bottom => Depth::Bottom,
+                    Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
+                };
             }
             let fail_state = exit_state.clone();
             result.push((*ok, ok_state));
@@ -405,10 +402,10 @@ pub fn merge_guard_ok(cfg: &mut Cfg) -> usize {
             }
         }
         for inst in &ok_insts {
-            if let Inst::GuardDepth { fail: gf, .. } = inst {
-                if (*gf as usize) < pred_count.len() {
-                    pred_count[*gf as usize] += 1;
-                }
+            if let Inst::GuardDepth { fail: gf, .. } = inst
+                && (*gf as usize) < pred_count.len()
+            {
+                pred_count[*gf as usize] += 1;
             }
         }
 
@@ -487,10 +484,10 @@ fn is_queue_block(block: &CfgBlock, entry: &AbstractState) -> bool {
         if let Inst::Sel(s) = inst {
             selected = Some(*s);
         }
-        if let Some(sel) = selected {
-            if sel == VAL_QUEUE || sel == VAL_PORT {
-                return true;
-            }
+        if let Some(sel) = selected
+            && (sel == VAL_QUEUE || sel == VAL_PORT)
+        {
+            return true;
         }
     }
     false
@@ -510,15 +507,14 @@ fn fold_block_constants(block: &mut CfgBlock, width: ConstWidth) -> usize {
                 block.instructions[i],
                 block.instructions[i + 1],
                 block.instructions[i + 2],
-            ) {
-                if let Some(result) = eval_binop(kind, a, b).filter(|r| width.holds(*r)) {
-                    block.instructions[i] = Inst::Push(result);
-                    block.instructions.remove(i + 2);
-                    block.instructions.remove(i + 1);
-                    folds += 1;
-                    changed = true;
-                    continue; // Re-check at same position
-                }
+            ) && let Some(result) = eval_binop(kind, a, b).filter(|r| width.holds(*r))
+            {
+                block.instructions[i] = Inst::Push(result);
+                block.instructions.remove(i + 2);
+                block.instructions.remove(i + 1);
+                folds += 1;
+                changed = true;
+                continue; // Re-check at same position
             }
             i += 1;
         }
@@ -530,15 +526,14 @@ fn fold_block_constants(block: &mut CfgBlock, width: ConstWidth) -> usize {
                 block.instructions[i],
                 block.instructions[i + 1],
                 block.instructions[i + 2],
-            ) {
-                if let Some(result) = eval_binop(kind, v, v).filter(|r| width.holds(*r)) {
-                    block.instructions[i] = Inst::Push(result);
-                    block.instructions.remove(i + 2);
-                    block.instructions.remove(i + 1);
-                    folds += 1;
-                    changed = true;
-                    continue;
-                }
+            ) && let Some(result) = eval_binop(kind, v, v).filter(|r| width.holds(*r))
+            {
+                block.instructions[i] = Inst::Push(result);
+                block.instructions.remove(i + 2);
+                block.instructions.remove(i + 1);
+                folds += 1;
+                changed = true;
+                continue;
             }
             i += 1;
         }
@@ -566,51 +561,24 @@ fn fold_constant_branch(block: &mut CfgBlock, folds: &mut usize) {
         return;
     }
     let last_idx = block.instructions.len() - 1;
-    if let Inst::Push(v) = block.instructions[last_idx] {
-        if let Terminator::BranchZero {
+    if let Inst::Push(v) = block.instructions[last_idx]
+        && let Terminator::BranchZero {
             on_zero,
             on_nonzero,
         } = block.terminator
-        {
-            block.instructions.pop();
-            block.terminator = if v == 0 {
-                Terminator::Goto(on_zero)
-            } else {
-                Terminator::Goto(on_nonzero)
-            };
-            *folds += 1;
-        }
+    {
+        block.instructions.pop();
+        block.terminator = if v == 0 {
+            Terminator::Goto(on_zero)
+        } else {
+            Terminator::Goto(on_nonzero)
+        };
+        *folds += 1;
     }
 }
 
 fn eval_binop(kind: BinOpKind, lhs: i64, rhs: i64) -> Option<i64> {
-    Some(match kind {
-        BinOpKind::Add => lhs.checked_add(rhs)?,
-        BinOpKind::Sub => lhs.checked_sub(rhs)?,
-        BinOpKind::Mul => lhs.checked_mul(rhs)?,
-        BinOpKind::Div => {
-            if rhs != 0 {
-                lhs.checked_div(rhs)?;
-                crate::consts::floor_div_i64(lhs, rhs)
-            } else {
-                0
-            }
-        }
-        BinOpKind::Mod => {
-            if rhs != 0 {
-                crate::consts::floor_mod_i64(lhs, rhs)
-            } else {
-                0
-            }
-        }
-        BinOpKind::Cmp => {
-            if lhs >= rhs {
-                1
-            } else {
-                0
-            }
-        }
-    })
+    crate::consts::checked_binary_i64(kind.opcode(), lhs, rhs)
 }
 
 // ── Pass 4b: Peephole instruction cleanup ───────────────────────────
@@ -769,13 +737,12 @@ pub fn thread_jumps(cfg: &mut Cfg) -> usize {
         changed = false;
         for i in 0..n {
             let block = cfg.block(i as BlockId);
-            if block.instructions.is_empty() {
-                if let Terminator::Goto(target) = block.terminator {
-                    if forward[i] != forward[target as usize] {
-                        forward[i] = forward[target as usize];
-                        changed = true;
-                    }
-                }
+            if block.instructions.is_empty()
+                && let Terminator::Goto(target) = block.terminator
+                && forward[i] != forward[target as usize]
+            {
+                forward[i] = forward[target as usize];
+                changed = true;
             }
         }
     }
@@ -849,10 +816,10 @@ pub fn eliminate_loop_guards(cfg: &mut Cfg) -> usize {
         std::collections::BTreeMap::new();
     for (idx, &bid) in rpo.iter().enumerate() {
         for &succ in &cfg.blocks[bid as usize].all_successors() {
-            if let Some(succ_pos) = rpo_pos[succ as usize] {
-                if succ_pos <= idx {
-                    loop_headers.entry(succ).or_default().push(bid);
-                }
+            if let Some(succ_pos) = rpo_pos[succ as usize]
+                && succ_pos <= idx
+            {
+                loop_headers.entry(succ).or_default().push(bid);
             }
         }
     }
@@ -939,10 +906,10 @@ pub fn eliminate_loop_guards(cfg: &mut Cfg) -> usize {
         for &bid in &loop_blocks {
             let mut st = states[bid as usize].clone();
             for inst in &cfg.block(bid).instructions {
-                if let Inst::GuardDepth { .. } = inst {
-                    if let Some(sel) = st.selected {
-                        guarded_storages.insert(sel);
-                    }
+                if let Inst::GuardDepth { .. } = inst
+                    && let Some(sel) = st.selected
+                {
+                    guarded_storages.insert(sel);
                 }
                 transfer_inst(inst, &mut st);
             }
@@ -1364,10 +1331,10 @@ fn check_loop_consistent(
             }
             transfer_inst(inst, &mut state);
         }
-        if let Terminator::StackGuard { min_depth, .. } = &cfg.block(bid).terminator {
-            if !depth_sufficient(&state, *min_depth as i32) {
-                return false;
-            }
+        if let Terminator::StackGuard { min_depth, .. } = &cfg.block(bid).terminator
+            && !depth_sufficient(&state, *min_depth as i32)
+        {
+            return false;
         }
     }
 
@@ -1420,14 +1387,14 @@ fn optimistic_successor_states(
             fail,
         } => {
             let mut ok_state = exit_state.clone();
-            if let Some(sel) = ok_state.selected {
-                if sel < STORAGE_COUNT {
-                    let min = *min_depth as i32;
-                    ok_state.depths[sel] = match ok_state.depths[sel] {
-                        Depth::Bottom => Depth::Bottom,
-                        Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
-                    };
-                }
+            if let Some(sel) = ok_state.selected
+                && sel < STORAGE_COUNT
+            {
+                let min = *min_depth as i32;
+                ok_state.depths[sel] = match ok_state.depths[sel] {
+                    Depth::Bottom => Depth::Bottom,
+                    Depth::AtLeast(d) => Depth::AtLeast(d.max(min)),
+                };
             }
             // Emit both ok and fail for StackGuard (it's a terminator, not GuardDepth)
             result.push((*ok, ok_state));
@@ -1457,38 +1424,22 @@ pub fn simplify_branches(cfg: &mut Cfg) -> usize {
     for i in 0..cfg.num_blocks() {
         let block = cfg.block(i as BlockId);
         let new_term = match &block.terminator {
+            // Both edges land in the same block, so what the guard decides
+            // cannot change where control goes. A guard is a reflection test,
+            // not a stack operation, so dropping it here changes nothing.
             Terminator::StackGuard { ok, fail, .. } if ok == fail => Some(Terminator::Goto(*ok)),
-            // Self-referencing guard: fail points to self.
-            // Only safe to eliminate if the block has NO stack-modifying instructions
-            // (otherwise the self-loop builds up depth until the guard passes).
-            Terminator::StackGuard { ok, fail, .. }
-                if *fail == i as BlockId && block.instructions.is_empty() =>
-            {
-                Some(Terminator::Goto(*ok))
-            }
-            // Mutual bounce: two StackGuards with empty fail-blocks pointing at
-            // each other. If neither can make progress, this is a real infinite
-            // loop in the Aheui program. Convert to Goto(ok) to break the cycle.
-            // NOTE: potentially incorrect if the correct escape depends on
-            // cursor direction the CFG doesn't track.
-            Terminator::StackGuard { ok, fail, .. } => {
-                let fail_block = cfg.block(*fail);
-                if fail_block.instructions.is_empty() {
-                    if let Terminator::StackGuard { fail: fail2, .. } = fail_block.terminator {
-                        if fail2 == i as BlockId {
-                            Some(Terminator::Goto(*ok))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-            // BranchZero→StackGuard bounces are broken by converting the
-            // StackGuard side (above). Don't modify BranchZero itself.
+            // No other guard is removable here, and a fail edge that cannot
+            // make progress is the case to be careful about: a guard failing
+            // back into its own instruction-free block, or a pair of
+            // instruction-free guard blocks failing into each other, spins
+            // without ever reaching `ok`. That spin is the reflection the
+            // Aheui source asks for — `아라희` (없음, 나머지, 끝냄) runs
+            // forever — and routing it to `ok` would run the operation on a
+            // storage that does not hold its operands.
+            //
+            // Whether such a guard passes is not decidable here in any case.
+            // Another predecessor may enter the same block with enough depth,
+            // so the test belongs at run time.
             Terminator::BranchZero {
                 on_zero,
                 on_nonzero,
@@ -1550,6 +1501,8 @@ pub fn optimize_cfg_aot(mut cfg: Cfg) -> Cfg {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consts::{OP_BRPOP1, OP_BRPOP2};
+    use crate::{OptimizationLevel, compile};
 
     fn make_push_add_halt() -> Cfg {
         // PUSH 2; PUSH 3 → BRPOP2 (guard) → ADD → HALT
@@ -1882,5 +1835,30 @@ mod tests {
         let eliminated = eliminate_guards(&mut cfg, &states);
         // Can't eliminate: meet of depth=2 (from B1) and depth=0 (from B2) = 0
         assert_eq!(eliminated, 0);
+    }
+
+    /// `아라희` selects the empty default storage and asks 나머지 for two
+    /// operands it can never have: the guard fails back onto itself forever,
+    /// which is the program's entire observable behaviour.
+    ///
+    /// A pass that reads that self-loop as a cycle worth breaking, and routes
+    /// it to the operation instead, leaves the program exiting 0 under the JIT
+    /// and popping from an empty storage under the interpreter — both of which
+    /// this catches, at every level, because only `simplify_branches` sees the
+    /// shape but any of the four could grow it.
+    #[test]
+    fn unsatisfiable_guard_survives_every_level() {
+        for level in [
+            OptimizationLevel::O0,
+            OptimizationLevel::O1,
+            OptimizationLevel::O2,
+            OptimizationLevel::O3,
+        ] {
+            let program = compile("아라희", level);
+            let kept = program.opcodes[..program.size]
+                .iter()
+                .any(|&op| op == OP_BRPOP1 || op == OP_BRPOP2);
+            assert!(kept, "{level:?} dropped a guard that can never pass");
+        }
     }
 }
