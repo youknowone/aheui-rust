@@ -71,7 +71,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: youknowone/pyre
-          ref: d0c2819206f1a1abf27562f8b911acbe539ef188
+          ref: f6a44feddea207e1203bcbbf296e018f7e84ed42
           path: pyre
 
       - name: Check out this aheui revision

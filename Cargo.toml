@@ -25,17 +25,17 @@ members = ["ahsembler", "aheui-runtime", "aheuinterpreter", "aheui-jit", "compah
 #     majit-ir = { path = "../pyre/majit/majit-ir" }
 #     # ... one line per crate used below
 [workspace.dependencies]
-majit-backend-wasm-host = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188" }
-majit-ir = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188" }
-majit-macros = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188" }
-majit-metainterp = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188" }
-majit-rlib = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188" }
-majit-gc = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188" }
-majit-translate = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188" }
-majit-backend = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188" }
-majit-backend-cranelift = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188" }
-majit-backend-dynasm = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188" }
-majit-backend-wasm = { git = "https://github.com/youknowone/pyre", rev = "d0c2819206f1a1abf27562f8b911acbe539ef188", default-features = false }
+majit-backend-wasm-host = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-ir = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-macros = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-metainterp = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-rlib = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-gc = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-translate = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-backend = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-backend-cranelift = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-backend-dynasm = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42" }
+majit-backend-wasm = { git = "https://github.com/youknowone/pyre", rev = "f6a44feddea207e1203bcbbf296e018f7e84ed42", default-features = false }
 
 [features]
 default = ["jit", "dynasm", "malachite-bigint"]

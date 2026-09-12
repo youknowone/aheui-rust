@@ -77,16 +77,8 @@ extern "C" fn floor_mod_i64(a: i64, b: i64) -> i64 {
     aheui_runtime::value::floor_mod_i64(a, b)
 }
 
-fn runtime_fnaddr_bindings() -> [(&'static str, i64); 11] {
+fn runtime_fnaddr_bindings() -> [(&'static str, i64); 9] {
     [
-        (
-            "aheui_runtime::value::floor_div_i64",
-            floor_div_i64 as *const () as usize as i64,
-        ),
-        (
-            "aheui_runtime::value::floor_mod_i64",
-            floor_mod_i64 as *const () as usize as i64,
-        ),
         (
             "ahsembler::consts::floor_div_i64",
             floor_div_i64 as *const () as usize as i64,
