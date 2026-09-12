@@ -1404,6 +1404,91 @@ extern "C" fn jit_storage_dup(pool_ptr: usize, target: usize) {
 /// (`residual_ref_cannot_raise_wrapped`). `#[dont_look_inside_cannot_raise]`
 /// emits the `__majit_call_policy_*` trace/concrete targets the wrapped-ref
 /// lowering reads; the `usize` carrier round-trips the pointer bits.
+/// Cached `MAJIT_HANDOFF` flag. Elidable so a false result folds the
+/// in-loop diagnostic away instead of recording OnceLock/atomics every
+/// opcode.
+#[cfg_attr(feature = "jit", majit_macros::dont_look_inside_cannot_raise)]
+fn handoff_enabled() -> bool {
+    static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FLAG.get_or_init(|| std::env::var_os("MAJIT_HANDOFF").is_some())
+}
+
+#[cfg_attr(feature = "jit", majit_macros::dont_look_inside)]
+fn maybe_log_handoff(program: &Program, pc: usize, state: &AheuiState) {
+    if !handoff_enabled() {
+        return;
+    }
+    let out = aheui_io::output_total_bytes();
+    static HLATCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static HCOUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static HAT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    static HCAP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    let at: u64 = *HAT.get_or_init(|| {
+        std::env::var("MAJIT_HANDOFF_AT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2085)
+    });
+    let hcap: u32 = *HCAP.get_or_init(|| {
+        std::env::var("MAJIT_HANDOFF_CAP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1500)
+    });
+    if !HLATCH.load(std::sync::atomic::Ordering::Relaxed) && out >= at {
+        HLATCH.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    if HLATCH.load(std::sync::atomic::Ordering::Relaxed) {
+        let n = HCOUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if n < hcap {
+            let op0 = program.get_op(pc);
+            eprintln!(
+                "@@@HANDOFF#{n} pc={pc} op={op0} out={out} ss={} sel={}{}",
+                state.stacksize,
+                state.selected,
+                state.spdiag_dump_stacks(),
+            );
+        }
+    }
+}
+
+#[cfg_attr(feature = "jit", majit_macros::dont_look_inside)]
+fn maybe_spdiag_pre_op(state: &AheuiState, op: u8) {
+    let out = aheui_io::output_total_bytes();
+    if (1240..=1260).contains(&out) {
+        let snap = format!(
+            " out={out} selected={}{}",
+            state.selected,
+            state.spdiag_dump_stacks()
+        );
+        PRE_WALK_SNAPSHOT.with(|s| *s.borrow_mut() = snap);
+    }
+    if op == 19 || op == 20 {
+        if (1000..=3000).contains(&out) {
+            eprintln!(
+                "@@@MAINEMIT op={op} out={out} selected={}{}",
+                state.selected,
+                state.spdiag_dump_stacks(),
+            );
+        }
+    }
+}
+
+#[cfg_attr(feature = "jit", majit_macros::dont_look_inside)]
+fn maybe_spdiag_resume_op(pc: usize, op: u8, stackok: bool, state: &AheuiState) {
+    if SPDIAG_TRACE_OPS.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        return;
+    }
+    SPDIAG_TRACE_OPS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    eprintln!(
+        "@@@SPDIAG resume-op pc={pc} op={op} stacksize={} selected={} stackok={stackok} out={}{}",
+        state.stacksize,
+        state.selected,
+        aheui_io::output_total_bytes(),
+        state.spdiag_dump_stacks(),
+    );
+}
+
 #[cfg_attr(feature = "jit", majit_macros::dont_look_inside_cannot_raise)]
 fn jit_sel_get_ref(pool_ptr: usize, selected: usize) -> usize {
     let storage = unsafe { &mut *(pool_ptr as *mut Storage) };
@@ -1551,6 +1636,11 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
         jit_bigint_mode => elidable_int_cannot_raise,
         jit_band_count => elidable_int_cannot_raise,
         jit_cap => elidable_int_cannot_raise,
+        handoff_enabled => elidable_int_cannot_raise,
+        maybe_log_handoff => residual_void_cannot_raise,
+        maybe_spdiag_pre_op => residual_void_cannot_raise,
+        maybe_spdiag_resume_op => residual_void_cannot_raise,
+        spdiag_enabled => elidable_int_cannot_raise,
         // Method-call results consumed as values are lowered through
         // `lower_method_call_value`.
         Program::get_req_size => elidable_int_cannot_raise,
@@ -1679,8 +1769,11 @@ fn jit_effective_stacksize_delta(op: usize, stackok: i64) -> i64 {
     // `guard_value(selected)` the comparison folds to a constant and
     // only the live branch reaches the optimised IR.
     // `bm` is pyre's own fifth green — see the module header. It binds through
-    // the same pre-merge-point walker as `is_queue`.
-    greens = [pc, stackok, is_queue, bm, bands, cap, program],
+    // the same pre-merge-point walker as `is_queue`. `bands` and `cap` stay
+    // as no-arg `elidable_int_cannot_raise` calls (`jit_band_count` /
+    // `jit_cap`); promoting them at every merge only re-guards values that
+    // cannot change for the life of the run.
+    greens = [pc, stackok, is_queue, bm, program],
     recover = refresh_state_from_storage,
     switch_dispatch = true,
     native_tag_small = { jit_retag_small },
@@ -1876,55 +1969,10 @@ pub fn mainloop(program: &Program, threshold: Option<u32>) -> Val {
         }
     }
     while pc < program.size {
-        // Handoff diagnostic (MAJIT_HANDOFF): log the pre-op state at the top
-        // of every loop iteration — one line per opcode in both the naive
-        // (MAJIT_THRESHOLD huge) and JIT paths, since both hit the loop top
-        // once per opcode. Diff the two to find the FIRST divergent opcode at
-        // the native-interp→walk seam. Windowed + count-capped so it cannot
-        // flood.
-        {
-            // Env reads cached once (a per-iteration `env::var` makes the
-            // naive-threshold oracle run ~100x slower than the interp).
-            static HENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *HENABLED.get_or_init(|| std::env::var_os("MAJIT_HANDOFF").is_some()) {
-                let out = aheui_io::output_total_bytes();
-                // Latch on the first opcode at/after MAJIT_HANDOFF_AT (default
-                // 2085 output bytes), then log the next MAJIT_HANDOFF_CAP (default
-                // 1500) opcodes UNCONDITIONALLY — robust to `out` advancing
-                // unevenly (heavy compute phases span 100s of opcodes per byte).
-                static HLATCH: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                static HCOUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-                static HAT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-                static HCAP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-                let at: u64 = *HAT.get_or_init(|| {
-                    std::env::var("MAJIT_HANDOFF_AT")
-                        .ok()
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(2085)
-                });
-                let hcap: u32 = *HCAP.get_or_init(|| {
-                    std::env::var("MAJIT_HANDOFF_CAP")
-                        .ok()
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(1500)
-                });
-                if !HLATCH.load(std::sync::atomic::Ordering::Relaxed) && out >= at {
-                    HLATCH.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                if HLATCH.load(std::sync::atomic::Ordering::Relaxed) {
-                    let n = HCOUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if n < hcap {
-                        let op0 = program.get_op(pc);
-                        eprintln!(
-                            "@@@HANDOFF#{n} pc={pc} op={op0} out={out} ss={} sel={}{}",
-                            state.stacksize,
-                            state.selected,
-                            state.spdiag_dump_stacks(),
-                        );
-                    }
-                }
-            }
+        // Handoff diagnostic (MAJIT_HANDOFF). The enabled flag is elidable
+        // so a false result folds this call out of the recorded trace.
+        if handoff_enabled() {
+            maybe_log_handoff(program, pc, &state);
         }
         let mut stackok = program.get_req_size(pc) as i64 <= state.stacksize;
         // rpaheui/aheui/aheui.py sets `is_queue = (value == VAL_QUEUE)`
@@ -1960,35 +2008,8 @@ pub fn mainloop(program: &Program, threshold: Option<u32>) -> Val {
         // real back-edge instead of being rejected as an invalid loop.
         let op = program.get_op(pc);
         if spdiag_enabled() {
-            let out = aheui_io::output_total_bytes();
-            if (1240..=1260).contains(&out) {
-                let snap = format!(
-                    " out={out} selected={}{}",
-                    state.selected,
-                    state.spdiag_dump_stacks()
-                );
-                PRE_WALK_SNAPSHOT.with(|s| *s.borrow_mut() = snap);
-            }
-            if op == 19 || op == 20 {
-                let out = aheui_io::output_total_bytes();
-                if (1000..=3000).contains(&out) {
-                    eprintln!(
-                        "@@@MAINEMIT op={op} out={out} selected={}{}",
-                        state.selected,
-                        state.spdiag_dump_stacks(),
-                    );
-                }
-            }
-        }
-        if SPDIAG_TRACE_OPS.load(std::sync::atomic::Ordering::Relaxed) > 0 {
-            SPDIAG_TRACE_OPS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            eprintln!(
-                "@@@SPDIAG resume-op pc={pc} op={op} stacksize={} selected={} stackok={stackok} out={}{}",
-                state.stacksize,
-                state.selected,
-                aheui_io::output_total_bytes(),
-                state.spdiag_dump_stacks(),
-            );
+            maybe_spdiag_pre_op(&state, op);
+            maybe_spdiag_resume_op(pc, op, stackok, &state);
         }
         // Per-op stack-size delta gated on stackok. When a guarded op
         // (OP_STACKDEL > 0) is skipped because the stack is too small,
@@ -2014,14 +2035,14 @@ pub fn mainloop(program: &Program, threshold: Option<u32>) -> Val {
                 if !stackok {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, cap, program);
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, program);
                     continue;
                 }
             }
             OP_JMP => {
                 pc = program.get_label(pc - 1);
                 stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, cap, program);
+                can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, program);
                 continue;
             }
             OP_BRZ => {
@@ -2047,7 +2068,7 @@ pub fn mainloop(program: &Program, threshold: Option<u32>) -> Val {
                 if pop_word == zero_word {
                     pc = program.get_label(pc - 1);
                     stackok = program.get_req_size(pc) as i64 <= state.stacksize;
-                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, bands, cap, program);
+                    can_enter_jit!(driver, pc, &mut state, program, || {}, pc, state.stacksize; pc, stackok, is_queue, bm, program);
                     continue;
                 }
             }
