@@ -1827,9 +1827,16 @@ pub fn mainloop(program: &Program, threshold: Option<u32>) -> Val {
         driver.register_blackhole_allocator(AheuiBlackholeAllocator);
 
         driver.set_param("trace_limit", trace_limit() as i64);
-        if let Some(eagerness) = trace_eagerness_override() {
-            driver.set_param("trace_eagerness", eagerness);
-        }
+        // RPython's default is 200. aheui.aheui trips tens of thousands of
+        // distinct cold guards that each fail well below that, so they
+        // never grow a bridge and every miss re-enters the blackhole.
+        // 20 still leaves logo's single hot guard as one bridge and cuts
+        // aheui.aheui(99bottles/quine.40col) roughly in half. `AHEUI_TRACE_EAGERNESS`
+        // and `--jit=trace_eagerness=` still win.
+        driver.set_param(
+            "trace_eagerness",
+            trace_eagerness_override().unwrap_or(20),
+        );
 
         // ALL_OPTS minus `unroll`. Peeling the preamble buys this driver
         // little — the loop body carries almost nothing loop-invariant to
